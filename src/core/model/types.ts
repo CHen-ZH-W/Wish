@@ -67,11 +67,20 @@ export interface ModelToolCall {
   readonly argumentsJson: string;
 }
 
+export type ModelUsageSource = "provider" | "estimated" | "mixed";
+
+/** Normalized token usage for one completed model attempt. */
 export interface ModelUsage {
   readonly inputTokens: number;
-  readonly cachedInputTokens: number;
+  /** Omitted when the Provider cannot distinguish cached input. */
+  readonly cachedInputTokens?: number;
+  /** Omitted when the Provider cannot distinguish cache creation input. */
+  readonly cacheWriteInputTokens?: number;
   readonly outputTokens: number;
   readonly totalTokens: number;
+  readonly source: ModelUsageSource;
+  /** Identifies the estimator whenever locally derived values need attribution. */
+  readonly estimationMethod?: string;
 }
 
 export type ModelErrorCode =

@@ -4,6 +4,7 @@ import {
   type ModelOutput,
   type ModelRequest,
   type ModelStreamEvent,
+  type ModelUsage,
 } from "../src/core/model/model.js";
 import type { OutputEvent } from "../src/core/events/event.js";
 
@@ -37,6 +38,23 @@ const output: ModelOutput = {
   finishReason: "stop",
 };
 
+const providerUsageWithoutCacheDetail: ModelUsage = {
+  inputTokens: 10,
+  outputTokens: 2,
+  totalTokens: 12,
+  source: "provider",
+};
+
+const estimatedUsageWithExplicitZeroCache: ModelUsage = {
+  inputTokens: 10,
+  cachedInputTokens: 0,
+  cacheWriteInputTokens: 0,
+  outputTokens: 2,
+  totalTokens: 12,
+  source: "estimated",
+  estimationMethod: "fixture-tokenizer-v1",
+};
+
 const event: OutputEvent = {
   schemaVersion: 1,
   eventId: "event-1",
@@ -50,4 +68,6 @@ const event: OutputEvent = {
 
 void model.stream(request);
 void output;
+void providerUsageWithoutCacheDetail;
+void estimatedUsageWithExplicitZeroCache;
 void event;

@@ -21,6 +21,7 @@ export type {
   ModelToolCall,
   ModelToolDefinition,
   ModelUsage,
+  ModelUsageSource,
 } from "./types.js";
 
 /** Provider-neutral streaming model Port. */

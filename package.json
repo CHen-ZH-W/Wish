@@ -31,16 +31,57 @@
     "./core/agent-loop": {
       "types": "./dist/core/agent-loop/agent-loop.d.ts",
       "import": "./dist/core/agent-loop/agent-loop.js"
+    },
+    "./models/types": {
+      "types": "./dist/models/types.d.ts",
+      "import": "./dist/models/types.js"
+    },
+    "./models/config": {
+      "types": "./dist/models/config.d.ts",
+      "import": "./dist/models/config.js"
+    },
+    "./models/registry": {
+      "types": "./dist/models/registry.d.ts",
+      "import": "./dist/models/registry.js"
+    },
+    "./models/runtime": {
+      "types": "./dist/models/runtime.d.ts",
+      "import": "./dist/models/runtime.js"
+    },
+    "./models/usage": {
+      "types": "./dist/models/usage.d.ts",
+      "import": "./dist/models/usage.js"
+    },
+    "./models/catalog": {
+      "types": "./dist/models/catalog.d.ts",
+      "import": "./dist/models/catalog.js"
+    },
+    "./models/providers/openai-compatible": {
+      "types": "./dist/models/providers/openai-compatible.d.ts",
+      "import": "./dist/models/providers/openai-compatible.js"
+    },
+    "./models/providers/anthropic-messages": {
+      "types": "./dist/models/providers/anthropic-messages.d.ts",
+      "import": "./dist/models/providers/anthropic-messages.js"
+    },
+    "./storage/models/file-catalog-store": {
+      "types": "./dist/storage/models/file-catalog-store.d.ts",
+      "import": "./dist/storage/models/file-catalog-store.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-context.mjs && node scripts/accept-tools.mjs && node scripts/accept-agent-loop.mjs",
+    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-tools.mjs && node scripts/accept-agent-loop.mjs",
     "test:agent": "npm run build && node scripts/accept-agent.mjs",
     "test:runtime": "npm run build && node scripts/accept-runtime.mjs",
     "test:events": "npm run build && node scripts/accept-events.mjs",
     "test:model": "npm run build && node scripts/accept-model.mjs",
+    "test:models-runtime": "npm run build && node scripts/accept-model-runtime.mjs",
+    "test:model-providers": "npm run build && node scripts/accept-model-providers.mjs",
+    "test:model-usage": "npm run build && node scripts/accept-model-usage.mjs",
+    "test:model-composition": "npm run build && node scripts/accept-model-composition.mjs",
+    "test:model-catalog": "npm run build && node scripts/accept-model-catalog.mjs",
     "test:context": "npm run build && node scripts/accept-context.mjs",
     "test:tools": "npm run build && node scripts/accept-tools.mjs",
     "test:agent-loop": "npm run build && node scripts/accept-agent-loop.mjs"

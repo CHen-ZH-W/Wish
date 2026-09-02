@@ -8,6 +8,7 @@ import type {
   ModelStreamEvent,
   ModelToolCall,
   ModelUsage,
+  ModelUsageSource,
 } from "../model/types.js";
 import {
   runtimeFailure,
@@ -371,7 +372,7 @@ export class AgentLoop<
             if (start !== undefined) {
               return { failure: new Error("Model emitted start more than once per attempt") };
             }
-            start = event;
+            start = freezeStartEvent(event);
             break;
           case "retry":
             if (reasoning.length > 0 || text.length > 0 || toolCalls.length > 0) {
@@ -396,7 +397,7 @@ export class AgentLoop<
             requireStarted(start, event.type);
             terminal = true;
             finishReason = event.finishReason;
-            usage = event.usage;
+            usage = event.usage === undefined ? undefined : freezeUsage(event.usage);
             break;
           case "error":
             terminal = true;
@@ -490,7 +491,16 @@ function freezeMessage(message: ModelMessage): ModelMessage {
     ...message,
     ...(message.contentParts === undefined
       ? {}
-      : { contentParts: Object.freeze(message.contentParts.map((part) => Object.freeze(part))) }),
+      : {
+        contentParts: Object.freeze(message.contentParts.map((part) =>
+          part.type === "text"
+            ? Object.freeze({ type: "text" as const, text: part.text })
+            : Object.freeze({
+              type: "image_url" as const,
+              imageUrl: Object.freeze({ ...part.imageUrl }),
+            })
+        )),
+      }),
     ...(message.toolCalls === undefined
       ? {}
       : { toolCalls: Object.freeze(message.toolCalls.map((call) => Object.freeze({ ...call }))) }),
@@ -563,6 +573,21 @@ function freezeToolCall(call: ModelToolCall): ModelToolCall {
   });
 }
 
+function freezeStartEvent(
+  event: Extract<ModelStreamEvent, { readonly type: "start" }>,
+): Extract<ModelStreamEvent, { readonly type: "start" }> {
+  return Object.freeze({
+    type: "start" as const,
+    model: freezeModelRef(event.model),
+    ...(event.developerRoleMode === undefined
+      ? {}
+      : { developerRoleMode: event.developerRoleMode }),
+    ...(event.authorityDegraded === undefined
+      ? {}
+      : { authorityDegraded: event.authorityDegraded }),
+  });
+}
+
 function requireStarted(
   start: Extract<ModelStreamEvent, { readonly type: "start" }> | undefined,
   eventType: string,
@@ -576,22 +601,97 @@ function addUsage(
   left: ModelUsage | undefined,
   right: ModelUsage | undefined,
 ): ModelUsage {
+  if (left === undefined) {
+    if (right === undefined) {
+      throw new Error("Cannot aggregate absent Model usage");
+    }
+    return freezeUsage(right);
+  }
+  if (right === undefined) return freezeUsage(left);
+
+  const cachedInputTokens = addKnownTokenCounts(
+    left.cachedInputTokens,
+    right.cachedInputTokens,
+  );
+  const cacheWriteInputTokens = addKnownTokenCounts(
+    left.cacheWriteInputTokens,
+    right.cacheWriteInputTokens,
+  );
+  const source = addUsageSources(left.source, right.source);
+  const estimationMethod = addEstimationMethods(left, right, source);
   return freezeUsage({
-    inputTokens: (left?.inputTokens ?? 0) + (right?.inputTokens ?? 0),
-    cachedInputTokens: (left?.cachedInputTokens ?? 0) +
-      (right?.cachedInputTokens ?? 0),
-    outputTokens: (left?.outputTokens ?? 0) + (right?.outputTokens ?? 0),
-    totalTokens: (left?.totalTokens ?? 0) + (right?.totalTokens ?? 0),
+    inputTokens: left.inputTokens + right.inputTokens,
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(cacheWriteInputTokens === undefined
+      ? {}
+      : { cacheWriteInputTokens }),
+    outputTokens: left.outputTokens + right.outputTokens,
+    totalTokens: left.totalTokens + right.totalTokens,
+    source,
+    ...(estimationMethod === undefined ? {} : { estimationMethod }),
   });
 }
 
 function freezeUsage(usage: ModelUsage): ModelUsage {
-  for (const [name, value] of Object.entries(usage)) {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new Error(`Model usage ${name} must be a non-negative safe integer`);
-    }
+  requireTokenCount(usage.inputTokens, "inputTokens");
+  if (usage.cachedInputTokens !== undefined) {
+    requireTokenCount(usage.cachedInputTokens, "cachedInputTokens");
+  }
+  if (usage.cacheWriteInputTokens !== undefined) {
+    requireTokenCount(usage.cacheWriteInputTokens, "cacheWriteInputTokens");
+  }
+  requireTokenCount(usage.outputTokens, "outputTokens");
+  requireTokenCount(usage.totalTokens, "totalTokens");
+  if (
+    usage.source !== "provider" &&
+    usage.source !== "estimated" &&
+    usage.source !== "mixed"
+  ) {
+    throw new Error("Model usage source must be provider, estimated, or mixed");
+  }
+  if (
+    usage.estimationMethod !== undefined &&
+    (usage.estimationMethod.length === 0 ||
+      usage.estimationMethod !== usage.estimationMethod.trim())
+  ) {
+    throw new Error("Model usage estimationMethod must be a non-empty trimmed string");
   }
   return Object.freeze({ ...usage });
+}
+
+function addKnownTokenCounts(
+  left: number | undefined,
+  right: number | undefined,
+): number | undefined {
+  return left === undefined || right === undefined ? undefined : left + right;
+}
+
+function addUsageSources(
+  left: ModelUsageSource,
+  right: ModelUsageSource,
+): ModelUsageSource {
+  return left === right ? left : "mixed";
+}
+
+function addEstimationMethods(
+  left: ModelUsage,
+  right: ModelUsage,
+  source: ModelUsageSource,
+): string | undefined {
+  if (source === "provider") return undefined;
+  const estimated = [left, right].filter((usage) => usage.source !== "provider");
+  const methods = estimated.map((usage) => usage.estimationMethod);
+  if (methods.some((method) => method === undefined)) return undefined;
+  const first = methods[0];
+  return first !== undefined && methods.every((method) => method === first)
+    ? first
+    : undefined;
+}
+
+function requireTokenCount(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Model usage ${name} must be a non-negative safe integer`);
+  }
 }
 
 function requireIdentifier(value: string, label: string): string {

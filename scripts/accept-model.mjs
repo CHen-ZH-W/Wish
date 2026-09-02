@@ -51,8 +51,10 @@ test("forwards normalized stream events and explicit authority metadata", async 
         usage: {
           inputTokens: 10,
           cachedInputTokens: 2,
+          cacheWriteInputTokens: 1,
           outputTokens: 4,
           totalTokens: 14,
+          source: "provider",
         },
       };
     },
@@ -71,6 +73,14 @@ test("forwards normalized stream events and explicit authority metadata", async 
   ]);
   assert.equal(events[0].developerRoleMode, "system-fallback");
   assert.equal(events[0].authorityDegraded, true);
+  assert.deepEqual(events.at(-1).usage, {
+    inputTokens: 10,
+    cachedInputTokens: 2,
+    cacheWriteInputTokens: 1,
+    outputTokens: 4,
+    totalTokens: 14,
+    source: "provider",
+  });
 });
 
 test("retries a retryable pre-content failure with bounded deterministic backoff", async () => {

@@ -138,7 +138,13 @@ test("Runtime and AgentLoop complete the Context-Model-Tool-next-Step spine", as
         yield {
           type: "done",
           finishReason: "tool_calls",
-          usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4, totalTokens: 14 },
+          usage: {
+            inputTokens: 10,
+            cacheWriteInputTokens: 0,
+            outputTokens: 4,
+            totalTokens: 14,
+            source: "provider",
+          },
         };
         return;
       }
@@ -147,7 +153,15 @@ test("Runtime and AgentLoop complete the Context-Model-Tool-next-Step spine", as
       yield {
         type: "done",
         finishReason: "stop",
-        usage: { inputTokens: 14, cachedInputTokens: 3, outputTokens: 1, totalTokens: 15 },
+        usage: {
+          inputTokens: 14,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          outputTokens: 1,
+          totalTokens: 15,
+          source: "estimated",
+          estimationMethod: "fixture-tokenizer-v1",
+        },
       };
     },
   };
@@ -185,10 +199,17 @@ test("Runtime and AgentLoop complete the Context-Model-Tool-next-Step spine", as
   assert.equal(completion.result.output.text, "5");
   assert.deepEqual(completion.result.usage, {
     inputTokens: 24,
-    cachedInputTokens: 5,
+    cacheWriteInputTokens: 0,
     outputTokens: 5,
     totalTokens: 29,
+    source: "mixed",
+    estimationMethod: "fixture-tokenizer-v1",
   });
+  assert.equal("cachedInputTokens" in completion.result.usage, false);
+  assert.equal(Object.isFrozen(completion.result.output), true);
+  assert.equal(Object.isFrozen(completion.result.output.model), true);
+  assert.equal(Object.isFrozen(completion.result.output.usage), true);
+  assert.equal(Object.isFrozen(completion.result.usage), true);
   assert.deepEqual(tools.executions, [{ a: 2, b: 3 }]);
   assert.equal(completion.snapshot.userTurns[0].steps.length, 2);
   assert.equal(requests.length, 2);
@@ -348,6 +369,98 @@ test("a pre-content retry replaces attempt metadata without changing the fixed r
   assert.equal(completion.result.output.model.model, "attempt-b");
   assert.equal(completion.result.output.authorityDegraded, true);
   assert.equal(completion.result.output.text, "recovered");
+});
+
+test("ModelOutput snapshots start and usage before an Adapter can mutate its payloads", async () => {
+  const tools = createTools();
+  const start = {
+    type: "start",
+    model: { provider: "provider", model: "actual" },
+  };
+  const usage = {
+    inputTokens: 8,
+    cachedInputTokens: 0,
+    outputTokens: 2,
+    totalTokens: 10,
+    source: "provider",
+  };
+  const model = {
+    async *stream() {
+      try {
+        yield start;
+        yield { type: "text_delta", text: "stable" };
+        yield { type: "done", finishReason: "stop", usage };
+      } finally {
+        start.model.model = "mutated";
+        usage.inputTokens = 999;
+      }
+    },
+  };
+  const runtime = new Runtime({
+    ...deterministicServices(),
+    stepPipeline: createLoop({ model, registry: tools.registry, scheduler: tools.scheduler }),
+  });
+  const completion = await new Agent({ id: "agent" }, runtime)
+    .startRun({ scope: "model-snapshot", payload: { text: "run" } }).completion;
+
+  assert.equal(completion.status, "completed");
+  assert.equal(completion.result.output.model.model, "actual");
+  assert.equal(completion.result.output.usage.inputTokens, 8);
+  assert.equal(start.model.model, "mutated");
+  assert.equal(usage.inputTokens, 999);
+});
+
+test("AgentLoop memory owns nested image content without freezing renderer objects", async () => {
+  const tools = createTools();
+  const rendered = {
+    role: "user",
+    content: "inspect",
+    contentParts: [{
+      type: "image_url",
+      imageUrl: { url: "https://images.example.test/original.png", detail: "high" },
+    }],
+  };
+  const model = {
+    async *stream(request) {
+      yield { type: "start", model: request.model };
+      yield { type: "text_delta", text: "done" };
+      yield { type: "done", finishReason: "stop" };
+    },
+  };
+  const loop = new AgentLoop({
+    model,
+    context: new ContextProjector(),
+    tools: tools.registry,
+    toolScheduler: tools.scheduler,
+    input: {
+      renderUserInput() { return rendered; },
+      renderSteering(input) { return { role: "user", content: input.message.text }; },
+    },
+    environment: {
+      resolve() {
+        return {
+          model: { provider: "provider", model: "model" },
+          context: { providers: [], input: {} },
+          tools: { context: {}, authorityVersion: "authority-1" },
+        };
+      },
+    },
+  });
+  const runtime = new Runtime({
+    ...deterministicServices(),
+    stepPipeline: loop,
+  });
+  const completion = await new Agent({ id: "agent" }, runtime)
+    .startRun({ scope: "image-snapshot", payload: { text: "run" } }).completion;
+
+  rendered.contentParts[0].imageUrl.url = "https://images.example.test/changed.png";
+  assert.equal(completion.status, "completed");
+  assert.equal(
+    completion.result.messages[0].contentParts[0].imageUrl.url,
+    "https://images.example.test/original.png",
+  );
+  assert.equal(Object.isFrozen(completion.result.messages[0].contentParts[0].imageUrl), true);
+  assert.equal(Object.isFrozen(rendered.contentParts[0].imageUrl), false);
 });
 
 test("Runtime abort reaches the active Model stream and terminates AgentLoop", async () => {

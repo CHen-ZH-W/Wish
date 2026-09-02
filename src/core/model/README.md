@@ -22,6 +22,11 @@ Model 是 Wish Core 的模型调用边界，只表达规范化请求、流式事
 降级。调用方不得从模型名称或协议种类推断这些信息。`done` 携带完成原因和
 usage；消费方可以据流事件构造 `ModelOutput`。
 
+`ModelUsage` 的 input、output 和 total token 始终存在；Provider 无法区分缓存
+读取或缓存创建时，对应可选字段必须省略，不能用 `0` 表示未知。`source` 区分
+Provider 报告、本地估算和两者混合，估算器可通过 `estimationMethod` 留下归因。
+usage 只描述 token，不包含价格或费用。
+
 ## 重试与候选切换不变量
 
 `RetryingModel` 使用有上限的指数退避和 jitter：

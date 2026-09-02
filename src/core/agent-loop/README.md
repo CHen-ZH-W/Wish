@@ -43,6 +43,10 @@ AgentLoop 单 Step：
 11. 有 Tool Call 返回 `continue`，由 Runtime 决定是否开启下一 Step；没有
     Tool Call 返回 `completed`。AgentLoop 自己不创建 Step，也不推进 UserTurn。
 
+跨 Step usage 由 AgentLoop 累加。必有 token 字段直接求和；缓存读取和缓存创建
+只有在每个已计入 Step 都报告时才求和，否则聚合值保持 unknown（省略字段）。
+不同来源合并为 `mixed`，价格与费用仍由 Core 外的 Models 层负责。
+
 即使本 Step 已得到普通模型答案，Runtime 在执行期间收到 steer 时仍可强制开启
 下一 Step。`completed` 结果因此也携带更新后的 memory，保证下一 Step 能看到刚才
 的 assistant 输出和新 steer。
