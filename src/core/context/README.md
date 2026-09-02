@@ -1,45 +1,54 @@
 # Context
 
-Context Core 保存从上下文来源到最终 `ModelRequest` 的完整主干，但不内置容易
-变化的业务策略。
+Context Core 保存从上下文来源到可执行 `ModelRequest` 的稳定主干。它负责不可绕过
+的结构规则，只把真正依赖产品或模型的能力留给外部实现。
 
 ```text
-ContextProvider
-→ ContextProviderGroup
-→ ContextItemResolver
-→ ContextHistoryPolicy
-→ ContextItemRenderer
-→ placement projection
-→ ContextMessageNormalizer
-→ ContextAdmissionPolicy
-→ ContextBudgetPolicy
-→ ContextProjection
+ContextProvider（并发读取，按注册顺序收集）
+→ provider/item 校验与唯一性检查
+→ ContextHistoryPolicy（仅选择已有 history/summary）
+→ 固定 placement
+→ assistant/tool transcript 合法性检查
+→ Tool Result：归档完整原文 → 生成模型可见副本
+→ 再次检查 transcript 与当前用户消息
+→ 构造不可变 ModelRequest
+→ ContextBudgetEvaluator
+→ ready | rejected(over_budget)
 ```
 
-这些阶段是固定的类型化调用链，不是通用 Hook。外部模块替换某个 Policy 或
-Service 即可改变该阶段行为，不需要修改 Core。
+这是一条固定 pipeline，不是可在任意位置插入行为的通用 Hook。
 
 ## 文件职责
 
-- `context.ts`：Context item、provider、各阶段 Policy/Service Port、pipeline
-  输入和最终 projection DTO。
-- `projector.ts`：按固定顺序驱动完整 pipeline，执行结构校验、显式 placement、
-  cancellation 检查和不可变结果提交。
+- `context.ts`：Context item、provider、三个窄能力接口和 projection 终态 DTO。
+- `projector.ts`：驱动完整 pipeline，执行 placement、校验、归档顺序、预算终态、
+  cancellation 检查和不可变提交。
 
-## Core 保留的机制
+## Core 固定保证
 
-- provider 可以并发读取，但结果组始终保持注册顺序。
-- provider ID 和最终 item ID 必须唯一；默认 resolver 对冲突 fail closed。
-- `ContextHistoryPolicy` 是 history 与 summary 进入模型上下文的唯一决策点。
-- item 渲染、跨消息规范化、单消息准入和预算评估各有独立接口。
-- admission 严格按最终消息顺序执行，允许外部实现先归档再裁剪。
-- budget 只在最终准入后的请求上评估。
-- 每个异步阶段之间检查 abort。
-- 输入请求和最终 projection 都不会被外部策略原地修改。
+- provider 可以并发读取，但 provider group 始终保持注册顺序。
+- provider ID 和最终 item ID 必须唯一；冲突直接 fail closed。需要覆盖或合并时，
+  外部 provider 必须在进入 Core 前先形成唯一结果。
+- `ContextHistoryPolicy` 只能从 provider 已给出的 history/summary 中选择和排序，
+  不能借此重写消息或凭空增加 history。
+- 每次投影必须显式给出 `currentUserMessageIndex`。该位置必须是 `user` 消息，且
+  投影完成后仍恰好存在一次、正文和结构均未改变。
+- 最终 assistant/tool 历史必须配对：Tool Result 不能孤立、重复、错配，也不能在
+  未补齐 assistant Tool calls 时插入其他角色消息。
+- 如果配置 `ContextToolResultPipeline`，Core 先把完整、不可变的 Tool Result 交给
+  `archive` 并等待成功，再调用 `toModelMessage` 生成模型可见副本；归档失败时绝不
+  进入裁剪阶段。可见副本必须保留 `role=tool` 和原 `toolCallId`。
+- 未配置 Tool Result pipeline 时，Core 保留完整结果，不会在没有归档的情况下
+  自行裁剪。
+- 预算只评估最终模型可见请求。`over_budget` 不会返回可直接调用 Model 的
+  `request`，而是返回 `rejected` 以及仅供后续决策使用的 `candidateRequest`。
+- 未配置预算评估器时，结果明确为 `ready + budget.status=unknown`，不伪造 Token
+  数量。
+- 输入、Port 入参和最终 projection 均使用不可变快照；每个异步边界检查 abort。
 
 ## 固定 placement
 
-Projector 只执行 item 已经声明的 placement，不分析正文内容：
+Projector 只执行 item 已声明的 placement，不分析正文内容：
 
 ```text
 原始 system/developer 前缀
@@ -48,30 +57,32 @@ Projector 只执行 item 已经声明的 placement，不分析正文内容：
 → 原始请求的其余消息
 ```
 
-`before_current_user` 放在显式 `currentUserMessageIndex` 之前。`dynamic_tail`
-在当前用户是请求最后一条消息时位于其前面；进入工具循环、当前用户之后已经有
-assistant/tool 消息时，它位于请求末尾。Projector 不通过角色或正文猜测哪条是
-当前 UserTurn 输入。
+`before_current_user` 位于显式当前用户消息之前。`dynamic_tail` 在当前用户是请求
+最后一条消息时位于其前面；进入 Tool 循环、当前用户之后已有 assistant/tool
+消息时，它位于请求末尾。
 
-## 外部策略负责的内容
+## 外部能力缺口
 
-- history checkpoint、summary 选择和用户原话保护；
-- 重复 item 的覆盖、合并或优先级；
-- marker 或其他模型可见包装格式；
-- assistant/tool 历史的修复、补全或拒绝；
-- 工具结果归档和 head/tail admission；
-- tokenizer、图片成本、模型窗口和 reserve；
-- over-budget 后压缩、换模型或失败的决策。
+- `ContextProvider`：读取 history、指令、状态或引用，并直接给出带 authority 和
+  placement 的 `ContextItem`。
+- `ContextHistoryPolicy`：决定 summary/checkpoint 与原始 history 的选择；默认只
+  允许没有 summary 的 history 原样进入。
+- `ContextToolResultPipeline`：实现原始结果的持久化，以及具体阈值、head/tail、
+  artifact 引用等模型可见策略。Core 只保证调用顺序和配对不变量。
+- `ContextBudgetEvaluator`：实现 tokenizer、图片成本、模型窗口和 output reserve
+  计算。
+- `rejected(over_budget)` 之后的压缩、换模型或结束 Run，由 AgentLoop 或外部组合
+  决策负责；Context 不猜测产品策略。
 
-默认实现只支持无 summary 的 history 直通、item 原文渲染、消息直通和 admission
-直通。出现 summary 时必须显式提供 `ContextHistoryPolicy`，避免 Core 猜测压缩
-语义。未配置 `ContextBudgetPolicy` 时 projection 不伪造 Token 估值。
+Item 的内容渲染已由 provider 完成；历史合法性、唯一性和当前用户保护不是可替换
+策略。因此 Core 不再提供通用 ItemResolver、ItemRenderer、MessageNormalizer 或
+AdmissionPolicy。
 
 ## 依赖方向
 
 Context Core 只依赖 Model DTO。具体 history、状态、记忆、技能、工作区、存储、
-归档和 tokenizer 实现在 Core 外实现这些 Port；默认 `AgentLoop` 负责为本 Step
-提供 request、provider 集合和 abort signal，Runtime 仍只依赖通用
+归档和 tokenizer 在 Core 外实现窄 Port；默认 `AgentLoop` 提供 request、provider
+集合和 abort signal，并消费 `ready/rejected` 终态。Runtime 仍只依赖通用
 `StepPipeline` 契约。
 
 ## 验证
@@ -81,4 +92,5 @@ Context Core 只依赖 Model DTO。具体 history、状态、记忆、技能、�
 ```bash
 npm run typecheck
 npm run test:context
+npm run test:agent-loop
 ```

@@ -155,8 +155,17 @@ export function decideAfterStep(input: {
         : input.continuationReason ?? "pipeline",
     };
   }
-  if (input.pendingSteering && input.hasRemainingStepBudget) {
-    return { type: "continue", reason: "steering" };
+  if (input.pendingSteering) {
+    return input.hasRemainingStepBudget
+      ? { type: "continue", reason: "steering" }
+      : {
+          type: "fail",
+          error: runtimeFailure(
+            "max_steps_exceeded",
+            `UserTurn cannot deliver accepted steering after reaching maxSteps=${input.maxSteps}`,
+            false,
+          ),
+        };
   }
   return { type: "complete" };
 }
@@ -193,7 +202,13 @@ export function runtimeFailure(
     code,
     message,
     retryable,
-    ...(details === undefined ? {} : { details: Object.freeze({ ...details }) }),
+    ...(details === undefined
+      ? {}
+      : {
+          details: cloneAndFreezePlainValue(details) as Readonly<
+            Record<string, unknown>
+          >,
+        }),
   });
 }
 
@@ -222,4 +237,27 @@ function isRuntimeFailure(value: unknown): value is RuntimeFailure {
     typeof value.message === "string" &&
     "retryable" in value &&
     typeof value.retryable === "boolean";
+}
+
+function cloneAndFreezePlainValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreezePlainValue));
+  }
+  if (isPlainRecord(value)) {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          key,
+          cloneAndFreezePlainValue(item),
+        ]),
+      ),
+    );
+  }
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

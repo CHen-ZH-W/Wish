@@ -136,14 +136,14 @@ test("switches candidate after retries and keeps a global retry count", async ()
   assert.deepEqual(retries[1].toModel, fallback);
 });
 
-test("context overflow switches immediately without retrying the same model", async () => {
+test("context overflow switches candidate without retrying the same model", async () => {
   const attempts = [];
   const model = {
     async *stream(input) {
       attempts.push(input.model);
       yield { type: "start", model: input.model };
       if (input.model.provider === primary.provider) {
-        yield failure("context_overflow", false);
+        yield failure("context_overflow", true);
         return;
       }
       yield { type: "done", finishReason: "stop" };
@@ -163,6 +163,30 @@ test("context overflow switches immediately without retrying the same model", as
   assert.deepEqual(attempts, [primary, fallback]);
   assert.deepEqual(retry.toModel, fallback);
   assert.equal(events.at(-1).type, "done");
+});
+
+test("retryable context overflow is terminal when no fallback exists", async () => {
+  let attempts = 0;
+  const model = {
+    async *stream(input) {
+      attempts += 1;
+      yield { type: "start", model: input.model };
+      yield failure("context_overflow", true);
+    },
+  };
+  const resilient = new RetryingModel(model, {
+    maxRetries: 3,
+    baseRetryDelayMs: 1,
+    maxRetryDelayMs: 1,
+    random: () => 0.5,
+  });
+
+  const events = await collect(resilient.stream(request()));
+
+  assert.equal(attempts, 1);
+  assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
+  assert.equal(events[1].error.code, "context_overflow");
+  assert.equal(events[1].error.retryable, true);
 });
 
 for (const contentEvent of [

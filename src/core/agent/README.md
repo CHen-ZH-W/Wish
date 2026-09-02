@@ -10,11 +10,11 @@
 
 - `types.ts`：公开且与传输无关的 DTO，包括 `AgentDefinition`、
   `RunInput`、`RunHandle`、`ObserveOptions` 和 `AgentProtocol`。
-- `agent.ts`：参数边界校验、scope 规范化以及到
+- `agent.ts`：参数边界校验、scope 规范化、公开 DTO 快照以及到
   `AgentRuntimeService` 的委托。
 
 Agent 不实现主循环，不持有可变 Run 状态，也不决定终态、重试、事件
-保留、控制排队或授权。上述行为分别属于后续的 Runtime、Event、Model、
+保留、控制排队或授权。上述行为分别属于 Runtime、Event、Model、
 Context 和 Tool 模块。
 
 ## 关键契约
@@ -27,12 +27,15 @@ Context 和 Tool 模块。
    `AgentProtocol` 由各自的 Core owning module 定义。
 6. Runtime 抛出的活动 scope 冲突、未知 Run、终态拒绝等结果原样返回，
    facade 不吞掉或改写。
+7. Agent 在构造和 `startRun` 边界递归复制并冻结 plain object/array DTO，
+   防止调用方后续修改 definition、metadata 或 payload，改变已提交语义；
+   非 plain object 被视为不透明能力对象，不由 Agent 解释或改写。
 
 ## 当前阶段边界
 
-本阶段完成 Agent facade 及公共 DTO，但尚未实现
-`runtime/runtime.ts`、`runtime/control.ts` 和 `events/event.ts`。因此这里的
-单元可以独立编译和验证委托契约，但完整 Agent Run 暂时不能端到端执行。
+Agent facade 与公共 DTO 已完成，并可通过 `AgentRuntimeService` 接入现有
+Runtime；默认组装由 Agent Loop 负责。Agent 只依赖这条最小服务契约，
+不会反向依赖具体 Runtime 实现或组装方式。
 
 ## 验证
 
@@ -40,8 +43,10 @@ Context 和 Tool 模块。
 
 ```bash
 npm run typecheck
+npm run test:agent
 npm test
 ```
 
-Agent 验收覆盖 startRun 规范化与透传、control 路由、observe 隔离、公共
-参数拒绝，以及 Runtime 错误不被 facade 吞掉或改写。
+Agent 验收覆盖 definition/RunInput 快照、startRun 规范化与透传、control
+路由、observe 隔离、公共参数拒绝，以及 Runtime 错误不被 facade 吞掉或
+改写。

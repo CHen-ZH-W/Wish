@@ -35,12 +35,17 @@ function createRuntime(overrides = {}) {
   return { calls, runtime };
 }
 
-test("startRun normalizes scope and delegates without interpreting payload", async () => {
+test("startRun snapshots public DTOs without interpreting their meaning", async () => {
   const { calls, runtime } = createRuntime();
-  const configuration = { model: "logical-model" };
-  const payload = { text: "hello" };
+  const configuration = {
+    model: "logical-model",
+    routing: { candidates: ["primary", "fallback"] },
+  };
+  const definitionMetadata = { owner: { team: "core" } };
+  const payload = { content: { text: "hello" }, attachments: ["a"] };
+  const inputMetadata = { transport: { channel: "test" } };
   const agent = new Agent(
-    { id: "coding-agent", configuration },
+    { id: "coding-agent", configuration, metadata: definitionMetadata },
     runtime,
   );
 
@@ -48,6 +53,7 @@ test("startRun normalizes scope and delegates without interpreting payload", asy
     scope: "  conversation:1  ",
     payload,
     runId: "run-requested",
+    metadata: inputMetadata,
   });
 
   assert.equal(handle.runId, "run-requested");
@@ -55,11 +61,57 @@ test("startRun normalizes scope and delegates without interpreting payload", asy
   assert.equal(Object.isFrozen(handle), true);
   assert.equal(calls.startRun.length, 1);
   assert.equal(calls.startRun[0].definition, agent.definition);
-  assert.equal(calls.startRun[0].input.payload, payload);
+  assert.notEqual(calls.startRun[0].input.payload, payload);
+  assert.deepEqual(calls.startRun[0].input.payload, payload);
   assert.equal(calls.startRun[0].input.scope, "conversation:1");
-  assert.equal(agent.definition.configuration, configuration);
+  assert.notEqual(agent.definition.configuration, configuration);
+  assert.deepEqual(agent.definition.configuration, configuration);
   assert.equal(Object.isFrozen(agent.definition), true);
+  assert.equal(Object.isFrozen(agent.definition.configuration), true);
+  assert.equal(Object.isFrozen(agent.definition.configuration.routing), true);
+  assert.equal(
+    Object.isFrozen(agent.definition.configuration.routing.candidates),
+    true,
+  );
+  assert.equal(Object.isFrozen(agent.definition.metadata.owner), true);
+  assert.equal(Object.isFrozen(calls.startRun[0].input), true);
+  assert.equal(Object.isFrozen(calls.startRun[0].input.payload.content), true);
+  assert.equal(Object.isFrozen(calls.startRun[0].input.payload.attachments), true);
+  assert.equal(Object.isFrozen(calls.startRun[0].input.metadata.transport), true);
+
+  configuration.routing.candidates.push("later");
+  definitionMetadata.owner.team = "changed";
+  payload.content.text = "changed";
+  payload.attachments.push("b");
+  inputMetadata.transport.channel = "changed";
+
+  assert.deepEqual(agent.definition.configuration, {
+    model: "logical-model",
+    routing: { candidates: ["primary", "fallback"] },
+  });
+  assert.deepEqual(agent.definition.metadata, { owner: { team: "core" } });
+  assert.deepEqual(calls.startRun[0].input.payload, {
+    content: { text: "hello" },
+    attachments: ["a"],
+  });
+  assert.deepEqual(calls.startRun[0].input.metadata, {
+    transport: { channel: "test" },
+  });
   assert.deepEqual(await handle.completion, { status: "completed" });
+});
+
+test("public DTO snapshots leave caller-owned inputs mutable", () => {
+  const { runtime } = createRuntime();
+  const configuration = { nested: { enabled: true } };
+  const payload = { values: [1, 2] };
+  const agent = new Agent({ id: "coding-agent", configuration }, runtime);
+
+  agent.startRun({ scope: "scope", payload });
+
+  assert.equal(Object.isFrozen(configuration), false);
+  assert.equal(Object.isFrozen(configuration.nested), false);
+  assert.equal(Object.isFrozen(payload), false);
+  assert.equal(Object.isFrozen(payload.values), false);
 });
 
 test("control delegates the Agent identity, Run identity, and exact command", () => {

@@ -117,14 +117,20 @@ export interface ToolAuthorizationGrantExpectation {
   readonly registryVersion?: number;
 }
 
+/** One clock source shared by Tool events, Grant issuance, and expiry checks. */
+export interface ToolClock {
+  now(): Date;
+}
+
 export interface IssueToolAuthorizationGrantInput {
   readonly grantId: string;
   readonly call: ReadyToolCall;
   readonly capabilities: ToolCapabilityRequest;
   readonly policyVersion: string;
   readonly snapshot: ToolExecutionSnapshot;
-  readonly issuedAt: string;
-  readonly expiresAt: string;
+  readonly clock: ToolClock;
+  readonly issuedAtEpochMs: number;
+  readonly ttlMs: number;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
@@ -132,16 +138,24 @@ const activeGrants = new WeakSet<ToolAuthorizationGrant>();
 const consumedGrants = new WeakSet<ToolAuthorizationGrant>();
 const issuedGrants = new WeakSet<ToolAuthorizationGrant>();
 const issuedCalls = new WeakMap<ToolAuthorizationGrant, ReadyToolCall>();
+const issuedClocks = new WeakMap<ToolAuthorizationGrant, ToolClock>();
 
 /** @internal Used by the Core ToolExecutor after final authorization checks. */
 export function issueToolAuthorizationGrant(
   input: IssueToolAuthorizationGrantInput,
 ): ToolAuthorizationGrant {
-  const issuedAt = requireTimestamp(input.issuedAt, "Grant issuedAt");
-  const expiresAt = requireTimestamp(input.expiresAt, "Grant expiresAt");
-  if (Date.parse(expiresAt) <= Date.parse(issuedAt)) {
-    throw new Error("Grant expiresAt must be later than issuedAt");
-  }
+  const clock = requireToolClock(input.clock);
+  const issuedAtEpochMs = requireEpochMilliseconds(
+    input.issuedAtEpochMs,
+    "Grant issuedAt",
+  );
+  const ttlMs = positiveSafeInteger(input.ttlMs, "Grant ttlMs");
+  const expiresAtEpochMs = requireEpochMilliseconds(
+    issuedAtEpochMs + ttlMs,
+    "Grant expiresAt",
+  );
+  const issuedAt = new Date(issuedAtEpochMs).toISOString();
+  const expiresAt = new Date(expiresAtEpochMs).toISOString();
   const grant: ToolAuthorizationGrant = Object.freeze({
     schemaVersion: 1 as const,
     grantId: requireIdentifier(input.grantId, "Grant id"),
@@ -169,6 +183,7 @@ export function issueToolAuthorizationGrant(
   });
   issuedGrants.add(grant);
   issuedCalls.set(grant, input.call);
+  issuedClocks.set(grant, clock);
   return grant;
 }
 
@@ -201,7 +216,11 @@ export function assertActiveToolAuthorizationGrant(
   if (!issuedGrants.has(grant) || !activeGrants.has(grant)) {
     throw new Error(`Tool authorization Grant ${grant.grantId} is not active`);
   }
-  if (Date.parse(grant.expiresAt) <= Date.now()) {
+  const clock = issuedClocks.get(grant);
+  if (clock === undefined) {
+    throw new Error(`Tool authorization Grant ${grant.grantId} has no clock`);
+  }
+  if (Date.parse(grant.expiresAt) <= readClockEpochMilliseconds(clock)) {
     throw new Error(`Tool authorization Grant ${grant.grantId} has expired`);
   }
   if (expected.call !== undefined && issuedCalls.get(grant) !== expected.call) {
@@ -335,9 +354,31 @@ function requireIdentifier(value: string, label: string): string {
   return value;
 }
 
-function requireTimestamp(value: string, label: string): string {
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
-    throw new Error(`${label} must be an ISO timestamp`);
+function requireToolClock(clock: ToolClock): ToolClock {
+  if (clock === null || typeof clock !== "object" || typeof clock.now !== "function") {
+    throw new Error("Tool clock must provide now()");
+  }
+  return clock;
+}
+
+function readClockEpochMilliseconds(clock: ToolClock): number {
+  const now = clock.now();
+  if (!(now instanceof Date)) {
+    throw new Error("Tool clock now() must return a valid Date");
+  }
+  return requireEpochMilliseconds(now.getTime(), "Tool clock now()");
+}
+
+function requireEpochMilliseconds(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || !Number.isFinite(new Date(value).getTime())) {
+    throw new Error(`${label} must be valid epoch milliseconds`);
+  }
+  return value;
+}
+
+function positiveSafeInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive safe integer`);
   }
   return value;
 }

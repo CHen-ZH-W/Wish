@@ -4,6 +4,7 @@ import {
   ToolRegistry,
   assertActiveToolAuthorizationGrant,
   type ToolAuthorizationService,
+  type ToolClock,
   type ToolDefinition,
   type ToolExecutionScope,
 } from "../src/core/tools/scheduler.js";
@@ -48,7 +49,8 @@ const authorization: ToolAuthorizationService<ToolContext> = {
 
 const registry = new ToolRegistry<ToolContext>();
 registry.register(definition);
-const executor = new ToolExecutor({ registry, authorization });
+const clock: ToolClock = { now: () => new Date() };
+const executor = new ToolExecutor({ registry, authorization, clock });
 const scheduler = new BoundedToolScheduler({ executor });
 const scope: ToolExecutionScope = {
   runId: "run-1",

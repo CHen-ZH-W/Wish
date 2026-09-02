@@ -59,15 +59,26 @@ export class Agent<Protocol extends AgentProtocol = AgentProtocol> {
     this.definition = Object.freeze({
       ...definition,
       id: requireIdentifier(definition.id, "Agent definition id"),
+      ...(definition.configuration === undefined
+        ? {}
+        : {
+            configuration: snapshotBoundaryValue(
+              definition.configuration,
+            ),
+          }),
+      ...(definition.metadata === undefined
+        ? {}
+        : { metadata: snapshotBoundaryValue(definition.metadata) }),
     });
   }
 
   startRun(
     input: RunInput<Protocol["runPayload"]>,
   ): RunHandle<Protocol["completion"]> {
-    const normalizedInput: RunInput<Protocol["runPayload"]> = {
+    const normalizedInput: RunInput<Protocol["runPayload"]> = Object.freeze({
       ...input,
       scope: normalizeScope(input.scope),
+      payload: snapshotBoundaryValue(input.payload),
       ...(input.runId === undefined
         ? {}
         : { runId: requireIdentifier(input.runId, "Run id") }),
@@ -79,7 +90,10 @@ export class Agent<Protocol extends AgentProtocol = AgentProtocol> {
               "Parent Run id",
             ),
           }),
-    };
+      ...(input.metadata === undefined
+        ? {}
+        : { metadata: snapshotBoundaryValue(input.metadata) }),
+    });
     const handle = this.runtime.startRun(this.definition, normalizedInput);
     return Object.freeze({
       agentId: handle.agentId,
@@ -146,4 +160,39 @@ function validateObserveOptions(options: ObserveOptions | undefined): void {
   ) {
     throw new Error("Observe afterSequence must be a non-negative safe integer");
   }
+}
+
+/**
+ * Takes ownership of public DTO data without interpreting its domain meaning.
+ * Plain records and arrays are copied recursively so later caller mutations
+ * cannot change a definition or an already-submitted Run input. Capability
+ * objects and other non-plain values remain opaque.
+ */
+function snapshotBoundaryValue<Value>(value: Value): Value {
+  return cloneAndFreezePlainValue(value) as Value;
+}
+
+function cloneAndFreezePlainValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreezePlainValue));
+  }
+  if (isPlainRecord(value)) {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          key,
+          cloneAndFreezePlainValue(item),
+        ]),
+      ),
+    );
+  }
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  return prototype === Object.prototype || prototype === null;
 }

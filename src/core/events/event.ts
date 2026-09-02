@@ -107,6 +107,7 @@ export class RuntimeEventStream<Transition> {
     readonly stepId: string;
   }): ModelOutputEvent {
     if (this.closed) throw new Error("Cannot publish to a closed Runtime event stream");
+    const payload = cloneAndFreezePlainValue(input.event) as ModelStreamEvent;
     this.sequence += 1;
     const event: ModelOutputEvent = Object.freeze({
       schemaVersion: 1 as const,
@@ -117,7 +118,7 @@ export class RuntimeEventStream<Transition> {
       runId: this.runId,
       userTurnId: input.userTurnId,
       stepId: input.stepId,
-      payload: input.event,
+      payload,
     });
     this.append(event);
     return event;
@@ -205,4 +206,27 @@ export class RuntimeEventStream<Transition> {
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted ?? false;
+}
+
+function cloneAndFreezePlainValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreezePlainValue));
+  }
+  if (isPlainRecord(value)) {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          key,
+          cloneAndFreezePlainValue(item),
+        ]),
+      ),
+    );
+  }
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

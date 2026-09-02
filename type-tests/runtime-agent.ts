@@ -35,6 +35,13 @@ const runtime = new Runtime<
   StepMemory,
   Result
 >({
+  snapshotProvider: {
+    capture(input) {
+      const signal: AbortSignal = input.signal;
+      void signal;
+      return {};
+    },
+  },
   stepPipeline: {
     async execute(input) {
       return {
@@ -60,4 +67,3 @@ const output = agent.observe(handle.runId);
 void receipt;
 void output;
 void handle.completion;
-

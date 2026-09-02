@@ -330,7 +330,11 @@ export class NextTurnQueue<Payload> {
     if (rejection !== undefined) {
       return { accepted: false, message, reason: rejection };
     }
-    this.entries.push({ payload, bytes, record });
+    this.entries.push({
+      payload: cloneAndFreezePlainValue(payload) as Payload,
+      bytes,
+      record,
+    });
     return { accepted: true, message, position: this.entries.length };
   }
 
@@ -443,3 +447,25 @@ function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+function cloneAndFreezePlainValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreezePlainValue));
+  }
+  if (isPlainRecord(value)) {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          key,
+          cloneAndFreezePlainValue(item),
+        ]),
+      ),
+    );
+  }
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}

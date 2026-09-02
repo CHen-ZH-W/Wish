@@ -27,7 +27,9 @@ usage；消费方可以据流事件构造 `ModelOutput`。
 `RetryingModel` 使用有上限的指数退避和 jitter：
 
 1. 只有 `retryable: true` 的失败才会重试同一模型。
-2. `context_overflow` 不重试同一模型，但可以切换到下一个候选。
+2. `context_overflow` 即使携带 `retryable: true` 也不重试同一模型；有下一个
+   候选时选择该候选，没有候选时保留原错误并终止。候选切换仍发出 `retry`
+   事件并遵守统一退避，但不消耗当前模型的重试次数。
 3. 其他不可重试失败不会切换候选。
 4. 一旦已经发出推理、正文或工具调用，失败立即成为终态；不得自动重放。
 5. 失败若被重试或候选切换吸收，对外发出 `retry`，不先发出终态 `error`。
@@ -63,4 +65,5 @@ Model 本身不依赖 Runtime、Context、Tools 或任何具体基础设施。
 ```bash
 npm run typecheck
 npm run test:model
+npm test
 ```

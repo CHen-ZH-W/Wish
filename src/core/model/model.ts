@@ -124,6 +124,7 @@ export class RetryingModel implements Model {
         const canRetry =
           !emittedContent &&
           failure.retryable &&
+          failure.code !== "context_overflow" &&
           attempt < this.maxRetries;
         const nextModel = models[modelIndex + 1];
         const canFallback =

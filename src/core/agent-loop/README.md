@@ -32,7 +32,7 @@ AgentLoop 单 Step：
 4. 在模型调用前捕获 Registry version、authority version 和 available Tools
    的不可变执行快照。
 5. 用该快照的精确 Tool descriptors 构造请求，再执行完整 Context projection。
-6. 最终投影若明确 `over_budget`，在调用模型或 Tool 前 fail closed。
+6. Context 若返回 `rejected/over_budget` 终态，在调用模型或 Tool 前 fail closed。
 7. Model stream 开始前创建 Step-local Tool Scheduler；完整 Tool Call 一到达就
    解析并提交，不等待整段模型输出结束。
 8. Model 的全部规范化流事件进入 Runtime 的统一输出流。`start`、`retry`、
@@ -53,7 +53,8 @@ AgentLoop 单 Step：
 - `AgentLoopEnvironmentResolver`：从 Step snapshot 得到已解析模型、Context
   provider 输入、Tool context、authority version、可用 Tool 和请求参数。
 - `Model`：具体服务调用与协议适配。
-- `ContextProvider` 及 Context 的 Policy/Service：历史、状态、压缩、准入和预算。
+- `ContextProvider` 及 Context 的窄 Port：history/summary 选择、Tool Result
+  归档/可见副本和预算评估。
 - `ToolRegistry` 注册项、授权服务、执行生命周期及 Scheduler 的具体组装。
 - `AgentLoopToolResultRenderer`：可选的模型可见结果呈现；默认是完整
   `ToolResult` JSON，并强制保留 `role=tool` 和调用 ID 配对。

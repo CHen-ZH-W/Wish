@@ -61,19 +61,6 @@ export interface ContextProviderGroup {
   readonly items: readonly ContextItem[];
 }
 
-export interface ContextItemResolutionInput {
-  readonly request: ModelRequest;
-  readonly groups: readonly ContextProviderGroup[];
-  readonly signal?: AbortSignal;
-}
-
-/** Explicit collision and cross-provider merge policy. */
-export interface ContextItemResolver {
-  resolve(
-    input: ContextItemResolutionInput,
-  ): Promise<readonly ContextItem[]> | readonly ContextItem[];
-}
-
 export type ContextHistorySourceItem = ContextHistoryItem | ContextSummaryItem;
 
 export interface ContextHistoryPolicyInput {
@@ -87,51 +74,49 @@ export interface ContextHistorySelection {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
-/** Selects already-recorded history without owning its persistence. */
+/** Selects already-provided history without owning persistence or rewriting it. */
 export interface ContextHistoryPolicy {
   select(
     input: ContextHistoryPolicyInput,
   ): Promise<ContextHistorySelection> | ContextHistorySelection;
 }
 
-export interface ContextItemRenderInput {
+export type ContextToolResultMessage = ModelMessage & {
+  readonly role: "tool";
+  readonly toolCallId: string;
+};
+
+/** Stable locator returned by an external raw Tool Result archive. */
+export interface ContextToolResultArchive {
+  readonly id: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface ContextToolResultArchiveInput {
   readonly request: ModelRequest;
-  readonly item: ContextItem;
-  readonly signal?: AbortSignal;
-}
-
-/** Converts one structured item into its exact model-visible message. */
-export interface ContextItemRenderer {
-  render(
-    input: ContextItemRenderInput,
-  ): Promise<ModelMessage> | ModelMessage;
-}
-
-export interface ContextMessageNormalizationInput {
-  readonly request: ModelRequest;
-  readonly messages: readonly ModelMessage[];
-  readonly signal?: AbortSignal;
-}
-
-/** Repairs or rejects cross-message structure such as tool-call history. */
-export interface ContextMessageNormalizer {
-  normalize(
-    input: ContextMessageNormalizationInput,
-  ): Promise<readonly ModelMessage[]> | readonly ModelMessage[];
-}
-
-export interface ContextAdmissionInput {
-  readonly request: ModelRequest;
-  readonly message: ModelMessage;
+  readonly message: ContextToolResultMessage;
   readonly messageIndex: number;
   readonly signal?: AbortSignal;
 }
 
-/** Final per-message admission boundary before content becomes model-visible. */
-export interface ContextAdmissionPolicy {
-  admit(
-    input: ContextAdmissionInput,
-  ): Promise<ModelMessage> | ModelMessage;
+export interface ContextToolResultProjectionInput
+  extends ContextToolResultArchiveInput {
+  readonly archive: ContextToolResultArchive;
+}
+
+/**
+ * External Tool Result capability. Core always awaits `archive` before it asks
+ * for a possibly smaller model-visible copy.
+ */
+export interface ContextToolResultPipeline {
+  archive(
+    input: ContextToolResultArchiveInput,
+  ):
+    | Promise<ContextToolResultArchive>
+    | ContextToolResultArchive;
+  toModelMessage(
+    input: ContextToolResultProjectionInput,
+  ): Promise<ContextToolResultMessage> | ContextToolResultMessage;
 }
 
 export type ContextBudgetStatus = "within_budget" | "over_budget" | "unknown";
@@ -143,35 +128,32 @@ export interface ContextBudgetAssessment {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
-export interface ContextBudgetPolicyInput {
+export interface ContextBudgetEvaluationInput {
   readonly request: ModelRequest;
   readonly signal?: AbortSignal;
 }
 
-/** Model-aware sizing and budget policy supplied outside Context Core. */
-export interface ContextBudgetPolicy {
+/** Model-aware sizing remains external; Core owns the resulting decision. */
+export interface ContextBudgetEvaluator {
   assess(
-    input: ContextBudgetPolicyInput,
+    input: ContextBudgetEvaluationInput,
   ): Promise<ContextBudgetAssessment> | ContextBudgetAssessment;
 }
 
 export interface ContextProjectorServices {
-  readonly itemResolver?: ContextItemResolver;
   readonly historyPolicy?: ContextHistoryPolicy;
-  readonly itemRenderer?: ContextItemRenderer;
-  readonly messageNormalizer?: ContextMessageNormalizer;
-  readonly admissionPolicy?: ContextAdmissionPolicy;
-  readonly budgetPolicy?: ContextBudgetPolicy;
+  readonly toolResults?: ContextToolResultPipeline;
+  readonly budget?: ContextBudgetEvaluator;
 }
 
 /**
- * `currentUserMessageIndex` addresses the unprojected request and is explicit
- * whenever placement depends on the current UserTurn input.
+ * The index addresses the unprojected request. Every Agent projection names
+ * the current UserTurn message so Core can prove that it survived unchanged.
  */
 export interface ContextProjectionInput {
   readonly request: ModelRequest;
   readonly groups: readonly ContextProviderGroup[];
-  readonly currentUserMessageIndex?: number;
+  readonly currentUserMessageIndex: number;
   readonly signal?: AbortSignal;
 }
 
@@ -179,15 +161,32 @@ export interface ContextProviderProjectionInput<Input = unknown> {
   readonly request: ModelRequest;
   readonly providers: readonly ContextProvider<Input>[];
   readonly providerInput: Input;
-  readonly currentUserMessageIndex?: number;
+  readonly currentUserMessageIndex: number;
   readonly signal?: AbortSignal;
 }
 
-/** Complete immutable result of the Context main pipeline. */
-export interface ContextProjection {
-  readonly request: ModelRequest;
+interface ContextProjectionBase {
   readonly providerGroups: readonly ContextProviderGroup[];
   readonly includedItems: readonly ContextItem[];
   readonly history: ContextHistorySelection;
-  readonly budget?: ContextBudgetAssessment;
+  readonly budget: ContextBudgetAssessment;
 }
+
+/** A request that passed every Context invariant and may be sent to Model. */
+export interface ContextReadyProjection extends ContextProjectionBase {
+  readonly status: "ready";
+  readonly request: ModelRequest;
+}
+
+/** Explicit non-runnable projection; callers must choose the next action. */
+export interface ContextRejectedProjection extends ContextProjectionBase {
+  readonly status: "rejected";
+  readonly reason: "over_budget";
+  readonly candidateRequest: ModelRequest;
+  readonly budget: ContextBudgetAssessment & { readonly status: "over_budget" };
+}
+
+/** Complete immutable result of the Context main pipeline. */
+export type ContextProjection =
+  | ContextReadyProjection
+  | ContextRejectedProjection;

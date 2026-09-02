@@ -186,6 +186,7 @@ export interface StepSnapshotProvider<Configuration, Payload, Result> {
     readonly run: RunSnapshot<Payload, Result>;
     readonly userTurn: UserTurnSnapshot<Payload, Result>;
     readonly step: { readonly stepId: string; readonly ordinal: number };
+    readonly signal: AbortSignal;
   }): Promise<RuntimeEnvironment> | RuntimeEnvironment;
 }
 
@@ -254,6 +255,7 @@ interface ManagedRun<Configuration, Payload, StepMemory, Result> {
   observerWork: Promise<void>;
   stepMemory: StepMemory | undefined;
   activeStepSnapshot: StepSnapshot<Payload> | undefined;
+  stepOutputOpen: boolean;
   active: boolean;
   finalized: boolean;
 }
@@ -340,8 +342,9 @@ export class Runtime<
       resolveCompletion = resolve;
     });
     const at = this.timestamp();
+    const stableDefinition = snapshotAgentDefinition(definition, agentId);
     const record: ManagedRun<Configuration, Payload, StepMemory, Result> = {
-      definition,
+      definition: stableDefinition,
       state: createRunState({
         runId,
         agentId,
@@ -374,20 +377,33 @@ export class Runtime<
       observerWork: Promise.resolve(),
       stepMemory: undefined,
       activeStepSnapshot: undefined,
+      stepOutputOpen: false,
       active: true,
       finalized: false,
     };
     this.runs.set(runId, record);
     this.activeRunIdByScope.set(scope, runId);
-    record.stepInbox.openUserTurn(initialUserTurnId);
-    this.recordTransition(record, { type: "run.started", at });
-    this.recordTransition(record, {
-      type: "user_turn.started",
-      userTurnId: initialUserTurnId,
-      ordinal: 1,
-      input: input.payload,
-      at: this.timestamp(),
-    });
+    try {
+      record.stepInbox.openUserTurn(initialUserTurnId);
+      this.recordTransition(record, { type: "run.started", at });
+      this.recordTransition(record, {
+        type: "user_turn.started",
+        userTurnId: initialUserTurnId,
+        ordinal: 1,
+        input: input.payload,
+        at: this.timestamp(),
+      });
+    } catch (error: unknown) {
+      record.active = false;
+      record.stepInbox.close("run_failed", "expired");
+      record.followUps.close("run_failed", "expired");
+      record.events.close();
+      this.runs.delete(runId);
+      if (this.activeRunIdByScope.get(scope) === runId) {
+        this.activeRunIdByScope.delete(scope);
+      }
+      throw error;
+    }
     queueMicrotask(() => {
       void this.driveRun(record);
     });
@@ -670,6 +686,17 @@ export class Runtime<
           stepId,
           ordinal,
         );
+        if (record.cancellation.cancelled) {
+          const cancellation = this.requireCancellation(record);
+          this.recordTransition(record, {
+            type: "step.aborted",
+            userTurnId: turn.id,
+            stepId,
+            reason: cancellation.reason,
+            at: this.timestamp(),
+          });
+          return { status: "aborted", cancellation };
+        }
         snapshot = captureStepSnapshot({
           state: record.state,
           step,
@@ -680,6 +707,18 @@ export class Runtime<
         record.activeStepSnapshot = snapshot;
         await this.lifecycle.openStep(snapshot);
       } catch (error: unknown) {
+        if (record.cancellation.cancelled) {
+          const cancellation = this.requireCancellation(record);
+          this.recordTransition(record, {
+            type: "step.aborted",
+            userTurnId: turn.id,
+            stepId,
+            reason: cancellation.reason,
+            at: this.timestamp(),
+          });
+          record.activeStepSnapshot = undefined;
+          return { status: "aborted", cancellation };
+        }
         const failure = unknownRuntimeFailure(error);
         this.recordTransition(record, {
           type: "step.failed",
@@ -692,19 +731,46 @@ export class Runtime<
         return { status: "failed", error: failure };
       }
 
-      let outcome: StepPipelineResult<StepMemory, Result>;
-      try {
-        outcome = await this.options.stepPipeline.execute({
-          definition: record.definition,
+      if (record.cancellation.cancelled) {
+        const cancellation = this.requireCancellation(record);
+        const finishFailure = await this.finishStep(
+          record,
           snapshot,
-          memory: record.stepMemory,
-          signal: record.cancellation.signal,
-          output: this.createStepOutputPublisher(record, snapshot),
-        });
+          "aborted",
+          cancellation.reason,
+        );
+        return finishFailure === undefined
+          ? { status: "aborted", cancellation }
+          : { status: "failed", error: finishFailure };
+      }
+
+      let outcome: StepPipelineResult<StepMemory, Result>;
+      record.stepOutputOpen = true;
+      try {
+        outcome = validateStepPipelineResult(
+          await this.options.stepPipeline.execute({
+            definition: record.definition,
+            snapshot,
+            memory: record.stepMemory,
+            signal: record.cancellation.signal,
+            output: this.createStepOutputPublisher(record, snapshot),
+          }),
+        );
       } catch (error: unknown) {
         outcome = record.cancellation.cancelled
           ? { status: "aborted", reason: "run_cancelled" }
-          : { status: "failed", error: unknownRuntimeFailure(error) };
+          : {
+              status: "failed",
+              error: error instanceof InvalidStepPipelineResultError
+                ? runtimeFailure(
+                    "invalid_step_pipeline_result",
+                    error.message,
+                    false,
+                  )
+                : unknownRuntimeFailure(error),
+            };
+      } finally {
+        record.stepOutputOpen = false;
       }
 
       if (record.cancellation.cancelled || outcome.status === "aborted") {
@@ -770,6 +836,9 @@ export class Runtime<
       }
       if (decision.type === "continue") continue;
       if (decision.type === "fail") {
+        if (decision.error.code === "max_steps_exceeded") {
+          record.stepInbox.closeUserTurn(turn.id, "step_budget_exhausted");
+        }
         return { status: "failed", error: decision.error };
       }
       if (decision.type === "abort") {
@@ -814,6 +883,7 @@ export class Runtime<
       run: snapshotRun(record.state),
       userTurn,
       step: Object.freeze({ stepId, ordinal }),
+      signal: record.cancellation.signal,
     });
   }
 
@@ -945,6 +1015,7 @@ export class Runtime<
         at: this.timestamp(),
       });
       record.activeStepSnapshot = undefined;
+      record.stepOutputOpen = false;
       return failure;
     }
     if (status === "completed") {
@@ -973,6 +1044,7 @@ export class Runtime<
       });
     }
     record.activeStepSnapshot = undefined;
+    record.stepOutputOpen = false;
     return undefined;
   }
 
@@ -1189,6 +1261,7 @@ export class Runtime<
         at: this.timestamp(),
       });
       record.activeStepSnapshot = undefined;
+      record.stepOutputOpen = false;
     }
     const turn = currentUserTurn(record.state);
     if (turn?.status === "running") {
@@ -1233,6 +1306,7 @@ export class Runtime<
         at: this.timestamp(),
       });
       record.activeStepSnapshot = undefined;
+      record.stepOutputOpen = false;
     }
     const turn = currentUserTurn(record.state);
     if (turn?.status === "running") {
@@ -1259,18 +1333,20 @@ export class Runtime<
     input: RuntimeTransition<Payload, Result>,
   ): void {
     const transition = freezeRuntimeTransition(input);
-    record.state = applyRuntimeTransition(record.state, transition);
+    const eventId = requireIdentifier(this.ids.eventId(), "Event id");
+    const nextState = applyRuntimeTransition(record.state, transition);
     const userTurnId = "userTurnId" in transition
       ? transition.userTurnId
       : undefined;
     const stepId = "stepId" in transition ? transition.stepId : undefined;
     record.events.publish({
-      eventId: requireIdentifier(this.ids.eventId(), "Event id"),
+      eventId,
       occurredAt: transition.at,
       transition,
       ...(userTurnId === undefined ? {} : { userTurnId }),
       ...(stepId === undefined ? {} : { stepId }),
     });
+    record.state = nextState;
     record.observerWork = record.observerWork
       .then(() => this.observers.emit(transition))
       .catch(() => undefined);
@@ -1283,6 +1359,7 @@ export class Runtime<
     const thisRuntime = this;
     const output: StepOutputPublisher = {
       publishModel(event) {
+        thisRuntime.requireActiveStepOutput(record, snapshot);
         record.events.publishModel({
           eventId: requireIdentifier(thisRuntime.ids.eventId(), "Event id"),
           occurredAt: thisRuntime.timestamp(),
@@ -1292,6 +1369,7 @@ export class Runtime<
         });
       },
       publishTool(event) {
+        thisRuntime.requireActiveStepOutput(record, snapshot);
         if (
           event.scope.runId !== snapshot.run.runId ||
           event.scope.userTurnId !== snapshot.userTurn.userTurnId ||
@@ -1308,6 +1386,22 @@ export class Runtime<
     return Object.freeze(output);
   }
 
+  private requireActiveStepOutput(
+    record: ManagedRun<Configuration, Payload, StepMemory, Result>,
+    snapshot: StepSnapshot<Payload>,
+  ): void {
+    const step = currentStep(record.state);
+    if (
+      !record.active ||
+      !record.stepOutputOpen ||
+      record.activeStepSnapshot !== snapshot ||
+      step?.id !== snapshot.step.stepId ||
+      step.status !== "running"
+    ) {
+      throw new Error("Step output publisher is no longer active");
+    }
+  }
+
   private async finalizeRun(
     record: ManagedRun<Configuration, Payload, StepMemory, Result>,
     completion: RunCompletion<Result, Payload>,
@@ -1315,6 +1409,7 @@ export class Runtime<
     if (record.finalized) return;
     record.finalized = true;
     record.active = false;
+    record.stepOutputOpen = false;
     record.holds.clear();
     record.stepInbox.close(
       completion.status === "completed"
@@ -1336,7 +1431,6 @@ export class Runtime<
       this.activeRunIdByScope.delete(record.state.scope);
     }
     record.events.close();
-    await record.observerWork;
     record.resolveCompletion(completion);
     this.retainedTerminalRuns.push(record.state.id);
     this.pruneTerminalRuns();
@@ -1529,4 +1623,122 @@ function nonNegativeInteger(
     throw new Error(`${label} must be a non-negative integer`);
   }
   return resolved;
+}
+
+class InvalidStepPipelineResultError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidStepPipelineResultError";
+  }
+}
+
+function validateStepPipelineResult<StepMemory, Result>(
+  value: StepPipelineResult<StepMemory, Result>,
+): StepPipelineResult<StepMemory, Result> {
+  if (!isRecord(value)) {
+    throw new InvalidStepPipelineResultError(
+      "Step Pipeline must return an object",
+    );
+  }
+  switch (value.status) {
+    case "continue":
+      if (typeof value.reason !== "string" || value.reason.trim().length === 0) {
+        throw new InvalidStepPipelineResultError(
+          "A continuing Step requires a non-empty reason",
+        );
+      }
+      if (!("memory" in value)) {
+        throw new InvalidStepPipelineResultError(
+          "A continuing Step requires next-Step memory",
+        );
+      }
+      return value;
+
+    case "completed":
+      if (!("result" in value)) {
+        throw new InvalidStepPipelineResultError(
+          "A completed Step requires a result",
+        );
+      }
+      return value;
+
+    case "failed":
+      if (!isRuntimeFailure(value.error)) {
+        throw new InvalidStepPipelineResultError(
+          "A failed Step requires a RuntimeFailure",
+        );
+      }
+      return value;
+
+    case "aborted":
+      if (value.reason !== undefined && typeof value.reason !== "string") {
+        throw new InvalidStepPipelineResultError(
+          "An aborted Step reason must be a string",
+        );
+      }
+      return value;
+
+    default:
+      throw new InvalidStepPipelineResultError(
+        "Step Pipeline returned an unknown status",
+      );
+  }
+}
+
+function isRuntimeFailure(value: unknown): value is RuntimeFailure {
+  return isRecord(value) &&
+    typeof value.code === "string" &&
+    typeof value.message === "string" &&
+    typeof value.retryable === "boolean";
+}
+
+function snapshotAgentDefinition<Configuration>(
+  definition: AgentDefinition<Configuration>,
+  agentId: string,
+): AgentDefinition<Configuration> {
+  return Object.freeze({
+    ...definition,
+    id: agentId,
+    ...(definition.configuration === undefined
+      ? {}
+      : {
+          configuration: cloneAndFreezePlainValue(
+            definition.configuration,
+          ) as Configuration,
+        }),
+    ...(definition.metadata === undefined
+      ? {}
+      : {
+          metadata: cloneAndFreezePlainValue(
+            definition.metadata,
+          ) as NonNullable<AgentDefinition<Configuration>["metadata"]>,
+        }),
+  });
+}
+
+function cloneAndFreezePlainValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreezePlainValue));
+  }
+  if (isPlainRecord(value)) {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          key,
+          cloneAndFreezePlainValue(item),
+        ]),
+      ),
+    );
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

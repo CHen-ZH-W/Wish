@@ -181,6 +181,7 @@ export function applyRuntimeTransition<Payload, Result>(
 
     case "step.started": {
       const turn = requireActiveTurn(state, transition.userTurnId);
+      const previousStep = turn.steps.at(-1);
       requireState(
         transition.ordinal === turn.steps.length + 1,
         "Step ordinal is not contiguous",
@@ -190,8 +191,8 @@ export function applyRuntimeTransition<Payload, Result>(
         `Step ${transition.stepId} already exists`,
       );
       requireState(
-        turn.steps.at(-1)?.status !== "running",
-        "A Step is already active",
+        previousStep === undefined || previousStep.status === "completed",
+        "A Step can start only after the previous Step completed",
       );
       const step: StepState = Object.freeze({
         id: transition.stepId,
@@ -229,6 +230,10 @@ export function applyRuntimeTransition<Payload, Result>(
 
     case "user_turn.completed": {
       const turn = requireActiveTurn(state, transition.userTurnId);
+      requireState(
+        turn.steps.at(-1)?.status === "completed",
+        "A completed UserTurn requires a completed Step",
+      );
       return finishTurn(state, Object.freeze({
         ...turn,
         status: "completed",
@@ -259,6 +264,12 @@ export function applyRuntimeTransition<Payload, Result>(
 
     case "control.queued":
       requireRunningRun(state);
+      if (transition.kind === "steer") {
+        requireState(
+          currentUserTurn(state)?.status === "running",
+          "Steering requires an active UserTurn",
+        );
+      }
       return freezeState({
         ...state,
         version: state.version + 1,
@@ -269,6 +280,19 @@ export function applyRuntimeTransition<Payload, Result>(
       });
 
     case "control.steering_delivered":
+      requireRunningRun(state);
+      requireState(
+        currentStep(state)?.status === "running",
+        "Steering delivery requires an active Step",
+      );
+      requireState(
+        transition.controlIds.length > 0,
+        "Steering delivery must contain at least one control",
+      );
+      requireState(
+        new Set(transition.controlIds).size === transition.controlIds.length,
+        "Steering delivery contains duplicate controls",
+      );
       requireState(
         transition.controlIds.length <= state.pendingSteering,
         "Delivered steering exceeds the pending count",
@@ -280,6 +304,7 @@ export function applyRuntimeTransition<Payload, Result>(
       });
 
     case "control.follow_up_dequeued":
+      requireRunningRun(state);
       requireState(state.queuedFollowUps > 0, "No follow-up is queued");
       return freezeState({
         ...state,
@@ -288,12 +313,15 @@ export function applyRuntimeTransition<Payload, Result>(
       });
 
     case "control.rejected":
+      requireRunningRun(state);
       return freezeState({ ...state, version: state.version + 1 });
 
     case "control.duplicate":
+      requireRunningRun(state);
       return freezeState({ ...state, version: state.version + 1 });
 
     case "run.cancel_requested":
+      requireRunningRun(state);
       return freezeState({
         ...state,
         version: state.version + 1,
@@ -311,6 +339,7 @@ export function applyRuntimeTransition<Payload, Result>(
       });
 
     case "run.completion_released":
+      requireRunningRun(state);
       requireState(state.completionHolds > 0, "No completion hold is active");
       return freezeState({
         ...state,
@@ -324,6 +353,16 @@ export function applyRuntimeTransition<Payload, Result>(
         state.currentUserTurnId === undefined,
         "Cannot complete a Run with an active UserTurn",
       );
+      requireState(
+        state.userTurns.at(-1)?.status === "completed",
+        "A completed Run requires a completed UserTurn",
+      );
+      requireState(
+        state.pendingSteering === 0 &&
+          state.queuedFollowUps === 0 &&
+          state.completionHolds === 0,
+        "Cannot complete a Run with pending work",
+      );
       return terminalRun(state, {
         status: "completed",
         endedAt: transition.at,
@@ -331,6 +370,7 @@ export function applyRuntimeTransition<Payload, Result>(
       });
 
     case "run.failed":
+      requireNoActiveUserTurn(state, "fail");
       return terminalRun(state, {
         status: "failed",
         endedAt: transition.at,
@@ -338,6 +378,7 @@ export function applyRuntimeTransition<Payload, Result>(
       });
 
     case "run.aborted":
+      requireNoActiveUserTurn(state, "abort");
       return terminalRun(state, {
         status: "aborted",
         endedAt: transition.at,
@@ -479,6 +520,17 @@ function requireRunningRun<Payload, Result>(
   state: RunState<Payload, Result>,
 ): void {
   requireState(state.status === "running", "Run is not running");
+}
+
+function requireNoActiveUserTurn<Payload, Result>(
+  state: RunState<Payload, Result>,
+  action: "fail" | "abort",
+): void {
+  requireRunningRun(state);
+  requireState(
+    state.currentUserTurnId === undefined,
+    `Cannot ${action} a Run with an active UserTurn`,
+  );
 }
 
 function requireState(

@@ -7,6 +7,7 @@ import {
   type ToolAuthorizationService,
   type ToolAuthorizationValidation,
   type ToolCapabilityRequest,
+  type ToolClock,
 } from "./authorization.js";
 import { ToolRegistry } from "./registry.js";
 import type {
@@ -108,8 +109,12 @@ export interface ToolExecutorOptions<Context = unknown> {
   readonly events?: ToolEventPublisher;
   readonly grantTtlMs?: number;
   readonly grantId?: () => string;
-  readonly now?: () => Date;
+  readonly clock?: ToolClock;
 }
+
+const SYSTEM_TOOL_CLOCK: ToolClock = Object.freeze({
+  now: () => new Date(),
+});
 
 /** Error helper for concrete Tools that need a stable operational failure. */
 export class ToolExecutionError extends Error {
@@ -129,14 +134,14 @@ export class ToolExecutor<Context = unknown> {
   private readonly lifecycle: ToolExecutionLifecycle<Context>;
   private readonly grantTtlMs: number;
   private readonly grantId: () => string;
-  private readonly now: () => Date;
+  private readonly clock: ToolClock;
 
   constructor(private readonly options: ToolExecutorOptions<Context>) {
     this.lifecycle = options.lifecycle ??
       (NOOP_TOOL_EXECUTION_LIFECYCLE as ToolExecutionLifecycle<Context>);
     this.grantTtlMs = positiveInteger(options.grantTtlMs, 60_000, "grantTtlMs");
     this.grantId = options.grantId ?? randomId;
-    this.now = options.now ?? (() => new Date());
+    this.clock = options.clock ?? SYSTEM_TOOL_CLOCK;
   }
 
   executionMode(call: ToolCall): ToolExecutionMode {
@@ -320,18 +325,35 @@ export class ToolExecutor<Context = unknown> {
         );
       }
 
-      const issuedAt = this.now();
-      if (!(issuedAt instanceof Date) || !Number.isFinite(issuedAt.getTime())) {
-        throw new Error("ToolExecutor now() must return a valid Date");
+      const grantId = requireIdentifier(this.grantId(), "Tool Grant id");
+      const issuedAtEpochMs = this.clockEpochMilliseconds();
+      const finalSnapshotDenial = this.snapshotDenial(input.call, input.snapshot);
+      if (finalSnapshotDenial !== undefined) {
+        await this.emitAuthorizationDenied(
+          input,
+          finalSnapshotDenial,
+          input.events,
+        );
+        return failedResult(
+          input.call,
+          toolError(
+            "permission_denied",
+            finalSnapshotDenial,
+            false,
+            phase,
+          ),
+          phase,
+        );
       }
       const grant = issueToolAuthorizationGrant({
-        grantId: requireIdentifier(this.grantId(), "Tool Grant id"),
+        grantId,
         call: input.call,
         capabilities,
         policyVersion: validation.policyVersion,
         snapshot: input.snapshot,
-        issuedAt: issuedAt.toISOString(),
-        expiresAt: new Date(issuedAt.getTime() + this.grantTtlMs).toISOString(),
+        clock: this.clock,
+        issuedAtEpochMs,
+        ttlMs: this.grantTtlMs,
         ...(decision.metadata === undefined ? {} : { metadata: decision.metadata }),
       });
 
@@ -347,6 +369,22 @@ export class ToolExecutor<Context = unknown> {
         grant,
       });
       phase = "dispatched";
+      const postLifecycleDenial = this.snapshotDenial(input.call, input.snapshot);
+      if (postLifecycleDenial !== undefined) {
+        return failedResult(
+          input.call,
+          toolError(
+            "permission_denied",
+            postLifecycleDenial,
+            false,
+            phase,
+          ),
+          phase,
+        );
+      }
+      if (isAborted(input.signal)) {
+        return abortedResult(input.call, phase, input.signal?.reason);
+      }
       await this.emit({
         type: "tool.dispatched",
         occurredAt: this.timestamp(),
@@ -354,6 +392,23 @@ export class ToolExecutor<Context = unknown> {
         call: input.call,
         grantId: grant.grantId,
       }, input.events);
+
+      const preExecutionDenial = this.snapshotDenial(input.call, input.snapshot);
+      if (preExecutionDenial !== undefined) {
+        return failedResult(
+          input.call,
+          toolError(
+            "permission_denied",
+            preExecutionDenial,
+            false,
+            phase,
+          ),
+          phase,
+        );
+      }
+      if (isAborted(input.signal)) {
+        return abortedResult(input.call, phase, input.signal?.reason);
+      }
 
       const output = await withActiveToolAuthorizationGrant(
         grant,
@@ -460,11 +515,15 @@ export class ToolExecutor<Context = unknown> {
   }
 
   private timestamp(): string {
-    const now = this.now();
-    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
-      throw new Error("ToolExecutor now() must return a valid Date");
+    return new Date(this.clockEpochMilliseconds()).toISOString();
+  }
+
+  private clockEpochMilliseconds(): number {
+    const now = this.clock.now();
+    if (!(now instanceof Date) || !Number.isSafeInteger(now.getTime())) {
+      throw new Error("Tool clock now() must return a valid Date");
     }
-    return now.toISOString();
+    return now.getTime();
   }
 }
 
@@ -481,7 +540,13 @@ function validateAuthorizationDecision(
     return Object.freeze({
       status: "allowed" as const,
       policyVersion: requireIdentifier(decision.policyVersion, "Policy version"),
-      ...(decision.metadata === undefined ? {} : { metadata: decision.metadata }),
+      ...(decision.metadata === undefined
+        ? {}
+        : {
+            metadata: deepFreezePlainValue({ ...decision.metadata }) as Readonly<
+              Record<string, unknown>
+            >,
+          }),
     });
   }
   throw new Error("Tool authorization returned an unknown decision");

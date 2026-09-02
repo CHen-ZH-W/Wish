@@ -271,7 +271,7 @@ test("Context over-budget fails before Model or Tool execution", async () => {
     },
   };
   const projector = new ContextProjector({
-    budgetPolicy: {
+    budget: {
       assess() {
         return { status: "over_budget", estimatedInputTokens: 20, inputLimitTokens: 10 };
       },

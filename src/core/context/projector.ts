@@ -1,31 +1,26 @@
 import type { ModelMessage, ModelRequest } from "../model/types.js";
 import type {
-  ContextAdmissionPolicy,
   ContextBudgetAssessment,
   ContextHistoryPolicy,
   ContextHistorySelection,
   ContextHistorySourceItem,
-  ContextHistoryItem,
   ContextItem,
-  ContextItemRenderer,
-  ContextItemResolver,
   ContextLaneItem,
-  ContextMessageNormalizer,
   ContextProjection,
   ContextProjectionInput,
   ContextProjectorServices,
   ContextProvider,
   ContextProviderGroup,
   ContextProviderProjectionInput,
+  ContextToolResultArchive,
+  ContextToolResultMessage,
 } from "./context.js";
 
 export type {
-  ContextAdmissionInput,
-  ContextAdmissionPolicy,
   ContextAuthority,
   ContextBudgetAssessment,
-  ContextBudgetPolicy,
-  ContextBudgetPolicyInput,
+  ContextBudgetEvaluationInput,
+  ContextBudgetEvaluator,
   ContextBudgetStatus,
   ContextHistoryItem,
   ContextHistoryPolicy,
@@ -33,30 +28,25 @@ export type {
   ContextHistorySelection,
   ContextHistorySourceItem,
   ContextItem,
-  ContextItemRenderInput,
-  ContextItemRenderer,
-  ContextItemResolutionInput,
-  ContextItemResolver,
   ContextLaneItem,
   ContextLaneKind,
   ContextLaneMessage,
   ContextLanePlacement,
-  ContextMessageNormalizationInput,
-  ContextMessageNormalizer,
   ContextProjection,
   ContextProjectionInput,
   ContextProjectorServices,
   ContextProvider,
   ContextProviderGroup,
   ContextProviderProjectionInput,
+  ContextReadyProjection,
+  ContextRejectedProjection,
   ContextSummaryItem,
+  ContextToolResultArchive,
+  ContextToolResultArchiveInput,
+  ContextToolResultMessage,
+  ContextToolResultPipeline,
+  ContextToolResultProjectionInput,
 } from "./context.js";
-
-const STRICT_ITEM_RESOLVER: ContextItemResolver = {
-  resolve(input) {
-    return input.groups.flatMap((group) => group.items);
-  },
-};
 
 const EXPLICIT_HISTORY_POLICY: ContextHistoryPolicy = {
   select(input) {
@@ -69,23 +59,9 @@ const EXPLICIT_HISTORY_POLICY: ContextHistoryPolicy = {
   },
 };
 
-const IDENTITY_ITEM_RENDERER: ContextItemRenderer = {
-  render(input) {
-    return input.item.message;
-  },
-};
-
-const IDENTITY_MESSAGE_NORMALIZER: ContextMessageNormalizer = {
-  normalize(input) {
-    return input.messages;
-  },
-};
-
-const IDENTITY_ADMISSION_POLICY: ContextAdmissionPolicy = {
-  admit(input) {
-    return input.message;
-  },
-};
+const UNKNOWN_BUDGET = Object.freeze({
+  status: "unknown" as const,
+});
 
 interface WorkingMessage {
   readonly message: ModelMessage;
@@ -94,23 +70,14 @@ interface WorkingMessage {
 }
 
 /**
- * Owns the complete Context pipeline while delegating every variable decision
- * to a narrow typed Service or Policy.
+ * Owns the invariant Context spine. External capabilities can supply history
+ * selection, Tool Result persistence/projection, and model-aware sizing only.
  */
 export class ContextProjector {
-  private readonly itemResolver: ContextItemResolver;
   private readonly historyPolicy: ContextHistoryPolicy;
-  private readonly itemRenderer: ContextItemRenderer;
-  private readonly messageNormalizer: ContextMessageNormalizer;
-  private readonly admissionPolicy: ContextAdmissionPolicy;
 
   constructor(private readonly services: ContextProjectorServices = {}) {
-    this.itemResolver = services.itemResolver ?? STRICT_ITEM_RESOLVER;
     this.historyPolicy = services.historyPolicy ?? EXPLICIT_HISTORY_POLICY;
-    this.itemRenderer = services.itemRenderer ?? IDENTITY_ITEM_RENDERER;
-    this.messageNormalizer =
-      services.messageNormalizer ?? IDENTITY_MESSAGE_NORMALIZER;
-    this.admissionPolicy = services.admissionPolicy ?? IDENTITY_ADMISSION_POLICY;
   }
 
   async project(input: ContextProjectionInput): Promise<ContextProjection> {
@@ -118,81 +85,91 @@ export class ContextProjector {
     const sourceRequest = deepFreezePlainValue({
       ...input.request,
     }) as ModelRequest;
+    validateToolTranscript(sourceRequest.messages);
+    const currentUserMessageIndex = validateCurrentUserMessageIndex(
+      sourceRequest,
+      input.currentUserMessageIndex,
+    );
     const groups = validateProviderGroups(input.groups);
-    const resolvedItems = validateUniqueItems(await this.itemResolver.resolve({
-      request: sourceRequest,
-      groups,
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
-    }));
+    const sourceItems = validateUniqueItems(
+      groups.flatMap((group) => group.items),
+    );
 
     throwIfAborted(input.signal);
-    const sourceHistory = resolvedItems.filter(isHistoryItem);
+    const sourceHistory = sourceItems.filter(isHistoryItem);
     const history = validateHistorySelection(
       await this.historyPolicy.select({
         request: sourceRequest,
         items: sourceHistory,
         ...(input.signal === undefined ? {} : { signal: input.signal }),
       }),
+      sourceHistory,
     );
     const includedItems = validateUniqueItems([
-      ...resolvedItems.filter((item) => !isHistoryItem(item)),
+      ...sourceItems.filter((item) => !isHistoryItem(item)),
       ...history.items,
     ]);
 
     throwIfAborted(input.signal);
-    const rendered = await Promise.all(includedItems.map(async (item) => ({
-      item,
-      message: validateModelMessage(await this.itemRenderer.render({
-        request: sourceRequest,
-        item,
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
-      })),
-    })));
-
-    throwIfAborted(input.signal);
     const structurallyProjected = projectPlacements(
       sourceRequest,
-      rendered,
-      input.currentUserMessageIndex,
+      includedItems,
+      currentUserMessageIndex,
     );
-    const normalized = validateModelMessages(
-      await this.messageNormalizer.normalize({
-        request: sourceRequest,
-        messages: structurallyProjected,
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
-      }),
+    validateToolTranscript(
+      structurallyProjected.map((entry) => entry.message),
+    );
+    assertCurrentUserPreserved(
+      sourceRequest,
+      structurallyProjected,
+      currentUserMessageIndex,
     );
 
-    throwIfAborted(input.signal);
-    const admitted: ModelMessage[] = [];
-    for (const [messageIndex, message] of normalized.entries()) {
-      admitted.push(validateModelMessage(await this.admissionPolicy.admit({
-        request: sourceRequest,
-        message,
-        messageIndex,
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
-      })));
-      throwIfAborted(input.signal);
-    }
+    const visibleMessages = await this.projectToolResults(
+      sourceRequest,
+      structurallyProjected,
+      input.signal,
+    );
+    validateToolTranscript(visibleMessages.map((entry) => entry.message));
+    assertCurrentUserPreserved(
+      sourceRequest,
+      visibleMessages,
+      currentUserMessageIndex,
+    );
 
     const request = deepFreezePlainValue({
       ...sourceRequest,
-      messages: admitted,
+      messages: visibleMessages.map((entry) => entry.message),
     }) as ModelRequest;
-    const budget = this.services.budgetPolicy === undefined
-      ? undefined
-      : validateBudgetAssessment(await this.services.budgetPolicy.assess({
+    const budget = this.services.budget === undefined
+      ? UNKNOWN_BUDGET
+      : validateBudgetAssessment(await this.services.budget.assess({
           request,
           ...(input.signal === undefined ? {} : { signal: input.signal }),
         }));
     throwIfAborted(input.signal);
 
-    return Object.freeze({
-      request,
+    const projectionBase = {
       providerGroups: groups,
       includedItems: Object.freeze(includedItems.map(freezeContextItem)),
       history: freezeHistorySelection(history),
-      ...(budget === undefined ? {} : { budget: freezeBudgetAssessment(budget) }),
+      budget: freezeBudgetAssessment(budget),
+    };
+    if (budget.status === "over_budget") {
+      return Object.freeze({
+        ...projectionBase,
+        status: "rejected",
+        reason: "over_budget",
+        candidateRequest: request,
+        budget: projectionBase.budget as ContextBudgetAssessment & {
+          readonly status: "over_budget";
+        },
+      });
+    }
+    return Object.freeze({
+      ...projectionBase,
+      status: "ready",
+      request,
     });
   }
 
@@ -209,42 +186,70 @@ export class ContextProjector {
     return this.project({
       request: input.request,
       groups: itemGroups,
-      ...(input.currentUserMessageIndex === undefined
-        ? {}
-        : { currentUserMessageIndex: input.currentUserMessageIndex }),
+      currentUserMessageIndex: input.currentUserMessageIndex,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
+  }
+
+  private async projectToolResults(
+    sourceRequest: ModelRequest,
+    messages: readonly WorkingMessage[],
+    signal: AbortSignal | undefined,
+  ): Promise<readonly WorkingMessage[]> {
+    const pipeline = this.services.toolResults;
+    if (pipeline === undefined) return messages;
+
+    const rawRequest = deepFreezePlainValue({
+      ...sourceRequest,
+      messages: messages.map((entry) => entry.message),
+    }) as ModelRequest;
+    const visible: WorkingMessage[] = [];
+    for (const [messageIndex, entry] of messages.entries()) {
+      const rawMessage = rawRequest.messages[messageIndex];
+      if (rawMessage?.role !== "tool") {
+        visible.push(entry);
+        continue;
+      }
+      const toolMessage = asToolResultMessage(rawMessage);
+      const archive = validateToolResultArchive(await pipeline.archive({
+        request: rawRequest,
+        message: toolMessage,
+        messageIndex,
+        ...(signal === undefined ? {} : { signal }),
+      }));
+      throwIfAborted(signal);
+      const projected = freezeModelMessage(asToolResultMessage(
+        await pipeline.toModelMessage({
+          request: rawRequest,
+          message: toolMessage,
+          messageIndex,
+          archive,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      ));
+      if (projected.toolCallId !== toolMessage.toolCallId) {
+        throw new Error(
+          "Context Tool Result projection must preserve toolCallId",
+        );
+      }
+      visible.push(Object.freeze({ ...entry, message: projected }));
+      throwIfAborted(signal);
+    }
+    return Object.freeze(visible);
   }
 }
 
 function projectPlacements(
   request: ModelRequest,
-  rendered: readonly {
-    readonly item: ContextItem;
-    readonly message: ModelMessage;
-  }[],
-  currentUserMessageIndex: number | undefined,
-): readonly ModelMessage[] {
-  const currentUser = validateCurrentUserMessageIndex(
-    request,
-    currentUserMessageIndex,
+  items: readonly ContextItem[],
+  currentUserMessageIndex: number,
+): readonly WorkingMessage[] {
+  const stable = items.filter((item) => isLaneAt(item, "stable_prefix"));
+  const history = items.filter(isHistoryItem);
+  const beforeCurrentUser = items.filter(
+    (item) => isLaneAt(item, "before_current_user"),
   );
-  const stable = rendered.filter(
-    (entry) => isLaneAt(entry.item, "stable_prefix"),
-  );
-  const history = rendered.filter((entry) => isHistoryItem(entry.item));
-  const beforeCurrentUser = rendered.filter(
-    (entry) => isLaneAt(entry.item, "before_current_user"),
-  );
-  const dynamicTail = rendered.filter(
-    (entry) => isLaneAt(entry.item, "dynamic_tail"),
-  );
-  if (beforeCurrentUser.length > 0 && currentUser === undefined) {
-    throw new Error(
-      "currentUserMessageIndex is required for before_current_user context",
-    );
-  }
-
+  const dynamicTail = items.filter((item) => isLaneAt(item, "dynamic_tail"));
   const requestMessages = request.messages.map(
     (message, requestIndex): WorkingMessage => ({
       message,
@@ -260,8 +265,8 @@ function projectPlacements(
     ...requestMessages.slice(prefixBoundary),
   ];
 
-  if (beforeCurrentUser.length > 0 && currentUser !== undefined) {
-    const boundary = findRequestMessage(messages, currentUser);
+  if (beforeCurrentUser.length > 0) {
+    const boundary = findRequestMessage(messages, currentUserMessageIndex);
     messages = [
       ...messages.slice(0, boundary),
       ...beforeCurrentUser.map(toWorkingMessage),
@@ -272,7 +277,7 @@ function projectPlacements(
     const boundary = dynamicTailBoundary(
       messages,
       request.messages.length,
-      currentUser,
+      currentUserMessageIndex,
     );
     messages = [
       ...messages.slice(0, boundary),
@@ -280,7 +285,7 @@ function projectPlacements(
       ...messages.slice(boundary),
     ];
   }
-  return messages.map((entry) => entry.message);
+  return Object.freeze(messages);
 }
 
 function validateProviderGroups(
@@ -293,9 +298,12 @@ function validateProviderGroups(
       throw new Error(`Duplicate Context provider id: ${providerId}`);
     }
     ids.add(providerId);
+    if (!Array.isArray(group.items)) {
+      throw new Error("Context provider group items must be an array");
+    }
     return Object.freeze({
       providerId,
-      items: Object.freeze([...group.items]),
+      items: Object.freeze(group.items.map(validateContextItem)),
     });
   }));
 }
@@ -325,6 +333,9 @@ function validateUniqueItems(items: readonly ContextItem[]): readonly ContextIte
 }
 
 function validateContextItem(item: ContextItem): ContextItem {
+  if (item === null || typeof item !== "object") {
+    throw new Error("Context provider must return Context items");
+  }
   const id = requireIdentifier(item.id, "Context item id");
   validateModelMessage(item.message);
   if (item.kind === "history") {
@@ -353,23 +364,40 @@ function validateContextItem(item: ContextItem): ContextItem {
 
 function validateHistorySelection(
   selection: ContextHistorySelection,
+  sourceItems: readonly ContextHistorySourceItem[],
 ): ContextHistorySelection {
   if (selection === null || typeof selection !== "object") {
     throw new Error("ContextHistoryPolicy must return a selection");
   }
+  if (!Array.isArray(selection.items)) {
+    throw new Error("ContextHistoryPolicy selection items must be an array");
+  }
+  const sourceById = new Map(sourceItems.map((item) => [item.id, item]));
+  const selectedIds = new Set<string>();
   const items = Object.freeze(selection.items.map((item) => {
-    const validated = validateContextItem(item);
-    if (!isHistoryItem(validated)) {
-      throw new Error("ContextHistoryPolicy may return only history items");
+    const id = requireIdentifier(item?.id, "Selected Context history item id");
+    if (selectedIds.has(id)) {
+      throw new Error(`Duplicate selected Context history item id: ${id}`);
     }
-    return validated;
+    selectedIds.add(id);
+    const source = sourceById.get(id);
+    if (source === undefined) {
+      throw new Error(
+        `ContextHistoryPolicy selected an unknown history item: ${id}`,
+      );
+    }
+    return source;
   }));
-  return {
+  return Object.freeze({
     items,
     ...(selection.metadata === undefined
       ? {}
-      : { metadata: deepFreezePlainValue({ ...selection.metadata }) as Readonly<Record<string, unknown>> }),
-  };
+      : {
+          metadata: deepFreezePlainValue({ ...selection.metadata }) as Readonly<
+            Record<string, unknown>
+          >,
+        }),
+  });
 }
 
 function isHistoryItem(item: ContextItem): item is ContextHistorySourceItem {
@@ -407,9 +435,8 @@ function validateLanePlacement(placement: string): void {
 
 function validateCurrentUserMessageIndex(
   request: ModelRequest,
-  index: number | undefined,
-): number | undefined {
-  if (index === undefined) return undefined;
+  index: number,
+): number {
   if (!Number.isSafeInteger(index) || index < 0 || index >= request.messages.length) {
     throw new Error("currentUserMessageIndex must identify a request message");
   }
@@ -417,6 +444,24 @@ function validateCurrentUserMessageIndex(
     throw new Error("currentUserMessageIndex must identify a user message");
   }
   return index;
+}
+
+function assertCurrentUserPreserved(
+  request: ModelRequest,
+  messages: readonly WorkingMessage[],
+  currentUserMessageIndex: number,
+): void {
+  const matches = messages.filter(
+    (entry) =>
+      entry.source === "request" &&
+      entry.requestIndex === currentUserMessageIndex,
+  );
+  if (matches.length !== 1) {
+    throw new Error("Current user message must appear exactly once in projection");
+  }
+  if (matches[0]?.message !== request.messages[currentUserMessageIndex]) {
+    throw new Error("Current user message must remain unchanged in projection");
+  }
 }
 
 function stablePrefixBoundary(messages: readonly WorkingMessage[]): number {
@@ -446,35 +491,64 @@ function findRequestMessage(
 function dynamicTailBoundary(
   messages: readonly WorkingMessage[],
   requestMessageCount: number,
-  currentUserMessageIndex: number | undefined,
+  currentUserMessageIndex: number,
 ): number {
-  if (
-    currentUserMessageIndex !== undefined &&
-    currentUserMessageIndex === requestMessageCount - 1
-  ) {
+  if (currentUserMessageIndex === requestMessageCount - 1) {
     return findRequestMessage(messages, currentUserMessageIndex);
   }
   return messages.length;
 }
 
-function toWorkingMessage(input: {
-  readonly message: ModelMessage;
-}): WorkingMessage {
-  return { message: input.message, source: "context" };
+function toWorkingMessage(input: { readonly message: ModelMessage }): WorkingMessage {
+  return Object.freeze({ message: input.message, source: "context" });
 }
 
-function validateModelMessages(
-  messages: readonly ModelMessage[],
-): readonly ModelMessage[] {
+function validateToolTranscript(messages: readonly ModelMessage[]): void {
   if (!Array.isArray(messages)) {
-    throw new Error("ContextMessageNormalizer must return messages");
+    throw new Error("Context projection messages must be an array");
   }
-  return messages.map(validateModelMessage);
+  let pending: Set<string> | undefined;
+  let toolCallMessageIndex: number | undefined;
+  for (const [messageIndex, message] of messages.entries()) {
+    const validated = validateModelMessage(message);
+    if (validated.role === "tool") {
+      const toolMessage = asToolResultMessage(validated);
+      if (pending === undefined) {
+        throw new Error(
+          `Orphan Tool Result at message ${messageIndex}: ${toolMessage.toolCallId}`,
+        );
+      }
+      if (!pending.delete(toolMessage.toolCallId)) {
+        throw new Error(
+          `Tool Result at message ${messageIndex} does not match a pending call: ${toolMessage.toolCallId}`,
+        );
+      }
+      if (pending.size === 0) {
+        pending = undefined;
+        toolCallMessageIndex = undefined;
+      }
+      continue;
+    }
+    if (pending !== undefined) {
+      throw new Error(
+        `Assistant Tool calls at message ${toolCallMessageIndex} are missing results before message ${messageIndex}`,
+      );
+    }
+    if (validated.role === "assistant" && (validated.toolCalls?.length ?? 0) > 0) {
+      pending = new Set(validated.toolCalls?.map((call) => call.id));
+      toolCallMessageIndex = messageIndex;
+    }
+  }
+  if (pending !== undefined) {
+    throw new Error(
+      `Assistant Tool calls at message ${toolCallMessageIndex} are missing results at end of projection`,
+    );
+  }
 }
 
 function validateModelMessage(message: ModelMessage): ModelMessage {
   if (message === null || typeof message !== "object") {
-    throw new Error("Context stage must return a ModelMessage");
+    throw new Error("Context stage must produce a ModelMessage");
   }
   if (
     message.role !== "system" &&
@@ -483,25 +557,122 @@ function validateModelMessage(message: ModelMessage): ModelMessage {
     message.role !== "assistant" &&
     message.role !== "tool"
   ) {
-    throw new Error("Context stage returned an unknown ModelMessage role");
+    throw new Error("Context stage produced an unknown ModelMessage role");
   }
   if (typeof message.content !== "string") {
-    throw new Error("Context stage returned a ModelMessage without string content");
+    throw new Error("Context stage produced a ModelMessage without string content");
   }
+  if (message.reasoningContent !== undefined) {
+    if (message.role !== "assistant" || typeof message.reasoningContent !== "string") {
+      throw new Error("reasoningContent is valid only on assistant messages");
+    }
+  }
+  if (message.toolCallId !== undefined && message.role !== "tool") {
+    throw new Error("toolCallId is valid only on tool messages");
+  }
+  if (message.role === "tool") {
+    requireIdentifier(message.toolCallId ?? "", "Tool Result toolCallId");
+  }
+  if (message.toolCalls !== undefined) {
+    if (message.role !== "assistant" || !Array.isArray(message.toolCalls)) {
+      throw new Error("toolCalls are valid only on assistant messages");
+    }
+    const ids = new Set<string>();
+    for (const call of message.toolCalls) {
+      const id = requireIdentifier(call.id, "Assistant Tool call id");
+      requireIdentifier(call.name, "Assistant Tool call name");
+      if (typeof call.argumentsJson !== "string") {
+        throw new Error("Assistant Tool call argumentsJson must be a string");
+      }
+      if (ids.has(id)) {
+        throw new Error(`Duplicate Assistant Tool call id: ${id}`);
+      }
+      ids.add(id);
+    }
+  }
+  validateContentParts(message);
   return message;
+}
+
+function validateContentParts(message: ModelMessage): void {
+  if (message.contentParts === undefined) return;
+  if (!Array.isArray(message.contentParts)) {
+    throw new Error("ModelMessage contentParts must be an array");
+  }
+  for (const part of message.contentParts) {
+    if (part.type === "text") {
+      if (typeof part.text !== "string") {
+        throw new Error("Text content part must contain text");
+      }
+      continue;
+    }
+    if (part.type === "image_url") {
+      if (
+        part.imageUrl === null ||
+        typeof part.imageUrl !== "object" ||
+        typeof part.imageUrl.url !== "string"
+      ) {
+        throw new Error("Image content part must contain an image URL");
+      }
+      if (
+        part.imageUrl.detail !== undefined &&
+        part.imageUrl.detail !== "auto" &&
+        part.imageUrl.detail !== "low" &&
+        part.imageUrl.detail !== "high"
+      ) {
+        throw new Error("Image content part has an unknown detail level");
+      }
+      continue;
+    }
+    throw new Error("ModelMessage contains an unknown content part");
+  }
+}
+
+function asToolResultMessage(message: ModelMessage): ContextToolResultMessage {
+  validateModelMessage(message);
+  if (message.role !== "tool" || message.toolCallId === undefined) {
+    throw new Error("Context Tool Result pipeline requires a tool message");
+  }
+  return message as ContextToolResultMessage;
+}
+
+function validateToolResultArchive(
+  archive: ContextToolResultArchive,
+): ContextToolResultArchive {
+  if (archive === null || typeof archive !== "object") {
+    throw new Error("Context Tool Result archive must return a receipt");
+  }
+  const id = requireIdentifier(archive.id, "Context Tool Result archive id");
+  return deepFreezePlainValue({ ...archive, id }) as ContextToolResultArchive;
 }
 
 function validateBudgetAssessment(
   assessment: ContextBudgetAssessment,
 ): ContextBudgetAssessment {
+  if (assessment === null || typeof assessment !== "object") {
+    throw new Error("Context budget evaluator must return an assessment");
+  }
   if (
     assessment.status !== "within_budget" &&
     assessment.status !== "over_budget" &&
     assessment.status !== "unknown"
   ) {
-    throw new Error("ContextBudgetPolicy returned an unknown status");
+    throw new Error("Context budget evaluator returned an unknown status");
   }
-  return assessment;
+  if (assessment.estimatedInputTokens !== undefined) {
+    nonNegativeSafeInteger(
+      assessment.estimatedInputTokens,
+      "estimatedInputTokens",
+    );
+  }
+  if (assessment.inputLimitTokens !== undefined) {
+    nonNegativeSafeInteger(assessment.inputLimitTokens, "inputLimitTokens");
+  }
+  return freezeBudgetAssessment(assessment);
+}
+
+function freezeModelMessage(message: ModelMessage): ModelMessage {
+  return deepFreezePlainValue({ ...message }) as ModelMessage;
 }
 
 function freezeContextItem<Item extends ContextItem>(item: Item): Item {

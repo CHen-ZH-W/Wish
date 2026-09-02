@@ -1,10 +1,11 @@
 import {
   ContextProjector,
-  type ContextAdmissionPolicy,
+  type ContextBudgetEvaluator,
   type ContextHistoryPolicy,
   type ContextItem,
   type ContextProjection,
   type ContextProvider,
+  type ContextToolResultPipeline,
 } from "../src/core/context/projector.js";
 import type { ModelRequest } from "../src/core/model/model.js";
 
@@ -30,9 +31,18 @@ const historyPolicy: ContextHistoryPolicy = {
   },
 };
 
-const admissionPolicy: ContextAdmissionPolicy = {
-  admit(input) {
+const toolResults: ContextToolResultPipeline = {
+  archive(input) {
+    return { id: input.message.toolCallId };
+  },
+  toModelMessage(input) {
     return input.message;
+  },
+};
+
+const budget: ContextBudgetEvaluator = {
+  assess() {
+    return { status: "unknown" };
   },
 };
 
@@ -42,7 +52,7 @@ const request: ModelRequest = {
   tools: [],
 };
 
-const projector = new ContextProjector({ historyPolicy, admissionPolicy });
+const projector = new ContextProjector({ historyPolicy, toolResults, budget });
 const projection: Promise<ContextProjection> = projector.project({
   request,
   groups: [],
@@ -55,5 +65,11 @@ const provided: Promise<ContextProjection> = projector.projectFromProviders({
   currentUserMessageIndex: 0,
 });
 
+async function consume(result: Promise<ContextProjection>): Promise<ModelRequest> {
+  const value = await result;
+  return value.status === "ready" ? value.request : value.candidateRequest;
+}
+
 void projection;
 void provided;
+void consume(projection);

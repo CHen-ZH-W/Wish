@@ -36,9 +36,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-model.mjs && node scripts/accept-context.mjs && node scripts/accept-tools.mjs && node scripts/accept-agent-loop.mjs",
+    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-context.mjs && node scripts/accept-tools.mjs && node scripts/accept-agent-loop.mjs",
     "test:agent": "npm run build && node scripts/accept-agent.mjs",
     "test:runtime": "npm run build && node scripts/accept-runtime.mjs",
+    "test:events": "npm run build && node scripts/accept-events.mjs",
     "test:model": "npm run build && node scripts/accept-model.mjs",
     "test:context": "npm run build && node scripts/accept-context.mjs",
     "test:tools": "npm run build && node scripts/accept-tools.mjs",

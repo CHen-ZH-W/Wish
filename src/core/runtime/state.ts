@@ -89,18 +89,31 @@ export interface CreateRunStateInput {
 export function createRunState<Payload, Result>(
   input: CreateRunStateInput,
 ): RunState<Payload, Result> {
+  const runId = requireIdentifier(input.runId, "Run id");
+  const agentId = requireIdentifier(input.agentId, "Agent id");
+  const scope = normalizeScope(input.scope);
+  const parentRunId = input.parentRunId === undefined
+    ? undefined
+    : requireIdentifier(input.parentRunId, "Parent Run id");
+  if (parentRunId === runId) {
+    throw new Error("A Run cannot be its own parent");
+  }
   return Object.freeze({
     schemaVersion: 1 as const,
     version: 0,
-    id: input.runId,
-    agentId: input.agentId,
-    scope: input.scope,
-    ...(input.parentRunId === undefined
+    id: runId,
+    agentId,
+    scope,
+    ...(parentRunId === undefined ? {} : { parentRunId }),
+    ...(input.metadata === undefined
       ? {}
-      : { parentRunId: input.parentRunId }),
-    ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+      : {
+          metadata: cloneAndFreezePlainValue(
+            input.metadata,
+          ) as AgentMetadata,
+        }),
     status: "created" as const,
-    createdAt: input.createdAt,
+    createdAt: requireIdentifier(input.createdAt, "Run createdAt"),
     userTurns: Object.freeze([] as UserTurnState<Payload, Result>[]),
     pendingSteering: 0,
     queuedFollowUps: 0,
@@ -136,3 +149,42 @@ export function isStepTerminal(status: StepStatus): boolean {
   return status === "completed" || status === "failed" || status === "aborted";
 }
 
+function cloneAndFreezePlainValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreezePlainValue));
+  }
+  if (isPlainRecord(value)) {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          key,
+          cloneAndFreezePlainValue(item),
+        ]),
+      ),
+    );
+  }
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normalizeScope(scope: string): string {
+  if (typeof scope !== "string") throw new Error("Run scope must be a string");
+  const normalized = scope.trim();
+  if (normalized.length === 0) throw new Error("Run scope must not be empty");
+  return normalized;
+}
+
+function requireIdentifier(value: string, label: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${label} must not be empty`);
+  }
+  if (value !== value.trim()) {
+    throw new Error(`${label} must not have leading or trailing whitespace`);
+  }
+  return value;
+}

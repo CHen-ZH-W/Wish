@@ -208,11 +208,21 @@ export class ToolRegistry<Context = unknown> {
     grant: ToolAuthorizationGrant,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    const registryVersion = this.currentVersion;
     assertActiveToolAuthorizationGrant(grant, {
       call,
       callId: call.id,
       toolName: call.name,
+      registryVersion,
     });
+    if (
+      this.currentVersion !== registryVersion ||
+      grant.registryVersion !== this.currentVersion
+    ) {
+      throw new Error(
+        `Tool authorization Grant ${grant.grantId} registry is stale`,
+      );
+    }
     const definition = this.requireDefinition(call.name);
     return await definition.execute(call.input, context, grant, signal);
   }

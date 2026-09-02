@@ -29,6 +29,7 @@ export type {
   ToolCapabilityKind,
   ToolCapabilityRequest,
   ToolCapabilityRequirement,
+  ToolClock,
 } from "./authorization.js";
 export {
   NOOP_TOOL_EXECUTION_LIFECYCLE,

@@ -179,7 +179,7 @@ export class AgentLoop<
         : failed("agent_loop_projection_failed", error);
     }
     if (input.signal.aborted) return aborted(input.signal.reason);
-    if (projection.budget?.status === "over_budget") {
+    if (projection.status === "rejected") {
       return {
         status: "failed",
         error: runtimeFailure(

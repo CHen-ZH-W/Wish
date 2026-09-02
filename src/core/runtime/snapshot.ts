@@ -6,6 +6,7 @@ import type {
 } from "../agent/types.js";
 import type { RuntimeControlMessage } from "./control.js";
 import {
+  currentStep,
   currentUserTurn,
   type AgentStepId,
   type RunState,
@@ -123,6 +124,23 @@ export function captureStepSnapshot<Payload, Result>(input: {
   if (input.step.status !== "running") {
     throw new Error("Cannot capture a terminal Step");
   }
+  const activeStep = currentStep(input.state);
+  if (
+    activeStep?.id !== input.step.id ||
+    activeStep.ordinal !== input.step.ordinal
+  ) {
+    throw new Error("Cannot capture a Step that is not active");
+  }
+  const steering = input.steering.map((message) => {
+    if (
+      message.kind !== "steer" ||
+      message.runId !== input.state.id ||
+      message.userTurnId !== turn.id
+    ) {
+      throw new Error("Step steering does not match the active Run and UserTurn");
+    }
+    return Object.freeze({ ...message });
+  });
   return Object.freeze({
     schemaVersion: 1 as const,
     capturedAt: input.capturedAt,
@@ -141,7 +159,7 @@ export function captureStepSnapshot<Payload, Result>(input: {
       stepId: input.step.id,
       ordinal: input.step.ordinal,
     }),
-    steering: Object.freeze([...input.steering]),
+    steering: Object.freeze(steering),
     environment: freezeEnvironment(input.environment),
   });
 }
@@ -158,7 +176,10 @@ function snapshotStepState(step: StepState): StepState {
 function freezeEnvironment(
   environment: RuntimeEnvironment,
 ): RuntimeEnvironment {
-  return freezePlainValue({ ...environment }) as RuntimeEnvironment;
+  if (!isPlainRecord(environment)) {
+    throw new Error("Step environment must be a plain record");
+  }
+  return freezePlainValue(environment) as RuntimeEnvironment;
 }
 
 function freezePlainValue(value: unknown): unknown {

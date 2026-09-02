@@ -303,6 +303,175 @@ test("Policy changes during authorization fail closed before Grant issuance", as
   assert.equal(executed, false);
 });
 
+test("Registry replacement while authorization waits invalidates the call", async () => {
+  let authorizationStarted = false;
+  let originalExecuted = false;
+  let replacementExecuted = false;
+  let dispatched = false;
+  const approval = deferred();
+  const registry = new ToolRegistry();
+  const registration = registry.register(simpleDefinition("write", {
+    execute() {
+      originalExecuted = true;
+    },
+  }));
+  const snapshot = registry.captureSnapshot({ authorityVersion: "authority-1" });
+  const tools = executor(registry, allowedAuthorization({
+    authorize() {
+      authorizationStarted = true;
+      return approval.promise;
+    },
+  }), {
+    lifecycle: {
+      prepare() {},
+      markDispatched() {
+        dispatched = true;
+      },
+      finish() {},
+    },
+  });
+  const execution = tools.execute({
+    call: ready("call-1", "write", {}),
+    context: {},
+    scope,
+    snapshot,
+  });
+
+  await until(() => authorizationStarted);
+  assert.equal(registration.unregister(), true);
+  registry.register(simpleDefinition("write", {
+    execute() {
+      replacementExecuted = true;
+    },
+  }));
+  approval.resolve({ status: "allowed", policyVersion: "policy-1" });
+
+  const result = await execution;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "permission_denied");
+  assert.match(result.error.message, /registry changed/u);
+  assert.equal(dispatched, false);
+  assert.equal(originalExecuted, false);
+  assert.equal(replacementExecuted, false);
+});
+
+test("Registry replacement after Grant issuance still cannot execute", async () => {
+  let originalExecuted = false;
+  let replacementExecuted = false;
+  const registry = new ToolRegistry();
+  const registration = registry.register(simpleDefinition("write", {
+    execute() {
+      originalExecuted = true;
+    },
+  }));
+  const tools = executor(registry, allowedAuthorization(), {
+    events: {
+      publish(event) {
+        if (event.type !== "tool.dispatched") return;
+        assert.equal(registration.unregister(), true);
+        registry.register(simpleDefinition("write", {
+          execute() {
+            replacementExecuted = true;
+          },
+        }));
+      },
+    },
+  });
+
+  const result = await tools.execute({
+    call: ready("call-1", "write", {}),
+    context: {},
+    scope,
+    snapshot: registry.captureSnapshot({ authorityVersion: "authority-1" }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "permission_denied");
+  assert.equal(result.phase, "dispatched");
+  assert.match(result.error.message, /registry changed/u);
+  assert.equal(originalExecuted, false);
+  assert.equal(replacementExecuted, false);
+});
+
+test("Tool events, Grant timestamps, and expiry checks share one clock", async () => {
+  const epochMs = Date.parse("2000-01-01T00:00:00.000Z");
+  const occurredAt = [];
+  let seenGrant;
+  const registry = new ToolRegistry();
+  registry.register(simpleDefinition("read", {
+    execute(_input, _context, grant) {
+      seenGrant = grant;
+      assertActiveToolAuthorizationGrant(grant);
+      return "ok";
+    },
+  }));
+  const tools = executor(registry, allowedAuthorization(), {
+    clock: {
+      now() {
+        return new Date(epochMs);
+      },
+    },
+    grantTtlMs: 1_000,
+    events: {
+      publish(event) {
+        occurredAt.push(event.occurredAt);
+      },
+    },
+  });
+
+  const result = await tools.execute({
+    call: ready("call-1", "read", {}),
+    context: {},
+    scope,
+    snapshot: registry.captureSnapshot({ authorityVersion: "authority-1" }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(seenGrant.issuedAt, "2000-01-01T00:00:00.000Z");
+  assert.equal(seenGrant.expiresAt, "2000-01-01T00:00:01.000Z");
+  assert.deepEqual(
+    occurredAt,
+    Array.from({ length: occurredAt.length }, () => "2000-01-01T00:00:00.000Z"),
+  );
+});
+
+test("Grant expiry follows the injected clock before concrete execution", async () => {
+  let epochMs = Date.parse("2000-01-01T00:00:00.000Z");
+  let executed = false;
+  const registry = new ToolRegistry();
+  registry.register(simpleDefinition("write", {
+    execute() {
+      executed = true;
+    },
+  }));
+  const tools = executor(registry, allowedAuthorization(), {
+    clock: {
+      now() {
+        return new Date(epochMs);
+      },
+    },
+    grantTtlMs: 1_000,
+    lifecycle: {
+      prepare() {},
+      markDispatched() {
+        epochMs += 1_000;
+      },
+      finish() {},
+    },
+  });
+
+  const result = await tools.execute({
+    call: ready("call-1", "write", {}),
+    context: {},
+    scope,
+    snapshot: registry.captureSnapshot({ authorityVersion: "authority-1" }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /has expired/u);
+  assert.equal(executed, false);
+});
+
 test("A Registry change invalidates an already captured Step snapshot", async () => {
   let authorized = false;
   const registry = new ToolRegistry();

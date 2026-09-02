@@ -6,7 +6,11 @@ import {
   EventCursorExpiredError,
   RuntimeEventStream,
 } from "../dist/core/events/event.js";
-import { Runtime } from "../dist/core/runtime/runtime.js";
+import {
+  applyRuntimeTransition,
+  createRunState,
+  Runtime,
+} from "../dist/core/runtime/runtime.js";
 
 function deferred() {
   let resolve;
@@ -488,4 +492,323 @@ test("bounded event replay fails explicitly when an observer cursor expires", as
   const replay = await collect(stream.observe({ afterSequence: 1 }));
   assert.deepEqual(replay.map((event) => event.sequence), [2, 3]);
   assert.equal(Object.isFrozen(replay[0]), true);
+});
+
+test("Runtime snapshots direct definitions, metadata, and queued follow-up payloads", async () => {
+  const services = deterministicServices();
+  const entered = deferred();
+  const release = deferred();
+  const executions = [];
+  const configuration = { routing: { candidates: ["primary"] } };
+  const metadata = { owner: { team: "core" } };
+  const initialPayload = { message: { text: "first" } };
+  const runtime = new Runtime({
+    ...services,
+    stepPipeline: {
+      async execute(input) {
+        executions.push({
+          configuration: input.definition.configuration,
+          input: input.snapshot.userTurn.input,
+        });
+        if (input.snapshot.userTurn.ordinal === 1) {
+          entered.resolve();
+          await release.promise;
+        }
+        return {
+          status: "completed",
+          result: input.snapshot.userTurn.input.message.text,
+        };
+      },
+    },
+  });
+  const handle = runtime.startRun(
+    { id: "direct-agent", configuration },
+    { scope: "direct", payload: initialPayload, metadata },
+  );
+
+  configuration.routing.candidates.push("later");
+  metadata.owner.team = "changed";
+  initialPayload.message.text = "changed";
+  await entered.promise;
+
+  const followUpPayload = { message: { text: "second" } };
+  assert.equal(runtime.control("direct-agent", handle.runId, {
+    type: "follow_up",
+    id: "follow-snapshot",
+    payload: followUpPayload,
+    text: "second",
+  }).accepted, true);
+  followUpPayload.message.text = "changed";
+  release.resolve();
+
+  const completion = await handle.completion;
+  assert.equal(completion.status, "completed");
+  assert.deepEqual(executions, [
+    {
+      configuration: { routing: { candidates: ["primary"] } },
+      input: { message: { text: "first" } },
+    },
+    {
+      configuration: { routing: { candidates: ["primary"] } },
+      input: { message: { text: "second" } },
+    },
+  ]);
+  assert.deepEqual(completion.snapshot.metadata, {
+    owner: { team: "core" },
+  });
+  assert.equal(Object.isFrozen(executions[0].configuration.routing), true);
+  assert.equal(Object.isFrozen(executions[1].input.message), true);
+  assert.equal(Object.isFrozen(completion.snapshot.metadata.owner), true);
+});
+
+test("a Step output publisher rejects use after its execute call returns", async () => {
+  const services = deterministicServices();
+  let output;
+  const runtime = new Runtime({
+    ...services,
+    stepPipeline: {
+      async execute(input) {
+        output = input.output;
+        return { status: "completed", result: "done" };
+      },
+    },
+  });
+  const handle = runtime.startRun(
+    { id: "output-agent" },
+    { scope: "output", payload: "task" },
+  );
+  assert.equal((await handle.completion).status, "completed");
+
+  assert.throws(
+    () => output.publishModel({ type: "text_delta", text: "late" }),
+    /Step output publisher is no longer active/u,
+  );
+});
+
+test("a stalled diagnostic observer cannot delay Run completion", async () => {
+  const services = deterministicServices();
+  const blocked = deferred();
+  const runtime = new Runtime({
+    ...services,
+    observers: [{
+      onTransition() {
+        return blocked.promise;
+      },
+    }],
+    stepPipeline: {
+      async execute() {
+        return { status: "completed", result: "done" };
+      },
+    },
+  });
+  const handle = runtime.startRun(
+    { id: "observer-agent" },
+    { scope: "observer-stall", payload: "task" },
+  );
+  const settled = await Promise.race([
+    handle.completion,
+    new Promise((resolve) => setImmediate(() => resolve("not-settled"))),
+  ]);
+  blocked.resolve();
+
+  assert.notEqual(settled, "not-settled");
+  assert.equal(settled.status, "completed");
+});
+
+test("invalid Step Pipeline results fail through an explicit Runtime contract", async () => {
+  const services = deterministicServices();
+  const runtime = new Runtime({
+    ...services,
+    stepPipeline: {
+      async execute() {
+        return { status: "continue", reason: "missing memory" };
+      },
+    },
+  });
+  const completion = await runtime.startRun(
+    { id: "invalid-pipeline-agent" },
+    { scope: "invalid-pipeline", payload: "task" },
+  ).completion;
+
+  assert.equal(completion.status, "failed");
+  assert.equal(completion.error.code, "invalid_step_pipeline_result");
+  assert.match(completion.error.message, /requires next-Step memory/u);
+  assert.equal(completion.snapshot.userTurns[0].steps[0].status, "failed");
+});
+
+test("accepted steering at the Step limit fails instead of being dropped", async () => {
+  const services = deterministicServices();
+  const entered = deferred();
+  const release = deferred();
+  const runtime = new Runtime({
+    ...services,
+    maxSteps: 1,
+    stepPipeline: {
+      async execute() {
+        entered.resolve();
+        await release.promise;
+        return { status: "completed", result: "stale answer" };
+      },
+    },
+  });
+  const handle = runtime.startRun(
+    { id: "budget-agent" },
+    { scope: "steer-at-limit", payload: "task" },
+  );
+  await entered.promise;
+  assert.equal(runtime.control("budget-agent", handle.runId, {
+    type: "steer",
+    id: "last-step-steer",
+    text: "must be considered",
+  }).accepted, true);
+  release.resolve();
+
+  const completion = await handle.completion;
+  assert.equal(completion.status, "failed");
+  assert.equal(completion.error.code, "max_steps_exceeded");
+  assert.equal(completion.snapshot.userTurns[0].steps[0].status, "completed");
+});
+
+test("abort reaches Step snapshot capture before pipeline execution", async () => {
+  const services = deterministicServices();
+  const entered = deferred();
+  let executions = 0;
+  const runtime = new Runtime({
+    ...services,
+    snapshotProvider: {
+      async capture(input) {
+        entered.resolve();
+        if (!input.signal.aborted) {
+          await new Promise((resolve) => {
+            input.signal.addEventListener("abort", resolve, { once: true });
+          });
+        }
+        return {};
+      },
+    },
+    stepPipeline: {
+      async execute() {
+        executions += 1;
+        return { status: "completed", result: "must not execute" };
+      },
+    },
+  });
+  const handle = runtime.startRun(
+    { id: "snapshot-agent" },
+    { scope: "snapshot-abort", payload: "task" },
+  );
+  await entered.promise;
+  runtime.control("snapshot-agent", handle.runId, {
+    type: "abort",
+    reason: "stop capture",
+  });
+
+  const completion = await handle.completion;
+  assert.equal(completion.status, "aborted");
+  assert.equal(executions, 0);
+  assert.equal(completion.snapshot.userTurns[0].steps[0].status, "aborted");
+  assert.equal(completion.snapshot.userTurns[0].status, "aborted");
+});
+
+test("initial transition failure releases the Run id and scope", async () => {
+  const services = deterministicServices();
+  let eventIds = 0;
+  const runtime = new Runtime({
+    ...services,
+    ids: {
+      ...services.ids,
+      eventId: () => ++eventIds === 1 ? " " : `event-${eventIds}`,
+    },
+    stepPipeline: {
+      async execute() {
+        return { status: "completed", result: "done" };
+      },
+    },
+  });
+
+  assert.throws(
+    () => runtime.startRun(
+      { id: "startup-agent" },
+      { scope: "reusable", payload: "first" },
+    ),
+    /Event id must not be empty/u,
+  );
+  assert.equal(runtime.activeRuns().length, 0);
+  assert.equal(runtime.runForScope("reusable"), undefined);
+
+  const completion = await runtime.startRun(
+    { id: "startup-agent" },
+    { scope: "reusable", payload: "second" },
+  ).completion;
+  assert.equal(completion.status, "completed");
+});
+
+test("pure transitions reject paths outside the Run-UserTurn-Step hierarchy", () => {
+  assert.throws(
+    () => createRunState({
+      runId: "self-parent",
+      agentId: "state-agent",
+      scope: "state",
+      parentRunId: "self-parent",
+      createdAt: "t0",
+    }),
+    /cannot be its own parent/u,
+  );
+
+  let state = createRunState({
+    runId: "run-state",
+    agentId: "state-agent",
+    scope: "state",
+    createdAt: "t0",
+  });
+  state = applyRuntimeTransition(state, { type: "run.started", at: "t1" });
+  state = applyRuntimeTransition(state, {
+    type: "user_turn.started",
+    userTurnId: "turn-state",
+    ordinal: 1,
+    input: "task",
+    at: "t2",
+  });
+  state = applyRuntimeTransition(state, {
+    type: "step.started",
+    userTurnId: "turn-state",
+    stepId: "step-1",
+    ordinal: 1,
+    at: "t3",
+  });
+  state = applyRuntimeTransition(state, {
+    type: "step.failed",
+    userTurnId: "turn-state",
+    stepId: "step-1",
+    error: { code: "failed", message: "failed", retryable: false },
+    at: "t4",
+  });
+
+  assert.throws(
+    () => applyRuntimeTransition(state, {
+      type: "step.started",
+      userTurnId: "turn-state",
+      stepId: "step-2",
+      ordinal: 2,
+      at: "t5",
+    }),
+    /only after the previous Step completed/u,
+  );
+  assert.throws(
+    () => applyRuntimeTransition(state, {
+      type: "user_turn.completed",
+      userTurnId: "turn-state",
+      result: "invalid",
+      at: "t5",
+    }),
+    /requires a completed Step/u,
+  );
+  assert.throws(
+    () => applyRuntimeTransition(state, {
+      type: "run.failed",
+      error: { code: "failed", message: "failed", retryable: false },
+      at: "t5",
+    }),
+    /active UserTurn/u,
+  );
 });
