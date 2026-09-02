@@ -1,0 +1,53 @@
+{
+  "name": "wish",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./core/agent": {
+      "types": "./dist/core/agent/agent.d.ts",
+      "import": "./dist/core/agent/agent.js"
+    },
+    "./core/runtime": {
+      "types": "./dist/core/runtime/runtime.d.ts",
+      "import": "./dist/core/runtime/runtime.js"
+    },
+    "./core/events": {
+      "types": "./dist/core/events/event.d.ts",
+      "import": "./dist/core/events/event.js"
+    },
+    "./core/model": {
+      "types": "./dist/core/model/model.d.ts",
+      "import": "./dist/core/model/model.js"
+    },
+    "./core/context": {
+      "types": "./dist/core/context/projector.d.ts",
+      "import": "./dist/core/context/projector.js"
+    },
+    "./core/tools": {
+      "types": "./dist/core/tools/scheduler.d.ts",
+      "import": "./dist/core/tools/scheduler.js"
+    },
+    "./core/agent-loop": {
+      "types": "./dist/core/agent-loop/agent-loop.d.ts",
+      "import": "./dist/core/agent-loop/agent-loop.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
+    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-model.mjs && node scripts/accept-context.mjs && node scripts/accept-tools.mjs && node scripts/accept-agent-loop.mjs",
+    "test:agent": "npm run build && node scripts/accept-agent.mjs",
+    "test:runtime": "npm run build && node scripts/accept-runtime.mjs",
+    "test:model": "npm run build && node scripts/accept-model.mjs",
+    "test:context": "npm run build && node scripts/accept-context.mjs",
+    "test:tools": "npm run build && node scripts/accept-tools.mjs",
+    "test:agent-loop": "npm run build && node scripts/accept-agent-loop.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
