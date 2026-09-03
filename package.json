@@ -32,6 +32,26 @@
       "types": "./dist/core/agent-loop/agent-loop.d.ts",
       "import": "./dist/core/agent-loop/agent-loop.js"
     },
+    "./context": {
+      "types": "./dist/context/index.d.ts",
+      "import": "./dist/context/index.js"
+    },
+    "./context/types": {
+      "types": "./dist/context/types.d.ts",
+      "import": "./dist/context/types.js"
+    },
+    "./compaction": {
+      "types": "./dist/compaction/index.d.ts",
+      "import": "./dist/compaction/index.js"
+    },
+    "./sessions": {
+      "types": "./dist/sessions/index.d.ts",
+      "import": "./dist/sessions/index.js"
+    },
+    "./sessions/types": {
+      "types": "./dist/sessions/types.d.ts",
+      "import": "./dist/sessions/types.js"
+    },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools/index.js"
@@ -56,6 +76,10 @@
       "types": "./dist/models/usage.d.ts",
       "import": "./dist/models/usage.js"
     },
+    "./models/input-tokens": {
+      "types": "./dist/models/input-tokens.d.ts",
+      "import": "./dist/models/input-tokens.js"
+    },
     "./models/catalog": {
       "types": "./dist/models/catalog.d.ts",
       "import": "./dist/models/catalog.js"
@@ -71,12 +95,16 @@
     "./storage/models/file-catalog-store": {
       "types": "./dist/storage/models/file-catalog-store.d.ts",
       "import": "./dist/storage/models/file-catalog-store.js"
+    },
+    "./storage/sessions/file-session-store": {
+      "types": "./dist/storage/sessions/file-session-store.d.ts",
+      "import": "./dist/storage/sessions/file-session-store.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-tools.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs",
+    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-input-tokens.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-context-history.mjs && node scripts/accept-context-providers.mjs && node scripts/accept-context-tool-results.mjs && node scripts/accept-context-budget.mjs && node scripts/accept-context-bundle.mjs && node scripts/accept-compaction.mjs && node scripts/accept-sessions.mjs && node scripts/accept-tools.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs",
     "test:agent": "npm run build && node scripts/accept-agent.mjs",
     "test:runtime": "npm run build && node scripts/accept-runtime.mjs",
     "test:events": "npm run build && node scripts/accept-events.mjs",
@@ -84,9 +112,17 @@
     "test:models-runtime": "npm run build && node scripts/accept-model-runtime.mjs",
     "test:model-providers": "npm run build && node scripts/accept-model-providers.mjs",
     "test:model-usage": "npm run build && node scripts/accept-model-usage.mjs",
+    "test:model-input-tokens": "npm run build && node scripts/accept-model-input-tokens.mjs",
     "test:model-composition": "npm run build && node scripts/accept-model-composition.mjs",
     "test:model-catalog": "npm run build && node scripts/accept-model-catalog.mjs",
     "test:context": "npm run build && node scripts/accept-context.mjs",
+    "test:context-history": "npm run build && node scripts/accept-context-history.mjs",
+    "test:context-providers": "npm run build && node scripts/accept-context-providers.mjs",
+    "test:context-tool-results": "npm run build && node scripts/accept-context-tool-results.mjs",
+    "test:context-budget": "npm run build && node scripts/accept-context-budget.mjs",
+    "test:context-bundle": "npm run build && node scripts/accept-context-bundle.mjs",
+    "test:compaction": "npm run build && node scripts/accept-compaction.mjs",
+    "test:sessions": "npm run build && node scripts/accept-sessions.mjs",
     "test:tools": "npm run build && node scripts/accept-tools.mjs",
     "test:basic-tools-path": "npm run build && node scripts/accept-basic-tools-path.mjs",
     "test:basic-tools-truncate": "npm run build && node scripts/accept-basic-tools-truncate.mjs",

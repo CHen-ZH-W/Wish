@@ -60,8 +60,9 @@ AgentLoop 单 Step：
 - `ContextProvider` 及 Context 的窄 Port：history/summary 选择、Tool Result
   归档/可见副本和预算评估。
 - `ToolRegistry` 注册项、授权服务、执行生命周期及 Scheduler 的具体组装。
-- `AgentLoopToolResultRenderer`：可选的模型可见结果呈现；默认是完整
-  `ToolResult` JSON，并强制保留 `role=tool` 和调用 ID 配对。
+- `AgentLoopToolResultRenderer`：可选的模型可见结果呈现；输入包含当前 Step 的
+  `AbortSignal`，默认是完整 `ToolResult` JSON，并强制保留 `role=tool` 和调用 ID
+  配对。外部 Context 可在这里用 decorator 先归档完整结构，再调用实际 renderer。
 
 这些接口对应固定阶段，不是任意时机可插入的通用 Hook。Provider、存储、具体
 Tool、审批界面、Sandbox、Workflow、Memory、Skill 和传输层仍位于 Core 外。

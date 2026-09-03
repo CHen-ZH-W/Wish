@@ -94,7 +94,14 @@ function createTools() {
   };
 }
 
-function createLoop({ model, registry, scheduler, projector = new ContextProjector(), environment } = {}) {
+function createLoop({
+  model,
+  registry,
+  scheduler,
+  projector = new ContextProjector(),
+  environment,
+  toolResults,
+} = {}) {
   return new AgentLoop({
     model,
     context: projector,
@@ -117,6 +124,7 @@ function createLoop({ model, registry, scheduler, projector = new ContextProject
         };
       },
     },
+    ...(toolResults === undefined ? {} : { toolResults }),
   });
 }
 
@@ -493,6 +501,59 @@ test("Runtime abort reaches the active Model stream and terminates AgentLoop", a
   }).accepted, true);
   const completion = await handle.completion;
 
+  assert.equal(completion.status, "aborted");
+  assert.equal(completion.cancellation.reason, "user_stop");
+});
+
+test("Runtime abort reaches Tool Result rendering and remains an aborted terminal", async () => {
+  const tools = createTools();
+  const entered = deferred();
+  let rendererSignal;
+  const model = {
+    async *stream(request) {
+      yield { type: "start", model: request.model };
+      yield {
+        type: "tool_call",
+        call: { id: "call-abort", name: "sum", argumentsJson: '{"a":2,"b":3}' },
+      };
+      yield { type: "done", finishReason: "tool_calls" };
+    },
+  };
+  const toolResults = {
+    async render({ result, signal }) {
+      rendererSignal = signal;
+      entered.resolve();
+      if (!signal.aborted) {
+        await new Promise((resolve) =>
+          signal.addEventListener("abort", resolve, { once: true })
+        );
+      }
+      throw signal.reason;
+    },
+  };
+  const runtime = new Runtime({
+    ...deterministicServices(),
+    stepPipeline: createLoop({
+      model,
+      registry: tools.registry,
+      scheduler: tools.scheduler,
+      toolResults,
+    }),
+  });
+  const agent = new Agent({ id: "agent" }, runtime);
+  const handle = agent.startRun({
+    scope: "abort-tool-result-renderer",
+    payload: { text: "run" },
+  });
+  await entered.promise;
+  assert.equal(agent.control(handle.runId, {
+    type: "abort",
+    id: "abort-renderer",
+    reason: "user_stop",
+  }).accepted, true);
+  const completion = await handle.completion;
+
+  assert.equal(rendererSignal.aborted, true);
   assert.equal(completion.status, "aborted");
   assert.equal(completion.cancellation.reason, "user_stop");
 });

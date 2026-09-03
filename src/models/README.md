@@ -22,6 +22,8 @@ Models configuration
 - `runtime.ts`：严格按 `ModelRequest.model` 路由，并在调用时解析 headers/凭据。
 - `providers/`：OpenAI Chat Completions-compatible 与 Anthropic Messages 转换。
 - `usage.ts`：按完整模型身份注册 tokenizer、补齐缺失 usage、计算费用。
+- `input-tokens.ts`：按完整模型身份注册 request-only tokenizer，为 Context 提供调用
+  前的输入 Token 计数。
 - `catalog.ts`：请求热路径外的 list/check/diff/sync 控制面服务。
 - `storage/models/file-catalog-store.ts`：Catalog 的原子 JSON 文件 Store。
 
@@ -115,6 +117,19 @@ input、cache read、cache write 和 output。缓存 usage 或对应价格未知
 `status: "unavailable"`，但不影响模型结果。Models 不负责 Run/UserTurn 归因、跨
 Step 指标持久化或 UI 展示。
 
+## 请求前输入 Token
+
+`ModelRequestTokenCounter` 与 usage estimator 分离：它只接收最终 `ModelRequest`，不
+伪造尚未发生的 `ModelOutput`。每个 tokenizer 按完整 `provider/model` 注册，并负责
+统计 messages、reasoning、Tool Call 参数、Tool schema、图片和协议开销。
+
+计数前会复制并冻结请求快照。没有注册精确 tokenizer，或 tokenizer 发生普通不可用
+错误时返回 `undefined`，让 Context 报告 `unknown`；非法负数或非整数属于实现契约
+错误。AbortSignal 会传给 tokenizer，中止原因继续向上传播。
+
+模型窗口由 `ConfiguredModel.getContextWindowTokens()` 从已经加载、校验的
+`ModelSpec` 读取。控制面的 `ModelCatalog` 不进入每次请求的 Budget 热路径。
+
 ## Catalog
 
 `ModelCatalog.list/check/diff` 不写 Store；只有 `sync` 写入。文件 Store 使用同目录
@@ -129,6 +144,7 @@ npm run typecheck
 npm run test:models-runtime
 npm run test:model-providers
 npm run test:model-usage
+npm run test:model-input-tokens
 npm run test:model-composition
 npm run test:model-catalog
 npm test

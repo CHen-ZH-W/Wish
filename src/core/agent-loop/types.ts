@@ -89,5 +89,6 @@ export interface AgentLoopToolResultRenderer<Payload = unknown> {
     readonly call: ToolCall;
     readonly result: ToolResult;
     readonly snapshot: StepSnapshot<Payload>;
+    readonly signal: AbortSignal;
   }): Promise<ModelMessage> | ModelMessage;
 }

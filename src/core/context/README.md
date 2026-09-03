@@ -35,9 +35,11 @@ ContextProvider（并发读取，按注册顺序收集）
   投影完成后仍恰好存在一次、正文和结构均未改变。
 - 最终 assistant/tool 历史必须配对：Tool Result 不能孤立、重复、错配，也不能在
   未补齐 assistant Tool calls 时插入其他角色消息。
-- 如果配置 `ContextToolResultPipeline`，Core 先把完整、不可变的 Tool Result 交给
-  `archive` 并等待成功，再调用 `toModelMessage` 生成模型可见副本；归档失败时绝不
-  进入裁剪阶段。可见副本必须保留 `role=tool` 和原 `toolCallId`。
+- 如果配置 `ContextToolResultPipeline`，Core 先把完整、不可变的 Tool Message 交给
+  `archive` gate 并等待成功，再调用 `toModelMessage` 生成模型可见副本；gate 失败时
+  绝不进入裁剪阶段。外部实现若需保存 renderer 之前的完整 executor `ToolResult`，
+  必须在 AgentLoop renderer decorator 处完成并把 receipt 带到这里。可见副本必须
+  保留 `role=tool` 和原 `toolCallId`。
 - 未配置 Tool Result pipeline 时，Core 保留完整结果，不会在没有归档的情况下
   自行裁剪。
 - 预算只评估最终模型可见请求。`over_budget` 不会返回可直接调用 Model 的
@@ -67,8 +69,9 @@ Projector 只执行 item 已声明的 placement，不分析正文内容：
   placement 的 `ContextItem`。
 - `ContextHistoryPolicy`：决定 summary/checkpoint 与原始 history 的选择；默认只
   允许没有 summary 的 history 原样进入。
-- `ContextToolResultPipeline`：实现原始结果的持久化，以及具体阈值、head/tail、
-  artifact 引用等模型可见策略。Core 只保证调用顺序和配对不变量。
+- `ContextToolResultPipeline`：验证外部原始结果归档 receipt，并实现具体阈值、
+  head/tail、artifact 引用等模型可见策略。Core 只保证 gate 先于可见副本，以及
+  Tool Call 配对不变量。
 - `ContextBudgetEvaluator`：实现 tokenizer、图片成本、模型窗口和 output reserve
   计算。
 - `rejected(over_budget)` 之后的压缩、换模型或结束 Run，由 AgentLoop 或外部组合

@@ -1,4 +1,8 @@
 import type { Model } from "../src/core/model/model.js";
+import type {
+  ModelContextWindowSource,
+  ModelInputTokenCounter,
+} from "../src/context/types.js";
 import {
   loadModelsConfiguration,
   resolveConfiguredModel,
@@ -6,6 +10,10 @@ import {
 import { ModelAdapterRegistry } from "../src/models/registry.js";
 import { ConfiguredModel } from "../src/models/runtime.js";
 import { ModelCatalog } from "../src/models/catalog.js";
+import {
+  ModelRequestTokenCounter,
+  type ModelRequestTokenizer,
+} from "../src/models/input-tokens.js";
 import { FileCatalogStore } from "../src/storage/models/file-catalog-store.js";
 import type {
   ModelAdapterFactory,
@@ -48,12 +56,23 @@ const configuration = loadModelsConfiguration({
   availableProtocols: registry.protocols(),
 });
 const resolved = resolveConfiguredModel(configuration, configuration.defaultModel);
-const configuredModel: Model = new ConfiguredModel({
+const configuredRuntime = new ConfiguredModel({
   configuration,
   registry,
   environment: { MODEL_API_KEY: "secret" },
   fetch: async () => new Response(),
 });
+const configuredModel: Model = configuredRuntime;
+const contextWindows: ModelContextWindowSource = configuredRuntime;
+const requestTokenizer: ModelRequestTokenizer = {
+  method: "fixture-request-tokenizer-v1",
+  count() {
+    return 42;
+  },
+};
+const requestTokenCounter = new ModelRequestTokenCounter();
+requestTokenCounter.register(configuration.defaultModel, requestTokenizer);
+const contextTokenCounter: ModelInputTokenCounter = requestTokenCounter;
 const catalog = new ModelCatalog({
   configuration,
   store: new FileCatalogStore({ path: ".wish/models-catalog.json" }),
@@ -61,4 +80,6 @@ const catalog = new ModelCatalog({
 
 void resolved;
 void configuredModel;
+void contextWindows;
+void contextTokenCounter;
 void catalog.list();

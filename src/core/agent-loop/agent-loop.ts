@@ -285,7 +285,12 @@ export class AgentLoop<
           throw new Error("Missing Tool call for scheduled result");
         }
         messages.push(validateToolResultMessage(
-          await this.toolResults.render({ call, result, snapshot: input.snapshot }),
+          await this.toolResults.render({
+            call,
+            result,
+            snapshot: input.snapshot,
+            signal: input.signal,
+          }),
           result.callId,
         ));
       }
@@ -299,7 +304,9 @@ export class AgentLoop<
           : { usage: addUsage(memory.usage, output.usage) }),
       });
     } catch (error: unknown) {
-      return failed("agent_loop_transcript_failed", error);
+      return input.signal.aborted
+        ? aborted(input.signal.reason)
+        : failed("agent_loop_transcript_failed", error);
     }
 
     if (calls.length > 0) {
