@@ -32,6 +32,10 @@
       "types": "./dist/core/agent-loop/agent-loop.d.ts",
       "import": "./dist/core/agent-loop/agent-loop.js"
     },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js"
+    },
     "./models/types": {
       "types": "./dist/models/types.d.ts",
       "import": "./dist/models/types.js"
@@ -72,7 +76,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-tools.mjs && node scripts/accept-agent-loop.mjs",
+    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-tools.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs",
     "test:agent": "npm run build && node scripts/accept-agent.mjs",
     "test:runtime": "npm run build && node scripts/accept-runtime.mjs",
     "test:events": "npm run build && node scripts/accept-events.mjs",
@@ -84,12 +88,28 @@
     "test:model-catalog": "npm run build && node scripts/accept-model-catalog.mjs",
     "test:context": "npm run build && node scripts/accept-context.mjs",
     "test:tools": "npm run build && node scripts/accept-tools.mjs",
+    "test:basic-tools-path": "npm run build && node scripts/accept-basic-tools-path.mjs",
+    "test:basic-tools-truncate": "npm run build && node scripts/accept-basic-tools-truncate.mjs",
+    "test:basic-tools-mutation-queue": "npm run build && node scripts/accept-basic-tools-mutation-queue.mjs",
+    "test:basic-tool-write": "npm run build && node scripts/accept-basic-tool-write.mjs",
+    "test:basic-tool-edit": "npm run build && node scripts/accept-basic-tool-edit.mjs",
+    "test:basic-tool-read": "npm run build && node scripts/accept-basic-tool-read.mjs",
+    "test:basic-tool-grep": "npm run build && node scripts/accept-basic-tool-grep.mjs",
+    "test:basic-tool-bash": "npm run build && node scripts/accept-basic-tool-bash.mjs",
+    "test:basic-tools-result-renderer": "npm run build && node scripts/accept-basic-tools-result-renderer.mjs",
+    "test:basic-tools-index": "npm run build && node scripts/accept-basic-tools-index.mjs",
+    "test:basic-tools-integration": "npm run build && node scripts/accept-basic-tools-integration.mjs",
     "test:agent-loop": "npm run build && node scripts/accept-agent-loop.mjs"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "^20.19.17",
     "typescript": "^5.8.3"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "diff": "^8.0.3"
   }
 }
