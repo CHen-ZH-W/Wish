@@ -8,6 +8,11 @@ import {
   type ToolDefinition,
   type ToolExecutionScope,
 } from "../src/core/tools/scheduler.js";
+import {
+  InteractiveToolAuthorizationService,
+  createDenyAllToolAuthorizationService,
+  type ToolApprovalPort,
+} from "../src/tools/index.js";
 
 interface ToolContext {
   readonly root: string;
@@ -46,6 +51,18 @@ const authorization: ToolAuthorizationService<ToolContext> = {
     return { status: "valid", policyVersion: "policy-1" };
   },
 };
+const approval: ToolApprovalPort<ToolContext> = {
+  requestApproval() {
+    return { status: "approved", metadata: { source: "cli" } };
+  },
+};
+const interactiveAuthorization: ToolAuthorizationService<ToolContext> =
+  new InteractiveToolAuthorizationService({
+    approval,
+    policyVersion: "policy-1",
+  });
+const deniedAuthorization: ToolAuthorizationService<ToolContext> =
+  createDenyAllToolAuthorizationService();
 
 const registry = new ToolRegistry<ToolContext>();
 registry.register(definition);
@@ -71,3 +88,6 @@ if (parsed.ok) {
     snapshot: registry.captureSnapshot({ authorityVersion: "authority-1" }),
   });
 }
+
+void interactiveAuthorization;
+void deniedAuthorization;

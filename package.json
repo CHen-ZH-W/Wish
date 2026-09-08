@@ -3,7 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "wish": "./dist/apps/cli/main.js",
+    "wish-webui": "./dist/apps/webui/main.js"
+  },
   "exports": {
+    "./apps/cli": {
+      "types": "./dist/apps/cli/index.d.ts",
+      "import": "./dist/apps/cli/index.js"
+    },
+    "./apps/webui": {
+      "types": "./dist/apps/webui/index.d.ts",
+      "import": "./dist/apps/webui/index.js"
+    },
     "./core/agent": {
       "types": "./dist/core/agent/agent.d.ts",
       "import": "./dist/core/agent/agent.js"
@@ -88,9 +100,17 @@
       "types": "./dist/models/providers/openai-compatible.d.ts",
       "import": "./dist/models/providers/openai-compatible.js"
     },
+    "./models/providers/openai-responses": {
+      "types": "./dist/models/providers/openai-responses.d.ts",
+      "import": "./dist/models/providers/openai-responses.js"
+    },
     "./models/providers/anthropic-messages": {
       "types": "./dist/models/providers/anthropic-messages.d.ts",
       "import": "./dist/models/providers/anthropic-messages.js"
+    },
+    "./models/providers/anthropic-messages-tokens": {
+      "types": "./dist/models/providers/anthropic-messages-tokens.d.ts",
+      "import": "./dist/models/providers/anthropic-messages-tokens.js"
     },
     "./storage/models/file-catalog-store": {
       "types": "./dist/storage/models/file-catalog-store.d.ts",
@@ -99,17 +119,25 @@
     "./storage/sessions/file-session-store": {
       "types": "./dist/storage/sessions/file-session-store.d.ts",
       "import": "./dist/storage/sessions/file-session-store.js"
+    },
+    "./storage/tool-results/file-tool-result-archive": {
+      "types": "./dist/storage/tool-results/file-tool-result-archive.d.ts",
+      "import": "./dist/storage/tool-results/file-tool-result-archive.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-webui-assets.mjs",
+    "models:generate": "node scripts/models/generate-models.mjs",
+    "models:check-generated": "node scripts/models/generate-models.mjs --check",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-input-tokens.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-context-history.mjs && node scripts/accept-context-providers.mjs && node scripts/accept-context-tool-results.mjs && node scripts/accept-context-budget.mjs && node scripts/accept-context-bundle.mjs && node scripts/accept-compaction.mjs && node scripts/accept-sessions.mjs && node scripts/accept-tools.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs",
+    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-generation.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-input-tokens.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-context-history.mjs && node scripts/accept-context-providers.mjs && node scripts/accept-context-tool-results.mjs && node scripts/accept-tool-result-archive.mjs && node scripts/accept-context-budget.mjs && node scripts/accept-context-bundle.mjs && node scripts/accept-compaction.mjs && node scripts/accept-sessions.mjs && node scripts/accept-tools.mjs && node scripts/accept-tool-authorization.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs && node scripts/accept-apps-composition.mjs && node scripts/accept-apps-cli.mjs && node scripts/accept-apps-webui.mjs",
+    "webui": "npm run build && node dist/apps/webui/main.js",
     "test:agent": "npm run build && node scripts/accept-agent.mjs",
     "test:runtime": "npm run build && node scripts/accept-runtime.mjs",
     "test:events": "npm run build && node scripts/accept-events.mjs",
     "test:model": "npm run build && node scripts/accept-model.mjs",
     "test:models-runtime": "npm run build && node scripts/accept-model-runtime.mjs",
+    "test:model-generation": "node scripts/accept-model-generation.mjs",
     "test:model-providers": "npm run build && node scripts/accept-model-providers.mjs",
     "test:model-usage": "npm run build && node scripts/accept-model-usage.mjs",
     "test:model-input-tokens": "npm run build && node scripts/accept-model-input-tokens.mjs",
@@ -119,11 +147,13 @@
     "test:context-history": "npm run build && node scripts/accept-context-history.mjs",
     "test:context-providers": "npm run build && node scripts/accept-context-providers.mjs",
     "test:context-tool-results": "npm run build && node scripts/accept-context-tool-results.mjs",
+    "test:tool-result-archive": "npm run build && node scripts/accept-tool-result-archive.mjs",
     "test:context-budget": "npm run build && node scripts/accept-context-budget.mjs",
     "test:context-bundle": "npm run build && node scripts/accept-context-bundle.mjs",
     "test:compaction": "npm run build && node scripts/accept-compaction.mjs",
     "test:sessions": "npm run build && node scripts/accept-sessions.mjs",
     "test:tools": "npm run build && node scripts/accept-tools.mjs",
+    "test:tool-authorization": "npm run build && node scripts/accept-tool-authorization.mjs",
     "test:basic-tools-path": "npm run build && node scripts/accept-basic-tools-path.mjs",
     "test:basic-tools-truncate": "npm run build && node scripts/accept-basic-tools-truncate.mjs",
     "test:basic-tools-mutation-queue": "npm run build && node scripts/accept-basic-tools-mutation-queue.mjs",
@@ -135,7 +165,10 @@
     "test:basic-tools-result-renderer": "npm run build && node scripts/accept-basic-tools-result-renderer.mjs",
     "test:basic-tools-index": "npm run build && node scripts/accept-basic-tools-index.mjs",
     "test:basic-tools-integration": "npm run build && node scripts/accept-basic-tools-integration.mjs",
-    "test:agent-loop": "npm run build && node scripts/accept-agent-loop.mjs"
+    "test:agent-loop": "npm run build && node scripts/accept-agent-loop.mjs",
+    "test:apps-composition": "npm run build && node scripts/accept-apps-composition.mjs",
+    "test:apps-cli": "npm run build && node scripts/accept-apps-cli.mjs",
+    "test:apps-webui": "npm run build && node scripts/accept-apps-webui.mjs"
   },
   "devDependencies": {
     "@types/diff": "^7.0.2",

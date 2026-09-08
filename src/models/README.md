@@ -17,13 +17,19 @@ Models configuration
 ```
 
 - `types.ts`：公开的 Provider、Model、兼容性、价格和 Adapter DTO。
+- `provider-definitions.ts`：稳定的协议、endpoint、鉴权环境变量和请求兼容定义。
+- `models.generated.ts`：由公开模型源生成并随 Wish 提交的模型元数据，不包含凭据。
+- `defaults.ts`：组合固定 Provider 定义与生成模型，形成默认配置。
 - `config.ts`：JSON/环境配置加载、启动期校验、完整模型引用解析和覆盖合并。
 - `registry.ts`：协议到 Adapter factory 的显式注册表。
 - `runtime.ts`：严格按 `ModelRequest.model` 路由，并在调用时解析 headers/凭据。
-- `providers/`：OpenAI Chat Completions-compatible 与 Anthropic Messages 转换。
+- `providers/`：OpenAI Responses、OpenAI Chat Completions-compatible 与
+  Anthropic Messages 转换。
 - `usage.ts`：按完整模型身份注册 tokenizer、补齐缺失 usage、计算费用。
 - `input-tokens.ts`：按完整模型身份注册 request-only tokenizer，为 Context 提供调用
   前的输入 Token 计数。
+- `providers/anthropic-messages-tokens.ts`：调用 Anthropic Messages 官方计数端点，
+  统计最终映射请求。
 - `catalog.ts`：请求热路径外的 list/check/diff/sync 控制面服务。
 - `storage/models/file-catalog-store.ts`：Catalog 的原子 JSON 文件 Store。
 
@@ -33,8 +39,30 @@ Provider 不发布 Runtime event、不执行 Tool、不聚合 `ModelOutput`，�
 
 ## 配置
 
-配置版本固定为 `schemaVersion: 1`。凭据只写环境变量名，不能把 API key 写入公开
-DTO：
+没有提供 JSON 时，Wish 使用提交在仓库中的 generated defaults。当前快照从
+models.dev、OpenRouter 和 Vercel AI Gateway 生成，只收录声明支持 Tool Call、且能由
+Wish 当前 `openai-responses`、`openai-chat-completions` 或
+`anthropic-messages` Adapter 表达的模型。固定
+Provider 定义决定协议、endpoint 和鉴权；远端模型源只能提供模型名、能力、窗口和价格
+元数据，不能覆盖凭据或传输行为。
+
+当前 checked-in 快照包含 17 个 Provider、803 个模型，默认选择
+`deepseek/deepseek-v4-flash`。模型源没有可靠提供的字段保持未知；OpenRouter 的分段价格
+也不会压扁成一个失真的静态价格。generated 元数据不等于当前账号已经可以调用。
+
+普通 `npm run build` 不访问网络。显式刷新和校验 generated 文件：
+
+```bash
+npm run models:generate
+npm run models:check-generated
+```
+
+刷新同时请求三个必要来源；任何来源、schema 或必需默认模型失败时命令非零退出，并且不
+覆盖已有文件。输出按 Provider/model 排序、去重，并通过 `ModelSpec` 类型约束；默认配置
+加载时仍会经过同一公开配置解析器的严格校验。
+
+凭据只写环境变量名，不能把 API key 写入公开 DTO。`schemaVersion: 1` 仍表示一份完整
+替换配置：
 
 ```json
 {
@@ -45,15 +73,15 @@ DTO：
   "providers": [
     {
       "id": "openai",
-      "protocol": "openai-chat-completions",
+      "protocol": "openai-responses",
       "baseUrl": "https://api.openai.com/v1",
       "auth": { "type": "bearer", "apiKeyEnv": "OPENAI_API_KEY" },
       "developerRoleMode": "native",
       "request": {
         "streamUsage": true,
         "supportsTemperature": true,
-        "maxTokensField": "max_completion_tokens",
-        "extraBody": {}
+        "maxTokensField": "max_output_tokens",
+        "extraBody": { "store": false }
       },
       "models": [
         {
@@ -78,9 +106,43 @@ DTO：
 }
 ```
 
+`schemaVersion: 2` 表示在 generated defaults 上叠加用户配置。Provider 和 Model 按
+`id` upsert；`headers`、`request.extraBody`、`input` 和 `price` 做字段级合并。例如：
+
+```json
+{
+  "schemaVersion": 2,
+  "defaultModel": "deepseek/deepseek-v4-pro",
+  "providers": [
+    {
+      "id": "deepseek",
+      "baseUrl": "https://proxy.example.com/v1",
+      "models": [
+        {
+          "id": "deepseek-v4-pro",
+          "maxOutputTokens": 65536
+        }
+      ]
+    },
+    {
+      "id": "local",
+      "protocol": "openai-chat-completions",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "auth": { "type": "none" },
+      "developerRoleMode": "system-fallback",
+      "models": [{ "id": "qwen-local", "toolCalling": true }]
+    }
+  ]
+}
+```
+
 `loadModelsConfigurationFile` 从显式 `path` 或 `WISH_MODELS_CONFIG` 读取文件；
 `loadModelsConfiguration` 也可直接接收已解析值、JSON 字符串或
-`WISH_MODELS_JSON`。`WISH_MODEL`、`WISH_FALLBACK_MODELS` 和
+`WISH_MODELS_JSON`，三者都没有时回退到 generated defaults。Host 还会在没有显式 JSON/路径时读取
+`<WISH_DATA_DIR>/models.json`，默认位置是 `~/.wish/models.json`；文件不存在才使用
+generated defaults。旧的 `schemaVersion: 1` 文件继续完整替换；新的
+`schemaVersion: 2` 文件使用上述 overlay 语义。
+`WISH_MODEL`、`WISH_FALLBACK_MODELS` 和
 `WISH_MODEL_MAX_RETRIES` 可以覆盖文件的初始进程选择。
 
 模型选择顺序由组合根保持：显式 Run/Agent 模型 → `ConfiguredModel` 当前进程
@@ -97,6 +159,8 @@ auth、developer authority、价格和引用都会在加载阶段失败。
 
 `createDefaultModelAdapterRegistry()` 注册：
 
+- `openai-responses`：OpenAI 原生 input items、developer authority、图片、reasoning
+  summary、增量函数调用、Responses SSE 和 usage；默认请求不由 Provider 保存。
 - `openai-chat-completions`：system/developer/user/assistant/tool、图片、reasoning、
   增量 Tool Call、SSE、stream usage 和两种 max-token 字段。
 - `anthropic-messages`：独立 system、显式 developer system-fallback、图片、thinking、
@@ -127,6 +191,17 @@ Step 指标持久化或 UI 展示。
 错误时返回 `undefined`，让 Context 报告 `unknown`；非法负数或非整数属于实现契约
 错误。AbortSignal 会传给 tokenizer，中止原因继续向上传播。
 
+`createConfiguredModelRequestTokenCounter()` 从同一份 Models configuration 为每个
+`anthropic-messages` 模型注册服务端精确计数器。它复用正常请求映射并调用
+`POST /messages/count_tokens`，因此 system、messages、Tool schema、Tool Call 和图片
+都按 Provider 输入统计；凭据和动态 header 每次计数时重新解析。HTTP/响应不可用时不
+猜测，仍返回 `undefined`。
+
+OpenAI Responses 与 Chat Completions 当前没有注册“精确”本地计数器。其消息与 Tool
+开销会随模型和协议实现变化；在没有经过版本固定和校准的算法前，Context 保持
+`unknown`，不能把字符数或通用 tokenizer 估算标记为预算事实。未来可以按精确
+`provider/model` 另行注册经过验证的 `ModelRequestTokenizer`。
+
 模型窗口由 `ConfiguredModel.getContextWindowTokens()` 从已经加载、校验的
 `ModelSpec` 读取。控制面的 `ModelCatalog` 不进入每次请求的 Budget 热路径。
 
@@ -141,6 +216,7 @@ Step 指标持久化或 UI 展示。
 
 ```bash
 npm run typecheck
+npm run test:model-generation
 npm run test:models-runtime
 npm run test:model-providers
 npm run test:model-usage

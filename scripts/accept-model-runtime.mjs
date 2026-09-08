@@ -7,7 +7,10 @@ import {
   parseModelReference,
   resolveConfiguredModel,
 } from "../dist/models/config.js";
-import { ModelAdapterRegistry } from "../dist/models/registry.js";
+import {
+  createDefaultModelAdapterRegistry,
+  ModelAdapterRegistry,
+} from "../dist/models/registry.js";
 import { ConfiguredModel } from "../dist/models/runtime.js";
 
 async function collect(iterable) {
@@ -86,6 +89,230 @@ function fixtureConfiguration() {
     ],
   };
 }
+
+test("generated defaults expose current Providers and DeepSeek compatibility", () => {
+  const configuration = loadModelsConfiguration({ environment: {} });
+
+  assert.deepEqual(configuration.defaultModel, {
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
+  });
+  assert.deepEqual(configuration.fallbackModels, []);
+  assert.equal(configuration.maxRetries, 2);
+  assert.deepEqual(configuration.providers.map((provider) => provider.id), [
+    "deepseek",
+    "anthropic",
+    "openai",
+    "openrouter",
+    "vercel-ai-gateway",
+    "groq",
+    "cerebras",
+    "xai",
+    "zai",
+    "huggingface",
+    "fireworks",
+    "opencode",
+    "opencode-go",
+    "minimax",
+    "minimax-cn",
+    "moonshotai",
+    "moonshotai-cn",
+  ]);
+  assert.ok(
+    configuration.providers.reduce(
+      (count, provider) => count + provider.models.length,
+      0,
+    ) > 500,
+  );
+  assert.deepEqual(
+    configuration.providers[0].models.map((model) => model.id),
+    [
+      "deepseek-v4-flash",
+      "deepseek-v4-flash-vision-exp",
+      "deepseek-v4-pro",
+    ],
+  );
+
+  const flash = resolveConfiguredModel(
+    configuration,
+    "deepseek/deepseek-v4-flash",
+  );
+  assert.equal(flash.baseUrl, "https://api.deepseek.com");
+  assert.deepEqual(flash.auth, {
+    type: "bearer",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+  });
+  assert.equal(flash.developerRoleMode, "system-fallback");
+  assert.equal(flash.request.supportsTemperature, false);
+  assert.equal(flash.request.maxTokensField, "max_tokens");
+  assert.deepEqual(flash.request.extraBody, {
+    thinking: { type: "enabled" },
+    reasoning_effort: "high",
+  });
+  assert.equal(flash.spec.contextWindowTokens, 1_000_000);
+  assert.equal(flash.spec.maxOutputTokens, 384_000);
+  assert.equal(flash.spec.input.image, false);
+  assert.equal(flash.spec.toolCalling, true);
+  assert.match(flash.spec.price.version, /^models\.dev:/u);
+  assert.equal(flash.spec.price.currency, "USD");
+  assert.equal(flash.spec.price.inputPerMillionTokens, 0.14);
+  assert.equal(flash.spec.price.outputPerMillionTokens, 0.28);
+
+  const vision = resolveConfiguredModel(
+    configuration,
+    "deepseek/deepseek-v4-flash-vision-exp",
+  );
+  assert.equal(vision.spec.input.image, true);
+
+  const openai = resolveConfiguredModel(configuration, "openai/gpt-5.6");
+  assert.equal(openai.protocol, "openai-responses");
+  assert.equal(openai.baseUrl, "https://api.openai.com/v1");
+  assert.deepEqual(openai.auth, {
+    type: "bearer",
+    apiKeyEnv: "OPENAI_API_KEY",
+  });
+  assert.equal(openai.developerRoleMode, "native");
+  assert.equal(openai.spec.developerRole, true);
+  assert.equal(openai.request.maxTokensField, "max_output_tokens");
+  assert.deepEqual(openai.request.extraBody, { store: false });
+
+  const selected = loadModelsConfiguration({
+    environment: { WISH_MODEL: "deepseek/deepseek-v4-pro" },
+  });
+  assert.deepEqual(selected.defaultModel, {
+    provider: "deepseek",
+    model: "deepseek-v4-pro",
+  });
+});
+
+test("schemaVersion 2 overlays generated Providers and upserts Models", () => {
+  const configuration = loadModelsConfiguration({
+    json: {
+      schemaVersion: 2,
+      defaultModel: "local/qwen-local",
+      fallbackModels: ["deepseek/deepseek-v4-flash"],
+      maxRetries: 4,
+      providers: [
+        {
+          id: "deepseek",
+          baseUrl: "https://deepseek-proxy.example.test/v1",
+          headers: { "x-tenant": { fromEnv: "TENANT_ID" } },
+          request: { extraBody: { trace: true } },
+          models: [{
+            id: "deepseek-v4-flash",
+            name: "DeepSeek V4 Flash Overridden",
+            input: { image: true },
+          }],
+        },
+        {
+          id: "local",
+          protocol: "openai-chat-completions",
+          baseUrl: "http://127.0.0.1:11434/v1",
+          auth: { type: "none" },
+          developerRoleMode: "system-fallback",
+          models: [{ id: "qwen-local", toolCalling: true }],
+        },
+      ],
+    },
+    environment: {},
+  });
+
+  assert.equal(configuration.providers.length, 18);
+  assert.deepEqual(configuration.defaultModel, {
+    provider: "local",
+    model: "qwen-local",
+  });
+  assert.deepEqual(configuration.fallbackModels, [{
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
+  }]);
+  assert.equal(configuration.maxRetries, 4);
+
+  const flash = resolveConfiguredModel(
+    configuration,
+    "deepseek/deepseek-v4-flash",
+  );
+  assert.equal(flash.spec.name, "DeepSeek V4 Flash Overridden");
+  assert.equal(flash.spec.contextWindowTokens, 1_000_000);
+  assert.equal(flash.spec.input.text, true);
+  assert.equal(flash.spec.input.image, true);
+  assert.equal(flash.headers["x-tenant"].fromEnv, "TENANT_ID");
+  assert.deepEqual(flash.request.extraBody, {
+    thinking: { type: "enabled" },
+    reasoning_effort: "high",
+    trace: true,
+  });
+  assert.equal(
+    configuration.providers.find((provider) => provider.id === "deepseek")
+      .models.length,
+    3,
+  );
+});
+
+test("generated DeepSeek profile maps an authenticated thinking Tool request", async () => {
+  const requests = [];
+  const configuration = loadModelsConfiguration({ environment: {} });
+  const model = new ConfiguredModel({
+    configuration,
+    registry: createDefaultModelAdapterRegistry(),
+    environment: { DEEPSEEK_API_KEY: "deepseek-test-key" },
+    async fetch(url, init) {
+      requests.push({ url: String(url), init });
+      const completion = {
+        choices: [{
+          delta: { content: "done" },
+          finish_reason: "stop",
+          index: 0,
+        }],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: 4,
+          total_tokens: 16,
+        },
+      };
+      return new Response(
+        `data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    },
+  });
+
+  const events = await collect(model.stream({
+    model: configuration.defaultModel,
+    messages: [
+      { role: "developer", content: "Work carefully" },
+      { role: "user", content: "Inspect the project" },
+    ],
+    tools: [{
+      name: "read",
+      description: "Read a file",
+      inputSchemaJson: '{"type":"object"}',
+    }],
+    temperature: 0.2,
+  }));
+
+  assert.deepEqual(events.map((event) => event.type), [
+    "start",
+    "text_delta",
+    "done",
+  ]);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.deepseek.com/chat/completions");
+  assert.equal(
+    requests[0].init.headers.authorization,
+    "Bearer deepseek-test-key",
+  );
+  const body = JSON.parse(requests[0].init.body);
+  assert.equal(body.model, "deepseek-v4-flash");
+  assert.equal(body.messages[0].role, "system");
+  assert.equal(body.messages[0].content, "Work carefully");
+  assert.deepEqual(body.thinking, { type: "enabled" });
+  assert.equal(body.reasoning_effort, "high");
+  assert.equal(body.max_tokens, 384_000);
+  assert.equal(body.stream_options.include_usage, true);
+  assert.equal(body.tools[0].function.name, "read");
+  assert.equal("temperature" in body, false);
+});
 
 test("configuration resolves ordered selections and model overrides immutably", () => {
   const configuration = loadModelsConfiguration({
@@ -171,6 +398,31 @@ test("configuration fails early for duplicate, unknown, and protected settings",
   assert.throws(
     () => loadModelsConfiguration({ json: invalidAuthority }),
     /must be system-fallback for anthropic-messages/u,
+  );
+
+  assert.throws(
+    () => loadModelsConfiguration({
+      json: {
+        schemaVersion: 2,
+        providers: [{ id: "deepseek" }, { id: "deepseek" }],
+      },
+    }),
+    /Provider overlay id "deepseek" is duplicated/u,
+  );
+  assert.throws(
+    () => loadModelsConfiguration({
+      json: {
+        schemaVersion: 2,
+        providers: [{
+          id: "deepseek",
+          models: [
+            { id: "deepseek-v4-flash" },
+            { id: "deepseek-v4-flash" },
+          ],
+        }],
+      },
+    }),
+    /Model overlay id "deepseek-v4-flash" is duplicated/u,
   );
 });
 

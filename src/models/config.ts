@@ -17,13 +17,16 @@ import type {
   ProviderProfile,
   ResolvedModel,
 } from "./types.js";
+import { createDefaultModelsConfigurationSource } from "./defaults.js";
 
 const BUILTIN_PROTOCOLS = Object.freeze([
   "openai-chat-completions",
+  "openai-responses",
   "anthropic-messages",
 ]);
 const PROTECTED_EXTRA_BODY_FIELDS = new Set([
   "model",
+  "input",
   "messages",
   "tools",
   "stream",
@@ -32,6 +35,7 @@ const PROTECTED_EXTRA_BODY_FIELDS = new Set([
   "temperature",
   "max_tokens",
   "max_completion_tokens",
+  "max_output_tokens",
 ]);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -78,25 +82,26 @@ export async function loadModelsConfigurationFile(
   });
 }
 
-/** Parse, validate, and snapshot public Models configuration. */
+/** Parse, validate, merge, and snapshot public or generated Models configuration. */
 export function loadModelsConfiguration(
   source: ModelConfigurationSource,
 ): ModelsConfiguration {
   const environment = source.environment ?? {};
-  const raw = source.json ?? environment.WISH_MODELS_JSON;
-  if (raw === undefined) {
-    throw configurationError(
-      "Models configuration is required as json or WISH_MODELS_JSON",
-    );
-  }
-  const root = record(parseJson(raw), "configuration");
+  const raw = source.json ?? environment.WISH_MODELS_JSON ??
+    createDefaultModelsConfigurationSource();
+  const parsed = record(parseJson(raw), "configuration");
+  const root = parsed.schemaVersion === 2
+    ? mergeConfigurationOverlay(parsed)
+    : parsed;
   knownKeys(
     root,
     ["schemaVersion", "providers", "defaultModel", "fallbackModels", "maxRetries"],
     "configuration",
   );
   if (root.schemaVersion !== 1) {
-    throw configurationError("Models configuration schemaVersion must be 1");
+    throw configurationError(
+      "Models configuration schemaVersion must be 1 (full) or 2 (overlay)",
+    );
   }
 
   const providerValues = array(root.providers, "configuration.providers");
@@ -161,6 +166,194 @@ export function loadModelsConfiguration(
     fallbackModels: Object.freeze(fallbackModels),
     maxRetries,
   });
+}
+
+/**
+ * schemaVersion 2 is a user overlay on generated defaults. Providers and
+ * Models are upserted by id; nested headers, request, input, and price records
+ * are merged without mutating either source.
+ */
+function mergeConfigurationOverlay(
+  overlay: Record<string, unknown>,
+): Record<string, unknown> {
+  knownKeys(
+    overlay,
+    ["schemaVersion", "providers", "defaultModel", "fallbackModels", "maxRetries"],
+    "configuration",
+  );
+  const base = record(
+    createDefaultModelsConfigurationSource(),
+    "generated configuration",
+  );
+  const providerOverlays = overlay.providers === undefined
+    ? []
+    : array(overlay.providers, "configuration.providers");
+  const providers = array(base.providers, "generated configuration.providers")
+    .map((provider, index) => ({
+      ...record(provider, `generated configuration.providers[${index}]`),
+    }));
+  const overlayProviderIds = new Set<string>();
+
+  for (let index = 0; index < providerOverlays.length; index += 1) {
+    const value = record(
+      providerOverlays[index],
+      `configuration.providers[${index}]`,
+    );
+    const id = identifier(
+      requiredString(value.id, `configuration.providers[${index}].id`),
+      `configuration.providers[${index}].id`,
+    );
+    if (overlayProviderIds.has(id)) {
+      throw configurationError(`Provider overlay id "${id}" is duplicated`);
+    }
+    overlayProviderIds.add(id);
+    const existingIndex = providers.findIndex((provider) => provider.id === id);
+    const merged = mergeProviderOverlay(
+      existingIndex < 0 ? undefined : providers[existingIndex],
+      value,
+      `configuration.providers[${index}]`,
+    );
+    if (existingIndex < 0) providers.push(merged);
+    else providers[existingIndex] = merged;
+  }
+
+  return {
+    schemaVersion: 1,
+    providers,
+    defaultModel: overlay.defaultModel ?? base.defaultModel,
+    fallbackModels: overlay.fallbackModels ?? base.fallbackModels,
+    maxRetries: overlay.maxRetries ?? base.maxRetries,
+  };
+}
+
+function mergeProviderOverlay(
+  base: Record<string, unknown> | undefined,
+  overlay: Record<string, unknown>,
+  path: string,
+): Record<string, unknown> {
+  knownKeys(
+    overlay,
+    [
+      "id",
+      "protocol",
+      "baseUrl",
+      "auth",
+      "headers",
+      "defaultModel",
+      "developerRoleMode",
+      "request",
+      "catalog",
+      "models",
+    ],
+    path,
+  );
+  const result: Record<string, unknown> = { ...(base ?? {}), ...overlay };
+  result.headers = mergeOptionalRecords(base?.headers, overlay.headers, `${path}.headers`);
+  result.request = mergeRequestOverlay(base?.request, overlay.request, `${path}.request`);
+  result.catalog = mergeOptionalRecords(base?.catalog, overlay.catalog, `${path}.catalog`);
+  if (overlay.models === undefined) {
+    if (base?.models !== undefined) result.models = base.models;
+  } else {
+    result.models = mergeModelOverlays(base?.models, overlay.models, `${path}.models`);
+  }
+  return result;
+}
+
+function mergeModelOverlays(
+  baseValue: unknown,
+  overlayValue: unknown,
+  path: string,
+): readonly Record<string, unknown>[] {
+  const models = baseValue === undefined
+    ? []
+    : array(baseValue, "generated Provider models").map((value, index) => ({
+      ...record(value, `generated Provider models[${index}]`),
+    }));
+  const overlays = array(overlayValue, path);
+  const overlayModelIds = new Set<string>();
+  for (let index = 0; index < overlays.length; index += 1) {
+    const model = record(overlays[index], `${path}[${index}]`);
+    const id = modelIdentifier(
+      requiredString(model.id, `${path}[${index}].id`),
+      `${path}[${index}].id`,
+    );
+    if (overlayModelIds.has(id)) {
+      throw configurationError(`Model overlay id "${id}" is duplicated`);
+    }
+    overlayModelIds.add(id);
+    const existingIndex = models.findIndex((candidate) => candidate.id === id);
+    const base = existingIndex < 0 ? undefined : models[existingIndex];
+    const merged = mergeModelOverlay(base, model, `${path}[${index}]`);
+    if (existingIndex < 0) models.push(merged);
+    else models[existingIndex] = merged;
+  }
+  return models;
+}
+
+function mergeModelOverlay(
+  base: Record<string, unknown> | undefined,
+  overlay: Record<string, unknown>,
+  path: string,
+): Record<string, unknown> {
+  knownKeys(
+    overlay,
+    [
+      "id",
+      "name",
+      "status",
+      "contextWindowTokens",
+      "maxOutputTokens",
+      "input",
+      "reasoning",
+      "toolCalling",
+      "developerRole",
+      "price",
+      "baseUrl",
+      "auth",
+      "headers",
+      "developerRoleMode",
+      "request",
+    ],
+    path,
+  );
+  return {
+    ...(base ?? {}),
+    ...overlay,
+    input: mergeOptionalRecords(base?.input, overlay.input, `${path}.input`),
+    headers: mergeOptionalRecords(base?.headers, overlay.headers, `${path}.headers`),
+    price: mergeOptionalRecords(base?.price, overlay.price, `${path}.price`),
+    request: mergeRequestOverlay(base?.request, overlay.request, `${path}.request`),
+  };
+}
+
+function mergeRequestOverlay(
+  baseValue: unknown,
+  overlayValue: unknown,
+  path: string,
+): Record<string, unknown> | undefined {
+  if (baseValue === undefined && overlayValue === undefined) return undefined;
+  const base = baseValue === undefined ? {} : record(baseValue, path);
+  const overlay = overlayValue === undefined ? {} : record(overlayValue, path);
+  return {
+    ...base,
+    ...overlay,
+    extraBody: mergeOptionalRecords(
+      base.extraBody,
+      overlay.extraBody,
+      `${path}.extraBody`,
+    ),
+  };
+}
+
+function mergeOptionalRecords(
+  baseValue: unknown,
+  overlayValue: unknown,
+  path: string,
+): Record<string, unknown> | undefined {
+  if (baseValue === undefined && overlayValue === undefined) return undefined;
+  const base = baseValue === undefined ? {} : record(baseValue, path);
+  const overlay = overlayValue === undefined ? {} : record(overlayValue, path);
+  return { ...base, ...overlay };
 }
 
 export function parseModelReference(
@@ -628,9 +821,17 @@ function parseDeveloperRole(value: unknown, path: string): DeveloperRoleStrategy
   throw configurationError(`${path} must be native, system-fallback, or unsupported`);
 }
 
-function parseMaxTokensField(value: unknown, path: string): "max_tokens" | "max_completion_tokens" {
-  if (value === "max_tokens" || value === "max_completion_tokens") return value;
-  throw configurationError(`${path} must be max_tokens or max_completion_tokens`);
+function parseMaxTokensField(
+  value: unknown,
+  path: string,
+): "max_tokens" | "max_completion_tokens" | "max_output_tokens" {
+  if (
+    value === "max_tokens" || value === "max_completion_tokens" ||
+    value === "max_output_tokens"
+  ) return value;
+  throw configurationError(
+    `${path} must be max_tokens, max_completion_tokens, or max_output_tokens`,
+  );
 }
 
 function validateKnownModel(

@@ -167,7 +167,12 @@ export class RuntimeEventStream<Transition> {
             cursor = event.sequence;
             yield event;
           }
-          if (self.closed) return;
+          if (self.closed) {
+            // Events may be appended and the stream closed while the observer
+            // is paused at a previous yield. Rescan before declaring EOF.
+            if (self.events.some((event) => event.sequence > cursor)) continue;
+            return;
+          }
           await self.waitForChange(options.signal);
         }
       },

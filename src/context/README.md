@@ -164,7 +164,14 @@ Provider 协议字段。
 
 没有 receipt 的结果即使超过阈值也保持完整，仅剥离未知内部字段。这条 fail-safe
 规则保证 Context 不会把“Core 调用了 `archive()` gate”误当成“完整 executor 结果
-已经被持久化”。具体文件、对象存储或数据库实现仍留在 Archive adapter 后面。
+已经被持久化”。
+
+当前本地组合可使用
+`storage/tool-results/file-tool-result-archive.ts`。它在 renderer 裁剪前深复制完整
+`ToolResult`，以 Session、调用身份和结果 SHA-256 生成稳定路径，使用 `0600` 临时文件、
+`fsync` 和原子 rename 提交。相同调用与相同结果幂等返回同一 receipt；已有文件损坏或
+身份不一致时 fail closed。Archive 不追加 Session transcript；组合层仍需把返回的
+receipt 与 Tool Message 一起交给 Sessions。
 
 ## 请求前预算
 
@@ -290,6 +297,7 @@ npm run typecheck
 npm run test:context-history
 npm run test:context-providers
 npm run test:context-tool-results
+npm run test:tool-result-archive
 npm run test:context-budget
 npm run test:context-bundle
 npm test

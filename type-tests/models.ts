@@ -8,7 +8,10 @@ import {
   resolveConfiguredModel,
 } from "../src/models/config.js";
 import { ModelAdapterRegistry } from "../src/models/registry.js";
-import { ConfiguredModel } from "../src/models/runtime.js";
+import {
+  ConfiguredModel,
+  createConfiguredModelRequestTokenCounter,
+} from "../src/models/runtime.js";
 import { ModelCatalog } from "../src/models/catalog.js";
 import {
   ModelRequestTokenCounter,
@@ -73,6 +76,12 @@ const requestTokenizer: ModelRequestTokenizer = {
 const requestTokenCounter = new ModelRequestTokenCounter();
 requestTokenCounter.register(configuration.defaultModel, requestTokenizer);
 const contextTokenCounter: ModelInputTokenCounter = requestTokenCounter;
+const configuredRequestTokenCounter: ModelInputTokenCounter =
+  createConfiguredModelRequestTokenCounter({
+    configuration,
+    environment: { MODEL_API_KEY: "secret" },
+    fetch: async () => new Response(),
+  });
 const catalog = new ModelCatalog({
   configuration,
   store: new FileCatalogStore({ path: ".wish/models-catalog.json" }),
@@ -82,4 +91,5 @@ void resolved;
 void configuredModel;
 void contextWindows;
 void contextTokenCounter;
+void configuredRequestTokenCounter;
 void catalog.list();

@@ -13,6 +13,13 @@ import {
   ModelsConfigurationError,
   resolveConfiguredModel,
 } from "./config.js";
+import { ModelRequestTokenCounter } from "./input-tokens.js";
+import {
+  ANTHROPIC_MESSAGES_PROTOCOL,
+} from "./providers/anthropic-messages.js";
+import {
+  createAnthropicMessagesRequestTokenizer,
+} from "./providers/anthropic-messages-tokens.js";
 import { ModelAdapterRegistry } from "./registry.js";
 import {
   UsageResolvingModel,
@@ -45,6 +52,11 @@ export interface ConfiguredModelStackOptions extends ConfiguredModelOptions {
   >;
 }
 
+export type ConfiguredModelRequestTokenCounterOptions = Pick<
+  ConfiguredModelOptions,
+  "configuration" | "fetch" | "environment"
+>;
+
 export interface ConfiguredModelStack {
   readonly configuredModel: ConfiguredModel;
   readonly measuredModel: UsageResolvingModel;
@@ -68,6 +80,33 @@ export function createConfiguredModelStack(
   return Object.freeze({ configuredModel, measuredModel, model });
 }
 
+/** Register every exact-count tokenizer supported by the configured protocols. */
+export function createConfiguredModelRequestTokenCounter(
+  options: ConfiguredModelRequestTokenCounterOptions,
+): ModelRequestTokenCounter {
+  const counter = new ModelRequestTokenCounter();
+  const fetch = resolveModelFetch(options.fetch);
+  const environment = resolveModelEnvironment(options.environment);
+  for (const provider of options.configuration.providers) {
+    if (provider.protocol !== ANTHROPIC_MESSAGES_PROTOCOL) continue;
+    for (const spec of provider.models) {
+      const resolved = resolveConfiguredModel(options.configuration, {
+        provider: provider.id,
+        model: spec.id,
+      });
+      counter.register(
+        resolved.ref,
+        createAnthropicMessagesRequestTokenizer({
+          model: resolved,
+          headers: () => resolveInvocationHeaders(resolved, environment()),
+          fetch,
+        }),
+      );
+    }
+  }
+  return counter;
+}
+
 /** Routes each request to one configured protocol Adapter without adding retries. */
 export class ConfiguredModel implements Model {
   private readonly fetch: ModelFetch;
@@ -89,15 +128,8 @@ export class ConfiguredModel implements Model {
     for (const fallback of options.configuration.fallbackModels) {
       resolveConfiguredModel(options.configuration, fallback);
     }
-    const availableFetch = options.fetch ?? globalThis.fetch;
-    if (typeof availableFetch !== "function") {
-      throw new Error("ConfiguredModel requires an injectable fetch implementation");
-    }
-    this.fetch = availableFetch.bind(globalThis) as ModelFetch;
-    const environment = options.environment;
-    this.environment = typeof environment === "function"
-      ? environment
-      : () => environment ?? {};
+    this.fetch = resolveModelFetch(options.fetch);
+    this.environment = resolveModelEnvironment(options.environment);
   }
 
   async *stream(
@@ -200,6 +232,22 @@ export class ConfiguredModel implements Model {
   getPrice(reference: ModelRef | string): ModelPrice | undefined {
     return this.getModelSpec(reference).price;
   }
+}
+
+function resolveModelFetch(fetch: ModelFetch | undefined): ModelFetch {
+  const available = fetch ?? globalThis.fetch;
+  if (typeof available !== "function") {
+    throw new Error("Configured Models require an injectable fetch implementation");
+  }
+  return available.bind(globalThis) as ModelFetch;
+}
+
+function resolveModelEnvironment(
+  environment: ConfiguredModelOptions["environment"],
+): () => ModelEnvironment {
+  return typeof environment === "function"
+    ? environment
+    : () => environment ?? {};
 }
 
 function resolveInvocationHeaders(

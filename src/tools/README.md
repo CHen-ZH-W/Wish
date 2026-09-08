@@ -1,8 +1,8 @@
-# Basic Tools
+# Tools
 
-`src/tools/` 提供 Wish 的具体基础 Tool。它实现文件和进程操作，但不接管 Core
-已经拥有的 Registry、输入调用解析顺序、授权、Grant、Executor、Scheduler 或
-AgentLoop。
+`src/tools/` 提供 Wish 的具体基础 Tool，以及供 App 组合的交互授权适配。它实现文件
+和进程操作，但不接管 Core 已经拥有的 Registry、输入调用解析顺序、Grant、Executor、
+Scheduler 或 AgentLoop。
 
 ```text
 basic/*.ts
@@ -11,6 +11,11 @@ basic/*.ts
   → Core ToolExecutor
   → Core BoundedToolScheduler
   → AgentLoop
+
+CLI / WebUI approval
+  → ToolApprovalPort
+  → InteractiveToolAuthorizationService
+  → Core ToolExecutor
 ```
 
 每个 Tool 直接实现
@@ -37,6 +42,7 @@ Registry。
 src/tools/
 ├── README.md
 ├── index.ts                 # 注册和公共组合入口
+├── authorization.ts         # App-neutral approval 到 Core authorization 的适配
 ├── basic/
 │   ├── read.ts
 │   ├── write.ts
@@ -69,13 +75,19 @@ src/tools/
   外部提供的 `ToolRegistry<BasicToolContext>`，并返回 Registry 自己的注销句柄。
   `BasicToolsOptions` 可以分别注入各 Tool 的 Operations。注册前如果存在同名 Tool，
   Registry 保持原状；意外的中途注册失败也会回滚本次已经加入的 definition。
-  该入口同时公开结果渲染器，但不创建 Registry、授权服务、Executor 或 Scheduler。
+  该入口同时公开结果渲染器和授权适配，但不创建 Registry、Executor 或 Scheduler。
+- `authorization.ts`：`ToolApprovalPort` 只描述一次 CLI/WebUI 审批交互；
+  `InteractiveToolAuthorizationService` 把批准转换为 Core 的 `authorize → revalidate`
+  协议。批准绑定同一份 call、capabilities、scope 和 Step snapshot，只能复核一次；
+  等待期间 policy version 改变会在 dispatch 前拒绝。`createDenyAllToolAuthorizationService`
+  是尚未接入审批 App 时的显式 fail-closed 默认值。
 
 包级组合入口是 `wish/tools`：
 
 ```ts
 import { ToolRegistry } from "wish/core/tools";
 import {
+  InteractiveToolAuthorizationService,
   createBasicToolResultRenderer,
   registerBasicTools,
   type BasicToolContext,
@@ -84,6 +96,11 @@ import {
 const registry = new ToolRegistry<BasicToolContext>();
 const registrations = registerBasicTools(registry);
 const toolResults = createBasicToolResultRenderer();
+
+const authorization = new InteractiveToolAuthorizationService({
+  policyVersion: () => currentPolicyVersion,
+  approval: cliOrWebApprovalPort,
+});
 ```
 
 ## 集成边界
@@ -245,9 +262,12 @@ Bash 是可能已经产生外部副作用的调用。dispatch 后没有终态记
 
 ## 固定边界
 
-本模块不实现：
+交互授权服务不决定 UI 长什么样，也不持久化“以后都允许”规则。CLI 与 WebUI 各自实现
+同一个 `ToolApprovalPort`，因此不会把终端输入、HTTP/WebSocket 或前端状态带进 Tools。
 
-- 审批 UI、allow/deny 规则或持久审批；
+本模块仍不实现：
+
+- 审批 UI、持久 allow/deny 规则；
 - AgentMode 权限和 workspace 路径限制；
 - Linux、容器或远端 Sandbox；
 - 网络访问策略；
@@ -276,5 +296,6 @@ npm run test:basic-tool-bash
 npm run test:basic-tools-result-renderer
 npm run test:basic-tools-index
 npm run test:basic-tools-integration
+npm run test:tool-authorization
 npm test
 ```

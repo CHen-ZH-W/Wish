@@ -24,7 +24,10 @@ export type ProviderHeaderValue =
 
 export type DeveloperRoleStrategy = DeveloperRoleMode | "unsupported";
 
-export type MaxTokensField = "max_tokens" | "max_completion_tokens";
+export type MaxTokensField =
+  | "max_tokens"
+  | "max_completion_tokens"
+  | "max_output_tokens";
 
 export interface ModelRequestCompatibility {
   readonly streamUsage: boolean;

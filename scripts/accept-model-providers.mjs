@@ -204,6 +204,204 @@ test("OpenAI-compatible preserves native developer authority and optional usage"
   assert.equal("usage" in events.at(-1), false);
 });
 
+test("OpenAI Responses maps native authority, multimodal history, Tools, reasoning, and usage", async () => {
+  let captured;
+  const controller = new AbortController();
+  const model = createModel("openai-responses", async (url, init) => {
+    captured = { url, init, body: JSON.parse(init.body) };
+    return sse([
+      { data: {
+        type: "response.created",
+        response: { id: "resp-1", model: "model-a", status: "in_progress" },
+      } },
+      { data: {
+        type: "response.output_item.added",
+        item: { id: "rs-1", type: "reasoning", summary: [] },
+      } },
+      { data: {
+        type: "response.reasoning_summary_text.delta",
+        item_id: "rs-1",
+        delta: "think",
+      } },
+      { data: {
+        type: "response.output_item.done",
+        item: {
+          id: "rs-1",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "think" }],
+        },
+      } },
+      { data: {
+        type: "response.output_item.added",
+        item: { id: "msg-1", type: "message", role: "assistant", content: [] },
+      } },
+      { data: {
+        type: "response.output_text.delta",
+        item_id: "msg-1",
+        delta: "answer",
+      } },
+      { data: {
+        type: "response.output_item.done",
+        item: {
+          id: "msg-1",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "answer", annotations: [] }],
+        },
+      } },
+      { data: {
+        type: "response.output_item.added",
+        item: {
+          id: "fc-1",
+          type: "function_call",
+          call_id: "call-1",
+          name: "lookup",
+          arguments: "",
+        },
+      } },
+      { data: {
+        type: "response.function_call_arguments.delta",
+        item_id: "fc-1",
+        delta: '{"q":',
+      } },
+      { data: {
+        type: "response.function_call_arguments.done",
+        item_id: "fc-1",
+        arguments: '{"q":"a"}',
+      } },
+      { data: {
+        type: "response.output_item.done",
+        item: {
+          id: "fc-1",
+          type: "function_call",
+          call_id: "call-1",
+          name: "lookup",
+          arguments: '{"q":"a"}',
+        },
+      } },
+      { data: {
+        type: "response.completed",
+        response: {
+          id: "resp-1",
+          model: "model-a",
+          status: "completed",
+          output: [{
+            id: "fc-1",
+            type: "function_call",
+            call_id: "call-1",
+            name: "lookup",
+            arguments: '{"q":"a"}',
+          }],
+          usage: {
+            input_tokens: 20,
+            input_tokens_details: { cached_tokens: 4, cache_write_tokens: 2 },
+            output_tokens: 6,
+            total_tokens: 26,
+          },
+        },
+      } },
+    ]);
+  }, {
+    maxTokensField: "max_output_tokens",
+    supportsTemperature: false,
+    extraBody: { store: false, service_tier: "flex" },
+  });
+
+  const events = await collect(model.stream(request("openai", [
+    { role: "system", content: "system" },
+    { role: "developer", content: "developer" },
+    {
+      role: "user",
+      content: "question",
+      contentParts: [{
+        type: "image_url",
+        imageUrl: { url: "https://images.example.test/a.png", detail: "high" },
+      }],
+    },
+    {
+      role: "assistant",
+      content: "prior answer",
+      reasoningContent: "unsigned hidden reasoning is not replayed",
+      toolCalls: [{ id: "prior-1", name: "lookup", argumentsJson: '{"q":"old"}' }],
+    },
+    { role: "tool", content: '{"value":1}', toolCallId: "prior-1" },
+  ]), controller.signal));
+
+  assert.deepEqual(events.map((event) => event.type), [
+    "start",
+    "reasoning_delta",
+    "text_delta",
+    "tool_call",
+    "done",
+  ]);
+  assert.equal(events[0].developerRoleMode, "native");
+  assert.equal("authorityDegraded" in events[0], false);
+  assert.deepEqual(events[3].call, {
+    id: "call-1",
+    name: "lookup",
+    argumentsJson: '{"q":"a"}',
+  });
+  assert.deepEqual(events.at(-1), {
+    type: "done",
+    finishReason: "tool_calls",
+    usage: {
+      inputTokens: 20,
+      cachedInputTokens: 4,
+      cacheWriteInputTokens: 2,
+      outputTokens: 6,
+      totalTokens: 26,
+      source: "provider",
+    },
+  });
+  assert.equal(captured.url, "https://openai.example.test/v1/responses");
+  assert.equal(captured.init.signal, controller.signal);
+  assert.equal(captured.body.input[0].role, "system");
+  assert.equal(captured.body.input[1].role, "developer");
+  assert.equal(captured.body.input[2].content[1].type, "input_image");
+  assert.equal(captured.body.input[3].type, "message");
+  assert.equal(captured.body.input[4].type, "function_call");
+  assert.equal(captured.body.input[5].type, "function_call_output");
+  assert.equal(captured.body.tools[0].name, "lookup");
+  assert.equal("function" in captured.body.tools[0], false);
+  assert.equal(captured.body.max_output_tokens, 512);
+  assert.equal("temperature" in captured.body, false);
+  assert.equal(captured.body.store, false);
+  assert.equal(captured.body.service_tier, "flex");
+  assert.deepEqual(captured.body.reasoning, { effort: "high", summary: "auto" });
+  assert.equal(JSON.stringify(captured.body).includes("unsigned hidden reasoning"), false);
+});
+
+test("OpenAI Responses rejects unterminated streams and maps failed context overflow", async () => {
+  const unterminated = createModel("openai-responses", async () => sse([
+    { data: {
+      type: "response.output_text.delta",
+      item_id: "msg-1",
+      delta: "partial",
+    } },
+  ]), { maxTokensField: "max_output_tokens" });
+  const malformedEvents = await collect(unterminated.stream(request("openai", [
+    { role: "user", content: "hello" },
+  ])));
+  assert.equal(malformedEvents.at(-1).error.code, "stream_parse_error");
+
+  const overflow = createModel("openai-responses", async () => sse([
+    { data: {
+      type: "response.failed",
+      response: {
+        status: "failed",
+        error: {
+          code: "context_length_exceeded",
+          message: "maximum context window exceeded",
+        },
+      },
+    } },
+  ]), { maxTokensField: "max_output_tokens" });
+  const overflowEvents = await collect(overflow.stream(request("openai", [
+    { role: "user", content: "hello" },
+  ])));
+  assert.equal(overflowEvents.at(-1).error.code, "context_overflow");
+});
+
 test("OpenAI-compatible reports malformed streams and context overflow stably", async () => {
   const malformed = createModel(
     "openai-chat-completions",
@@ -381,6 +579,7 @@ test("Anthropic maps Provider context overflow without exposing a response objec
 
 for (const [protocol, provider] of [
   ["openai-chat-completions", "openai"],
+  ["openai-responses", "openai"],
   ["anthropic-messages", "anthropic"],
 ]) {
   test(`${protocol} passes abort to the active fetch`, async () => {

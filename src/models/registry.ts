@@ -11,6 +11,10 @@ import {
   createOpenAICompatibleAdapter,
   OPENAI_CHAT_COMPLETIONS_PROTOCOL,
 } from "./providers/openai-compatible.js";
+import {
+  createOpenAIResponsesAdapter,
+  OPENAI_RESPONSES_PROTOCOL,
+} from "./providers/openai-responses.js";
 
 export class ModelAdapterRegistry {
   private readonly factories = new Map<string, ModelAdapterFactory>();
@@ -61,6 +65,7 @@ export function createDefaultModelAdapterRegistry(): ModelAdapterRegistry {
     OPENAI_CHAT_COMPLETIONS_PROTOCOL,
     createOpenAICompatibleAdapter,
   );
+  registry.register(OPENAI_RESPONSES_PROTOCOL, createOpenAIResponsesAdapter);
   registry.register(ANTHROPIC_MESSAGES_PROTOCOL, createAnthropicMessagesAdapter);
   return registry;
 }

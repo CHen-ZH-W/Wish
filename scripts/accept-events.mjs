@@ -60,3 +60,24 @@ test("Model events own an immutable payload snapshot", async () => {
   assert.equal(Object.isFrozen(source), false);
   assert.equal(Object.isFrozen(source.error), false);
 });
+
+test("a slow observer receives tail events appended immediately before close", async () => {
+  const stream = new RuntimeEventStream("run-tail", 10);
+  const first = stream.publish({
+    eventId: "event-1",
+    occurredAt: "2026-01-01T00:00:00Z",
+    transition: { type: "first" },
+  });
+  const iterator = stream.observe()[Symbol.asyncIterator]();
+
+  assert.deepEqual(await iterator.next(), { value: first, done: false });
+  const terminal = stream.publish({
+    eventId: "event-2",
+    occurredAt: "2026-01-01T00:00:01Z",
+    transition: { type: "terminal" },
+  });
+  stream.close();
+
+  assert.deepEqual(await iterator.next(), { value: terminal, done: false });
+  assert.deepEqual(await iterator.next(), { value: undefined, done: true });
+});

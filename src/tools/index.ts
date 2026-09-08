@@ -12,6 +12,16 @@ import { createWriteTool, type WriteToolOptions } from "./basic/write.js";
 import type { BasicToolContext } from "./support/context.js";
 
 export {
+  InteractiveToolAuthorizationService,
+  createDenyAllToolAuthorizationService,
+} from "./authorization.js";
+export type {
+  InteractiveToolAuthorizationOptions,
+  ToolApprovalPort,
+  ToolApprovalResponse,
+} from "./authorization.js";
+
+export {
   createBasicToolResultRenderer,
   renderBasicToolResult,
 } from "./support/result-renderer.js";
