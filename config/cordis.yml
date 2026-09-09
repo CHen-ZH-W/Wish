@@ -1,0 +1,25 @@
+# Runtime infrastructure has stable ids. HMR is opt-in because changing loaded
+# application code can terminate active Runs; set CORDIS_HMR=1 only when that
+# restart behavior is intended.
+- id: timer
+  name: 'cordis:timer'
+
+- id: hmr
+  name: 'cordis:hmr'
+  disabled: !!js launch.environment.CORDIS_HMR !== '1'
+  config:
+    root: ['.']
+
+# Group updates are transactional: a failed child update rolls this application
+# tree back to its last good configuration.
+- id: app
+  name: 'cordis:group'
+  group: true
+  config:
+    - id: cli
+      name: 'cordis:cli'
+      disabled: !!js launch.surface !== 'cli'
+
+    - id: webui
+      name: 'cordis:webui'
+      disabled: !!js launch.surface !== 'webui'

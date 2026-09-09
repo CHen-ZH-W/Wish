@@ -1,23 +1,21 @@
 # Apps
 
-`src/apps/` 是 Wish 的产品入口与组合层。它只提供两个入口：CLI 和 WebUI；两者共享
-同一个 transport-neutral `WishApplication`，不能各自装配一套 Agent、Runtime 或会话
-历史。
+`src/apps/` 是 Wish 的 transport 与兼容组合层。产品仍只提供 CLI 和 WebUI 两个表面，
+但进程入口已经由 `src/boot/bootstrap.ts` 统一拥有；Apps 不再作为进程组合根。
 
-Apps 负责把已经存在的模块连成可运行产品，但不把入口行为反向放进 Core：
+G1 的进程链路是：
 
 ```text
-CLI ────┐
-        ├──→ WishApplication
-WebUI ──┘        │
-                 ├── Sessions / Storage
-                 ├── Models
-                 ├── Context / Compaction
-                 ├── Tools / Authorization
-                 └── AgentLoop / Runtime / Agent
+wish / wish-webui bin
+        └── Cordis bootstrap
+              └── Loader → Include → cordis.yml
+                                      ├── CLI legacy surface
+                                      └── WebUI legacy surface
+                                               └── WishApplication
 ```
 
-`WishApplication` 是内部共享门面，不是第三个产品入口。当前包级已经公开
+`WishApplication` 是 Loader-managed legacy surface 复用的内部共享门面，不是进程
+Owner，也不是第三个产品入口。当前包级已经公开
 `wish/apps/cli` 与 `wish/apps/webui`，并分别提供 `wish`、`wish-webui` bin。
 
 ## 当前进度
@@ -27,11 +25,13 @@ T3 已把 CLI 运行中控制接到 Runtime，T4 已实现 WebUI 后端 API，T5
 界面。当前完成：
 
 - Apps 的职责、依赖方向和两个入口边界；
+- CLI/WebUI bin 只进入 Cordis bootstrap，不再自行装配 Application；
+- CLI/WebUI Loader 插件各自声明并校验自己的启动配置；
 - `WishAgentConfiguration` 与 `WishRunPayload`；
 - 与 Core 精确对应的 Run handle、completion、control 和 output event 类型；
 - CLI/WebUI 共用的 Session 与 Run 操作门面；
 - workspace facts 的外部解析 Port；
-- `createWishApplication()` 对现有模块的唯一装配；
+- `createWishApplication()` 作为 Loader-managed legacy 插件内部的兼容装配；
 - File Session 与 Tool Result archive 的统一数据根；
 - Run 启动前的 Session 存在性、Agent 归属和 archived 状态检查；
 - Run 级模型固定，以及缺少 Tool approval 时的 fail-closed 行为；
@@ -72,7 +72,8 @@ src/apps/
 └── webui/                 # T4：Server/API/审批；T5：静态页面（均已完成）
 ```
 
-`application.ts` 以及以后需要时增加的 `config.ts` 都是入口内部依赖，不增加新的产品入口。
+`application.ts` 与 `config.ts` 现在是 legacy surface 插件的内部依赖，不增加新的产品
+入口，也不再拥有进程启动链。
 
 ## 固定组合顺序
 
@@ -116,10 +117,15 @@ SessionTranscriptPipeline
 `createWishApplication()` 接收已经解析、校验过的 Models 配置，以及 App 级数据目录、
 Agent 定义、Context/Compaction 限额、workspace resolver、Tool approval 和 Runtime
 限制。Models JSON/环境变量到 `ModelsConfiguration` 的转换继续复用 Models 模块；具体
-CLI 参数和 WebUI 启动配置留给各自入口，不在组合根建立第二套配置格式。
+CLI 参数和 WebUI 启动配置由各自 Loader-managed surface 解释，不在组合根建立第二套
+配置格式。
 
 `config.ts` 只补进程级默认值并调用 Models 配置加载器：默认数据目录是 `~/.wish`，
 默认 Agent id 是 `wish`，Context/Compaction budget 根据默认模型能力给出保守初值。
+Cordis 组合 profile 是另一条独立配置链：`bootstrap()` 显式路径 → `CORDIS_CONFIG` →
+随构建发布的 `cordis.yml`；默认 profile 只有在 `CORDIS_HMR=1` 时启用 HMR。它决定加载
+哪些服务插件，不改变下面的 Models 配置来源优先级。
+
 Models 来源优先级是显式入口路径 / `WISH_MODELS_CONFIG` → `WISH_MODELS_JSON` →
 `<WISH_DATA_DIR>/models.json` → generated defaults。`schemaVersion: 1` 是完整替换，
 `schemaVersion: 2` 是 generated defaults 上的 Provider/Model overlay。以下环境变量可覆盖入口默认值：
@@ -136,6 +142,43 @@ Models 来源优先级是显式入口路径 / `WISH_MODELS_CONFIG` → `WISH_MOD
 
 Provider 密钥仍只按 Models 配置声明的环境变量在调用时读取，不写入 Session 或 Apps
 配置文件。
+
+## G3：插件拥有自己的配置
+
+不存在一个汇总所有模块设置的全局 config service。每个 Loader 插件通过自己的
+Schemastery `Config` 声明它拥有的字段：CLI surface 当前拥有 `dataDirectory` 与
+`modelsConfigurationPath`；WebUI surface 另外拥有 `host`、`port` 和 `workspaceRoot`。
+这些字段可以直接写在对应的 `cordis.yml` 条目中：
+
+```yaml
+- id: webui
+  name: 'cordis:webui'
+  config:
+    host: '127.0.0.1'
+    port: 8790
+    workspaceRoot: './workspace'
+    dataDirectory: './state'
+```
+
+相对目录按 `launch.cwd` 解析。CLI 明确参数优先于 Loader 条目，Loader 条目优先于
+`WISH_*` 环境变量，环境变量再回退到产品默认值；WebUI 没有对应 CLI 参数，因此从
+Loader 条目直接回退到环境变量和默认值。配置 schema 在插件启动前校验，未知的业务恢复
+语义不会被配置层猜测。
+
+WebUI 条目保持同一 stable id 更新时，Loader 会 dispose 旧 Server/Application fiber，
+再以新配置启动；无效更新通过 Group 回滚到 last-known-good 配置。CLI 的交互进程仍采用
+退出后重新启动的策略，不承诺活动终端会话原地重载。
+
+运行本阶段验收：
+
+```bash
+npm run test:app-plugin-config
+```
+
+该验收使用真实构建后 WebUI 进程，验证条目配置覆盖冲突环境变量、相对路径、端口热更新、
+schema 无效回滚、Session 数据目录连续性和最终 effect 清理。G3 只迁移 surface 自己拥有
+的启动字段；Application 内部的 Sessions、Models、Context、Tools 与 Runtime 仍待逐项
+提升为服务插件。
 
 ## Session、Run 与 workspace
 

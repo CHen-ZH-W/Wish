@@ -130,7 +130,11 @@
     "models:generate": "node scripts/models/generate-models.mjs",
     "models:check-generated": "node scripts/models/generate-models.mjs --check",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-generation.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-input-tokens.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-context-history.mjs && node scripts/accept-context-providers.mjs && node scripts/accept-context-tool-results.mjs && node scripts/accept-tool-result-archive.mjs && node scripts/accept-context-budget.mjs && node scripts/accept-context-bundle.mjs && node scripts/accept-compaction.mjs && node scripts/accept-sessions.mjs && node scripts/accept-tools.mjs && node scripts/accept-tool-authorization.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs && node scripts/accept-apps-composition.mjs && node scripts/accept-apps-cli.mjs && node scripts/accept-apps-webui.mjs",
+    "test": "npm run build && node scripts/accept-cordis-baseline.mjs && node scripts/accept-cordis-boot.mjs && node scripts/accept-cordis-config.mjs && node scripts/accept-app-plugin-config.mjs && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-generation.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-input-tokens.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-context-history.mjs && node scripts/accept-context-providers.mjs && node scripts/accept-context-tool-results.mjs && node scripts/accept-tool-result-archive.mjs && node scripts/accept-context-budget.mjs && node scripts/accept-context-bundle.mjs && node scripts/accept-compaction.mjs && node scripts/accept-sessions.mjs && node scripts/accept-tools.mjs && node scripts/accept-tool-authorization.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs && node scripts/accept-apps-composition.mjs && node scripts/accept-apps-cli.mjs && node scripts/accept-apps-webui.mjs",
+    "test:cordis-baseline": "npm run build && node scripts/accept-cordis-baseline.mjs",
+    "test:cordis-boot": "npm run build && node scripts/accept-cordis-boot.mjs",
+    "test:cordis-config": "npm run build && node scripts/accept-cordis-config.mjs",
+    "test:app-plugin-config": "npm run build && node scripts/accept-app-plugin-config.mjs",
     "webui": "npm run build && node dist/apps/webui/main.js",
     "test:agent": "npm run build && node scripts/accept-agent.mjs",
     "test:runtime": "npm run build && node scripts/accept-runtime.mjs",
@@ -172,13 +176,22 @@
   },
   "devDependencies": {
     "@types/diff": "^7.0.2",
-    "@types/node": "^20.19.17",
+    "@types/node": "^22.20.0",
     "typescript": "^5.8.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "dependencies": {
-    "diff": "^8.0.3"
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/cordis-plugin-group": "1.0.2",
+    "@deepseek-ai/cordis-plugin-hmr": "1.0.17",
+    "@deepseek-ai/cordis-plugin-include": "1.0.7",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.3",
+    "@deepseek-ai/cordis-plugin-logger-console": "1.0.2",
+    "@deepseek-ai/cordis-plugin-timer": "1.1.4",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "diff": "^8.0.3",
+    "node-addon-require-builtin": "0.1.4"
   }
 }
