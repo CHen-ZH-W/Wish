@@ -12,15 +12,6 @@ import type {
   ModelEnvironment,
   ModelsConfiguration,
 } from "../models/types.js";
-import type {
-  BasicToolContext,
-  ToolApprovalPort,
-} from "../tools/index.js";
-import {
-  createWishApplication,
-  type WishApplicationOptions,
-} from "./application.js";
-import type { WishApplication } from "./types.js";
 
 const DEFAULT_AGENT_ID = "wish";
 const DEFAULT_AGENT_INSTRUCTION =
@@ -28,7 +19,6 @@ const DEFAULT_AGENT_INSTRUCTION =
 const DEFAULT_RESERVED_OUTPUT_TOKENS = 8_192;
 const DEFAULT_KEEP_RECENT_TOKENS = 16_384;
 const DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 4_096;
-const DEFAULT_MAX_STEPS = 32;
 
 export class WishHostConfigurationError extends Error {
   constructor(message: string) {
@@ -37,7 +27,7 @@ export class WishHostConfigurationError extends Error {
   }
 }
 
-/** Host-owned settings shared by the CLI and the later WebUI server. */
+/** Resolved settings consumed while opening one Application generation. */
 export interface WishHostConfiguration {
   readonly dataDirectory: string;
   readonly agentId: string;
@@ -48,24 +38,25 @@ export interface WishHostConfiguration {
   readonly reservedOutputTokens: number;
   readonly keepRecentTokens: number;
   readonly summaryMaxOutputTokens: number;
-  readonly maxSteps: number;
 }
 
 export interface LoadWishHostConfigurationInput {
   readonly dataDirectory?: string;
   readonly homeDirectory?: string;
   readonly modelsConfigurationPath?: string;
+  readonly modelsConfigurationJson?: string;
+  readonly model?: string;
+  readonly fallbackModels?: readonly string[];
+  readonly modelMaxRetries?: number;
+  /** Pre-resolved by the Cordis Models service in product compositions. */
+  readonly resolvedModels?: ModelsConfiguration;
+  /** Provider credentials and environment-backed request headers only. */
   readonly environment?: ModelEnvironment;
   readonly agentId?: string;
   readonly agentInstructions?: readonly ContextInstruction[];
   readonly reservedOutputTokens?: number;
   readonly keepRecentTokens?: number;
   readonly summaryMaxOutputTokens?: number;
-  readonly maxSteps?: number;
-}
-
-export interface CreateWishHostApplicationInput {
-  readonly approval?: ToolApprovalPort<BasicToolContext>;
 }
 
 /** Resolve process-level configuration without introducing another Models format. */
@@ -74,28 +65,39 @@ export async function loadWishHostConfiguration(
 ): Promise<WishHostConfiguration> {
   const environment = input.environment ?? process.env;
   const dataDirectory = normalizeDirectory(
-    input.dataDirectory ?? environment.WISH_DATA_DIR ?? join(
+    input.dataDirectory ?? join(
       input.homeDirectory ?? homedir(),
       ".wish",
     ),
     "Wish data directory",
   );
-  const configurationPath = input.modelsConfigurationPath ??
-    environment.WISH_MODELS_CONFIG;
+  const configurationPath = input.modelsConfigurationPath;
+  const modelsEnvironment: ModelEnvironment = Object.freeze({
+    ...(input.modelsConfigurationJson === undefined
+      ? {}
+      : { WISH_MODELS_JSON: input.modelsConfigurationJson }),
+    ...(input.model === undefined ? {} : { WISH_MODEL: input.model }),
+    ...(input.fallbackModels === undefined
+      ? {}
+      : { WISH_FALLBACK_MODELS: input.fallbackModels.join(",") }),
+    ...(input.modelMaxRetries === undefined
+      ? {}
+      : { WISH_MODEL_MAX_RETRIES: String(input.modelMaxRetries) }),
+  });
   const defaultConfigurationPath = join(dataDirectory, "models.json");
-  const models = configurationPath !== undefined
+  const models = input.resolvedModels ?? (configurationPath !== undefined
     ? await loadModelsConfigurationFile({
         path: resolve(configurationPath),
-        environment,
+        environment: modelsEnvironment,
       })
-    : environment.WISH_MODELS_JSON !== undefined
-      ? loadModelsConfiguration({ environment })
+    : input.modelsConfigurationJson !== undefined
+      ? loadModelsConfiguration({ environment: modelsEnvironment })
       : await fileExists(defaultConfigurationPath)
         ? await loadModelsConfigurationFile({
             path: defaultConfigurationPath,
-            environment,
+            environment: modelsEnvironment,
           })
-        : loadModelsConfiguration({ environment });
+        : loadModelsConfiguration({ environment: modelsEnvironment }));
   const selected = resolveConfiguredModel(models, models.defaultModel).spec;
   const contextWindowTokens = selected.contextWindowTokens;
   const defaultReserved = contextWindowTokens === undefined
@@ -110,10 +112,8 @@ export async function loadWishHostConfiguration(
       );
   const reservedOutputTokens = readNonNegativeInteger({
     explicit: input.reservedOutputTokens,
-    environment: environment.WISH_CONTEXT_RESERVED_OUTPUT_TOKENS,
     fallback: defaultReserved,
     name: "reservedOutputTokens",
-    environmentName: "WISH_CONTEXT_RESERVED_OUTPUT_TOKENS",
   });
   if (
     contextWindowTokens !== undefined &&
@@ -128,7 +128,6 @@ export async function loadWishHostConfiguration(
     : Math.max(1, contextWindowTokens - reservedOutputTokens);
   const keepRecentTokens = readPositiveInteger({
     explicit: input.keepRecentTokens,
-    environment: environment.WISH_COMPACTION_KEEP_RECENT_TOKENS,
     fallback: availableInputTokens === undefined
       ? DEFAULT_KEEP_RECENT_TOKENS
       : Math.max(1, Math.min(
@@ -136,31 +135,21 @@ export async function loadWishHostConfiguration(
           Math.floor(availableInputTokens / 2),
         )),
     name: "keepRecentTokens",
-    environmentName: "WISH_COMPACTION_KEEP_RECENT_TOKENS",
   });
   const summaryMaxOutputTokens = readPositiveInteger({
     explicit: input.summaryMaxOutputTokens,
-    environment: environment.WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS,
     fallback: Math.max(1, Math.min(
       selected.maxOutputTokens ?? DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS,
       DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS,
     )),
     name: "summaryMaxOutputTokens",
-    environmentName: "WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS",
-  });
-  const maxSteps = readPositiveInteger({
-    explicit: input.maxSteps,
-    environment: environment.WISH_MAX_STEPS,
-    fallback: DEFAULT_MAX_STEPS,
-    name: "maxSteps",
-    environmentName: "WISH_MAX_STEPS",
   });
   const agentId = requireIdentifier(
-    input.agentId ?? environment.WISH_AGENT_ID ?? DEFAULT_AGENT_ID,
+    input.agentId ?? DEFAULT_AGENT_ID,
     "Wish Agent id",
   );
   const agentInstructions = snapshotInstructions(
-    input.agentInstructions ?? instructionsFromEnvironment(environment),
+    input.agentInstructions ?? defaultInstructions(),
   );
 
   return Object.freeze({
@@ -172,7 +161,6 @@ export async function loadWishHostConfiguration(
     reservedOutputTokens,
     keepRecentTokens,
     summaryMaxOutputTokens,
-    maxSteps,
   });
 }
 
@@ -191,60 +179,11 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-/** Instantiate the shared composition root from one resolved host configuration. */
-export function createWishHostApplication(
-  configuration: WishHostConfiguration,
-  input: CreateWishHostApplicationInput = {},
-): WishApplication {
-  const options: WishApplicationOptions = {
-    dataDirectory: configuration.dataDirectory,
-    agent: {
-      id: configuration.agentId,
-      name: "Wish",
-      configuration: {
-        agentInstructions: configuration.agentInstructions,
-      },
-    },
-    models: {
-      configuration: configuration.models,
-      environment: configuration.modelEnvironment,
-    },
-    workspace: {
-      resolve({ session }) {
-        return Object.freeze({
-          cwd: session.scope,
-          instructions: Object.freeze([]),
-        });
-      },
-    },
-    context: {
-      reservedOutputTokens: configuration.reservedOutputTokens,
-    },
-    compaction: {
-      keepRecentTokens: configuration.keepRecentTokens,
-      summaryMaxOutputTokens: configuration.summaryMaxOutputTokens,
-    },
-    runtime: {
-      maxSteps: configuration.maxSteps,
-    },
-    ...(input.approval === undefined
-      ? {}
-      : { tools: { approval: input.approval } }),
-  };
-  return createWishApplication(options);
-}
-
-function instructionsFromEnvironment(
-  environment: ModelEnvironment,
-): readonly ContextInstruction[] {
-  const configured = environment.WISH_AGENT_INSTRUCTIONS;
-  const content = configured === undefined
-    ? DEFAULT_AGENT_INSTRUCTION
-    : requireText(configured, "WISH_AGENT_INSTRUCTIONS");
+function defaultInstructions(): readonly ContextInstruction[] {
   return Object.freeze([Object.freeze({
     id: "wish-agent-base",
     authority: "system" as const,
-    content,
+    content: DEFAULT_AGENT_INSTRUCTION,
   })]);
 }
 
@@ -281,15 +220,10 @@ function snapshotInstructions(
 
 function readNonNegativeInteger(input: {
   readonly explicit: number | undefined;
-  readonly environment: string | undefined;
   readonly fallback: number;
   readonly name: string;
-  readonly environmentName: string;
 }): number {
-  const value = input.explicit ?? parseEnvironmentInteger(
-    input.environment,
-    input.environmentName,
-  ) ?? input.fallback;
+  const value = input.explicit ?? input.fallback;
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new WishHostConfigurationError(
       `${input.name} must be a non-negative safe integer`,
@@ -300,10 +234,8 @@ function readNonNegativeInteger(input: {
 
 function readPositiveInteger(input: {
   readonly explicit: number | undefined;
-  readonly environment: string | undefined;
   readonly fallback: number;
   readonly name: string;
-  readonly environmentName: string;
 }): number {
   const value = readNonNegativeInteger(input);
   if (value < 1) {
@@ -312,25 +244,6 @@ function readPositiveInteger(input: {
     );
   }
   return value;
-}
-
-function parseEnvironmentInteger(
-  value: string | undefined,
-  name: string,
-): number | undefined {
-  if (value === undefined) return undefined;
-  if (!/^(0|[1-9][0-9]*)$/u.test(value)) {
-    throw new WishHostConfigurationError(
-      `${name} must be a non-negative integer`,
-    );
-  }
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed)) {
-    throw new WishHostConfigurationError(
-      `${name} must be a non-negative safe integer`,
-    );
-  }
-  return parsed;
 }
 
 function normalizeDirectory(value: string, label: string): string {

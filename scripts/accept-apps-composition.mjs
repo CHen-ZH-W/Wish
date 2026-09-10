@@ -4,13 +4,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createWishApplication } from "../dist/apps/application.js";
+import { ApplicationFacade } from "../dist/apps/application.js";
+import { createWishAgent } from "../dist/core/agent/service.js";
+import { createAgentLoopPipeline } from "../dist/core/agent-loop/service.js";
+import { createWishRuntime } from "../dist/core/runtime/service.js";
 import { loadModelsConfiguration } from "../dist/models/config.js";
-import { ModelAdapterRegistry } from "../dist/models/registry.js";
 import {
+  createDefaultModelAdapterRegistry,
+  ModelAdapterRegistry,
+} from "../dist/models/registry.js";
+import { createConfiguredModelResources } from "../dist/models/runtime.js";
+import { TokenizerUsageEstimator } from "../dist/models/usage.js";
+import { createContextResources } from "../dist/context/service.js";
+import { createCompactionResources } from "../dist/compaction/service.js";
+import { ToolRegistry } from "../dist/core/tools/scheduler.js";
+import {
+  createFileSessionResources,
   SessionArchivedError,
   SessionNotFoundError,
 } from "../dist/sessions/index.js";
+import {
+  registerBasicTools,
+} from "../dist/tools/index.js";
+import { createBashTool } from "../dist/tools/basic/bash.js";
 
 function fixtureConfiguration(options = {}) {
   const models = [{
@@ -43,6 +59,51 @@ function fixtureConfiguration(options = {}) {
     },
     availableProtocols: ["fixture-protocol"],
   });
+}
+
+function modelResources(configuration, options = {}) {
+  return createConfiguredModelResources({
+    configuration,
+    registry: options.registry ?? createDefaultModelAdapterRegistry(),
+    usageEstimator: new TokenizerUsageEstimator(),
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+  });
+}
+
+function agentLoopResources(options) {
+  const context = createContextResources({
+    dataDirectory: options.dataDirectory,
+    sessions: options.sessions,
+    agentInstructions: options.agentInstructions,
+    models: options.models,
+    configuration: {
+      reservedOutputTokens: options.reservedOutputTokens,
+    },
+  });
+  const compaction = createCompactionResources({
+    dataDirectory: options.dataDirectory,
+    sessions: options.sessions,
+    models: options.models,
+    keepRecentTokens: options.keepRecentTokens,
+    summaryMaxOutputTokens: options.summaryMaxOutputTokens,
+  });
+  return {
+    stepPipeline: createAgentLoopPipeline({
+      sessions: options.sessions,
+      agentId: options.agentId,
+      models: options.models,
+      workspace: options.workspace,
+      context,
+      compaction,
+      ...(options.tools === undefined ? {} : { tools: options.tools }),
+    }),
+  };
+}
+
+function runtimeResources(options, runtime = {}) {
+  return {
+    runtime: createWishRuntime(agentLoopResources(options), runtime),
+  };
 }
 
 function deterministicRuntime() {
@@ -99,42 +160,44 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
     }));
     const approvals = [];
     const resolvedSessions = [];
-    const application = createWishApplication({
-      dataDirectory: join(root, "data"),
-      agent: {
-        id: "wish-agent",
-        configuration: {
-          agentInstructions: [{
-            id: "agent-base",
-            authority: "system",
-            content: "Be exact.",
+    const toolRegistry = new ToolRegistry();
+    const registrations = registerBasicTools(toolRegistry);
+    const dataDirectory = join(root, "data");
+    const sessions = createFileSessionResources(dataDirectory);
+    const models = modelResources(fixtureConfiguration(), {
+      registry: adapters,
+      fetch: async () => new Response(),
+    });
+    const agentInstructions = [{
+      id: "agent-base",
+      authority: "system",
+      content: "Be exact.",
+    }];
+    const workspace = {
+      resolve({ session }) {
+        resolvedSessions.push(session.sessionId);
+        return {
+          cwd: session.scope,
+          instructions: [{
+            id: "workspace",
+            authority: "developer",
+            content: "Stay in the workspace.",
           }],
-        },
+        };
       },
-      models: {
-        configuration: fixtureConfiguration(),
-        registry: adapters,
-        fetch: async () => new Response(),
-      },
-      workspace: {
-        resolve({ session }) {
-          resolvedSessions.push(session.sessionId);
-          return {
-            cwd: session.scope,
-            instructions: [{
-              id: "workspace",
-              authority: "developer",
-              content: "Stay in the workspace.",
-            }],
-          };
-        },
-      },
-      context: { reservedOutputTokens: 512 },
-      compaction: {
-        keepRecentTokens: 512,
-        summaryMaxOutputTokens: 256,
-      },
+    };
+    const runtime = runtimeResources({
+      dataDirectory,
+      sessions,
+      agentId: "wish-agent",
+      models,
+      workspace,
+      agentInstructions,
+      reservedOutputTokens: 512,
+      keepRecentTokens: 512,
+      summaryMaxOutputTokens: 256,
       tools: {
+        registry: toolRegistry,
         approval: {
           requestApproval(input) {
             approvals.push(input);
@@ -144,8 +207,19 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
         policyVersion: "acceptance-policy-v1",
         authorityVersion: "acceptance-authority-v1",
       },
-      runtime: { ...deterministicRuntime(), maxSteps: 4 },
+    }, { ...deterministicRuntime(), maxSteps: 4 });
+    const application = new ApplicationFacade({
+      sessions,
+      agent: createWishAgent({
+        id: "wish-agent",
+        configuration: {
+          agentInstructions,
+        },
+      }, runtime),
+      models,
     });
+    assert.equal(registrations.at(-1).descriptor.name, "bash");
+    assert.equal(registrations.at(-1).unregister(), true);
 
     const session = await application.createSession({
       sessionId: "session-1",
@@ -160,6 +234,12 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
       payload: { text: "first question" },
     });
     assert.equal((await first.completion).status, "completed");
+    assert.deepEqual(
+      requests[0].tools.map((tool) => tool.name),
+      ["read", "write", "edit", "grep"],
+    );
+
+    toolRegistry.register(createBashTool());
 
     const second = await application.startRun({
       sessionId: session.sessionId,
@@ -170,6 +250,10 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
     const events = await eventsPromise;
     assert.equal(secondCompletion.status, "completed");
     assert.equal(secondCompletion.result.output.text, "read complete");
+    assert.deepEqual(
+      requests[1].tools.map((tool) => tool.name),
+      ["read", "write", "edit", "grep", "bash"],
+    );
 
     assert.equal(approvals.length, 1);
     assert.equal(approvals[0].call.name, "read");
@@ -355,27 +439,32 @@ test("recovers one Context overflow by appending a Session checkpoint", async ()
           : "answer after compaction",
       );
     };
-    const application = createWishApplication({
-      dataDirectory: join(root, "data"),
-      agent: {
+    const dataDirectory = join(root, "data");
+    const sessions = createFileSessionResources(dataDirectory);
+    const models = modelResources(anthropicConfiguration(), { fetch });
+    const workspace = {
+      resolve({ session }) {
+        return { cwd: session.scope, instructions: [] };
+      },
+    };
+    const runtime = runtimeResources({
+      dataDirectory,
+      sessions,
+      agentId: "wish-agent",
+      models,
+      workspace,
+      agentInstructions: [],
+      reservedOutputTokens: 10,
+      keepRecentTokens: 10,
+      summaryMaxOutputTokens: 8,
+    }, { ...deterministicRuntime(), maxSteps: 2 });
+    const application = new ApplicationFacade({
+      sessions,
+      agent: createWishAgent({
         id: "wish-agent",
         configuration: { agentInstructions: [] },
-      },
-      models: {
-        configuration: anthropicConfiguration(),
-        fetch,
-      },
-      workspace: {
-        resolve({ session }) {
-          return { cwd: session.scope, instructions: [] };
-        },
-      },
-      context: { reservedOutputTokens: 10 },
-      compaction: {
-        keepRecentTokens: 10,
-        summaryMaxOutputTokens: 8,
-      },
-      runtime: { ...deterministicRuntime(), maxSteps: 2 },
+      }, runtime),
+      models,
     });
     await application.createSession({
       sessionId: "session-compact",

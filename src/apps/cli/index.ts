@@ -23,7 +23,7 @@ export {
 } from "./cli.js";
 export type {
   WishCli,
-  WishCliApplicationFactory,
+  WishCliApplicationOpener,
   WishCliDependencies,
   WishCliInterruptSignal,
 } from "./cli.js";

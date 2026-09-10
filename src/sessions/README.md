@@ -28,7 +28,8 @@ Sessions 第一版已经完成：
 - Context/Compaction 共用的 history adapter；
 - AgentLoop input renderer 和 transcript pipeline adapter；
 - 与文件系统分离的内存 Store 和文件 Store；
-- 类型测试、事务验收和完整 Context/Compaction/AgentLoop 组合验收。
+- 类型测试、事务验收和完整 Context/Compaction/AgentLoop 组合验收；
+- G6.1 Cordis `sessions` service、Loader 配置、依赖生命周期和跨 generation 持久化。
 
 当前目录：
 
@@ -40,6 +41,7 @@ src/sessions/
 ├── session.ts
 ├── transcript.ts
 ├── memory-store.ts
+├── service.ts              # Cordis wrapper；领域实现仍保持框架无关
 └── adapters/
     ├── history.ts
     └── agent-loop.ts
@@ -49,6 +51,22 @@ src/storage/sessions/
 ```
 
 文件系统逻辑只存在于 `src/storage/sessions/`，不会混入 Sessions 领域模块。
+
+## G6.1：Cordis Service
+
+`Sessions` 是领域层外面的生命周期和装配 wrapper。它提供默认 `dataDirectory`，构造
+`FileSessionStore`、`SessionManager` 和唯一的 `SessionHistoryAdapter`，并作为
+`ctx.sessions` 暴露。`SessionManager`、Store Port、ContextHistorySource 与
+CompactionSessionPort 没有继承或导入 Cordis。
+
+`open(dataDirectory)` 支持 CLI 已解析的显式目录覆盖，并在同一 service generation 内按
+规范化目录复用 Session graph。默认目录来自插件 Config；相对路径按 `launch.cwd` 解析，
+未配置时使用 `<launch.homeDirectory>/.wish`。service reload 后会创建新的 manager，但
+FileSessionStore 会从同一目录读取既有 Session 事实。
+
+当前 File Store 仍是 Sessions service 内部的具体实现，不提前增加 `sessionStore` provider。
+只有以后确实需要在配置中动态选择 file/sqlite/postgres/memory/remote 时，才把 Store Port
+提升成另一条 Cordis provider/consumer 依赖。
 
 ## Session 与历史事实
 
@@ -289,10 +307,12 @@ Slack、WebUI 或其他具体平台字段。
 
 ```bash
 npm run typecheck
+npm run test:cordis-sessions
 npm run test:sessions
 npm test
 ```
 
-`test:sessions` 覆盖 Session 管理、不可变往返、幂等冲突、并发连续 sequence、Tool
+`test:cordis-sessions` 覆盖 service 依赖生命周期、配置更新失败、stable-id 卸载恢复与
+跨 generation 文件持久化。`test:sessions` 覆盖 Session 管理、不可变往返、幂等冲突、并发连续 sequence、Tool
 原子 batch、checkpoint CAS、Context/Compaction 共用历史、AgentLoop 提交顺序、文件
 恢复，以及完整 Sessions → Context → Compaction → AgentLoop 组合链。

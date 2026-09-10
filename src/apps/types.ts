@@ -17,6 +17,7 @@ import type {
   RuntimeControlReceipt,
   RuntimeTransition,
 } from "../core/runtime/runtime.js";
+import type { RunGeneration } from "../core/runtime/generation.js";
 import type {
   ContextInstruction,
   ContextWorkspaceFacts,
@@ -49,6 +50,8 @@ export type WishAgentProtocol = RuntimeAgentProtocol<
   WishRunPayload,
   AgentLoopResult
 >;
+
+export type WishRunGeneration = RunGeneration<WishAgentProtocol>;
 
 export type WishRunCompletion = RunCompletion<AgentLoopResult, WishRunPayload>;
 export type WishRunHandle = RunHandle<WishRunCompletion>;
@@ -87,11 +90,13 @@ export interface WishWorkspaceResolver {
 }
 
 /**
- * Internal transport-neutral facade shared by the CLI and WebUI entrypoints.
- * `createWishApplication` supplies the shared concrete composition.
+ * Transport-neutral facade shared by process surfaces and explicit embedders.
+ * Product entrypoints obtain it from the Loader-managed Application service.
  */
 export interface WishApplication {
   readonly agentId: AgentId;
+  /** Lifecycle owner of Runs admitted by a Loader-managed graph generation. */
+  readonly runGeneration?: WishRunGeneration;
 
   createSession(input: CreateWishSessionInput): Promise<Session>;
   getSession(input: GetSessionInput): Promise<Session>;

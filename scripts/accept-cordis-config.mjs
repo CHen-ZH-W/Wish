@@ -95,15 +95,20 @@ test("a built WebUI process applies and rolls back external profile updates", as
   const eventFile = join(directory, "events.log");
   const configurationFile = join(directory, "cordis.yml");
   const port = await reservePort();
+  const profileOptions = {
+    eventFile,
+    dataDirectory: join(directory, "data"),
+    workspaceRoot: directory,
+    port,
+  };
   await writeFile(join(directory, "probe.mjs"), liveProbeModule());
-  await writeFile(configurationFile, liveProfile({ eventFile, label: "v1" }));
+  await writeFile(configurationFile, liveProfile({
+    ...profileOptions,
+    label: "v1",
+  }));
 
   const environment = cleanEnvironment();
   environment.CORDIS_CONFIG = configurationFile;
-  environment.WISH_DATA_DIR = join(directory, "data");
-  environment.WISH_WEBUI_WORKSPACE_ROOT = directory;
-  environment.WISH_WEBUI_HOST = "127.0.0.1";
-  environment.WISH_WEBUI_PORT = String(port);
   const child = spawn(
     process.execPath,
     [join(repositoryRoot, "dist/apps/webui/main.js")],
@@ -134,7 +139,10 @@ test("a built WebUI process applies and rolls back external profile updates", as
     );
     await assertHealthy(port);
 
-    await writeFile(configurationFile, liveProfile({ eventFile, label: "v2" }));
+    await writeFile(configurationFile, liveProfile({
+      ...profileOptions,
+      label: "v2",
+    }));
     await waitFor(
       async () => {
         const events = await readEvents(eventFile);
@@ -149,7 +157,7 @@ test("a built WebUI process applies and rolls back external profile updates", as
 
     await writeFile(
       configurationFile,
-      liveProfile({ eventFile, label: 42 }),
+      liveProfile({ ...profileOptions, label: 42 }),
     );
     await waitFor(
       async () => (await readEvents(eventFile)).includes("config-failed"),
@@ -165,7 +173,7 @@ test("a built WebUI process applies and rolls back external profile updates", as
     const beforeDisable = count(await readEvents(eventFile), "dispose:v2");
     await writeFile(
       configurationFile,
-      liveProfile({ eventFile, label: "v2", disabled: true }),
+      liveProfile({ ...profileOptions, label: "v2", disabled: true }),
     );
     await waitFor(
       async () => count(await readEvents(eventFile), "dispose:v2") > beforeDisable,
@@ -177,7 +185,10 @@ test("a built WebUI process applies and rolls back external profile updates", as
     await assertHealthy(port);
     await delay(150);
 
-    await writeFile(configurationFile, liveProfile({ eventFile, label: "v3" }));
+    await writeFile(configurationFile, liveProfile({
+      ...profileOptions,
+      label: "v3",
+    }));
     await waitFor(
       async () => (await readEvents(eventFile)).includes("apply:v3"),
       () => "re-enabled profile row did not activate the probe",
@@ -225,7 +236,14 @@ function profileForSource(label, code) {
 `;
 }
 
-function liveProfile({ eventFile, label, disabled = false }) {
+function liveProfile({
+  eventFile,
+  dataDirectory,
+  workspaceRoot,
+  port,
+  label,
+  disabled = false,
+}) {
   return `- id: timer
   name: 'cordis:timer'
 
@@ -241,6 +259,50 @@ function liveProfile({ eventFile, label, disabled = false }) {
   name: 'cordis:group'
   group: true
   config:
+    - id: sessions
+      name: 'cordis:sessions'
+      config:
+        dataDirectory: ${JSON.stringify(dataDirectory)}
+
+    - id: models
+      name: 'cordis:models'
+    - id: model-openai-chat-completions
+      name: 'cordis:model-openai-chat-completions'
+    - id: model-openai-responses
+      name: 'cordis:model-openai-responses'
+    - id: model-anthropic-messages
+      name: 'cordis:model-anthropic-messages'
+
+    - id: context-engine
+      name: 'cordis:context-engine'
+    - id: compaction
+      name: 'cordis:compaction'
+
+    - id: tools
+      name: 'cordis:tools'
+    - id: tool-read
+      name: 'cordis:read'
+    - id: tool-write
+      name: 'cordis:write'
+    - id: tool-edit
+      name: 'cordis:edit'
+    - id: tool-grep
+      name: 'cordis:grep'
+    - id: tool-bash
+      name: 'cordis:bash'
+
+    - id: agent-loop
+      name: 'cordis:agent-loop'
+
+    - id: runtime
+      name: 'cordis:runtime'
+
+    - id: agents
+      name: 'cordis:agents'
+
+    - id: application
+      name: 'cordis:application'
+
     - id: probe
       name: './probe.mjs'
       disabled: ${disabled}
@@ -255,6 +317,10 @@ function liveProfile({ eventFile, label, disabled = false }) {
     - id: webui
       name: 'cordis:webui'
       disabled: !!js launch.surface !== 'webui'
+      config:
+        host: '127.0.0.1'
+        port: ${port}
+        workspaceRoot: ${JSON.stringify(workspaceRoot)}
 `;
 }
 

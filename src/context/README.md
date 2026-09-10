@@ -49,6 +49,7 @@ src/context/
 ├── README.md
 ├── context.ts
 ├── index.ts
+├── service.ts              # G6.3 Cordis owner 与 standalone helper
 ├── types.ts
 ├── providers/
 │   ├── history.ts
@@ -260,19 +261,38 @@ const loop = new AgentLoop({
 变化不会改变该 Step 的 Context 输入。Bundle 只提供组合所需对象：它不启动
 AgentLoop、不调用模型、不写 Session，也不生成摘要。
 
+## G6.3：Cordis Service
+
+`src/context/service.ts` 提供名为 `contextEngine` 的 service，避免和 Cordis 自身的
+`Context` 类型混淆。它注入 `sessions` 与 `models`，拥有
+`FileToolResultArchive → ContextBundle` 的生产构造；`reservedOutputTokens` 由自己的
+Schemastery Config 管理。AgentLoop service 消费 `contextEngine.open()` 返回的
+`ContextBundle`；Application Service 与 facade 不看见它，也不创建 archive、Provider graph
+或 budget evaluator。
+
+`createContextResources()` 是显式 standalone 组合 helper，供模块验收或非产品嵌入使用；
+`wish` / `wish-webui` 的启动路径只使用 Cordis service。service generation 更新、禁用或
+消失会让依赖它的 agentLoop/runEngine/agents/application/surface fiber 回到 PENDING，恢复后
+创建新一代组合。
+
+```bash
+npm run test:cordis-context
+```
+
 ## 依赖边界
 
-`src/context` 可以依赖 Core 的 Model、Runtime 和 Tool DTO，并为 Core Context 的窄
-Port 提供实现。它不能依赖具体 Session Store、文件系统、数据库、Memory、Skill、
-Workflow、Sandbox 或 Provider 协议实现。
+`context.ts`、`types.ts`、`providers/` 与 `services/` 可以依赖 Core 的 Model、Runtime
+和 Tool DTO，并为 Core Context 的窄 Port 提供实现；它们不能依赖具体 Session Store、
+文件系统、数据库、Memory、Skill、Workflow、Sandbox 或 Provider 协议实现。只有
+Cordis 边界 `service.ts` 负责把 Sessions view 和文件 Archive adapter 接到这些纯 Port。
 
 事实来源保持单向：
 
 ```text
-Session / Models / Storage implementation
-              │ implements adapters
+Cordis ContextEngine service
+              │ injects Sessions / Models and binds Storage
               v
-         src/context
+      pure Context ports/services
               │ supplies Core ports/items
               v
       src/core/context
@@ -300,5 +320,6 @@ npm run test:context-tool-results
 npm run test:tool-result-archive
 npm run test:context-budget
 npm run test:context-bundle
+npm run test:cordis-context
 npm test
 ```

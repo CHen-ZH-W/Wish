@@ -10,6 +10,7 @@ import {
 import { ModelAdapterRegistry } from "../src/models/registry.js";
 import {
   ConfiguredModel,
+  createConfiguredModelResources,
   createConfiguredModelRequestTokenCounter,
 } from "../src/models/runtime.js";
 import { ModelCatalog } from "../src/models/catalog.js";
@@ -18,6 +19,8 @@ import {
   type ModelRequestTokenizer,
 } from "../src/models/input-tokens.js";
 import { FileCatalogStore } from "../src/storage/models/file-catalog-store.js";
+import { TokenizerUsageEstimator } from "../src/models/usage.js";
+import type { ModelDependencies } from "../src/models/runtime.js";
 import type {
   ModelAdapterFactory,
   ModelSpec,
@@ -82,6 +85,13 @@ const configuredRequestTokenCounter: ModelInputTokenCounter =
     environment: { MODEL_API_KEY: "secret" },
     fetch: async () => new Response(),
   });
+const resources: ModelDependencies = createConfiguredModelResources({
+  configuration,
+  registry,
+  usageEstimator: new TokenizerUsageEstimator(),
+  environment: { MODEL_API_KEY: "secret" },
+  fetch: async () => new Response(),
+});
 const catalog = new ModelCatalog({
   configuration,
   store: new FileCatalogStore({ path: ".wish/models-catalog.json" }),
@@ -92,4 +102,5 @@ void configuredModel;
 void contextWindows;
 void contextTokenCounter;
 void configuredRequestTokenCounter;
+void resources;
 void catalog.list();

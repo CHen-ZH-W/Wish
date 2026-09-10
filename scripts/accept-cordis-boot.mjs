@@ -91,6 +91,8 @@ export function apply(ctx) {
 
     assert.equal(Context.is(application.context), true);
     assert.equal(application.context.root, application.context);
+    assert.equal(Context.is(application.surfaceContext), true);
+    assert.equal(application.surfaceContext.root, application.context);
     assert.equal(application.context.launch.surface, "cli");
     assert.deepEqual(application.context.launch.argv, ["fixture"]);
     assert.equal(application.context.launch.configurationSource, "option");
@@ -100,6 +102,7 @@ export function apply(ctx) {
     const selected = application.context.loader.resolve("include:cli");
     const disabled = application.context.loader.resolve("include:webui");
     const selectedFiber = selected.fiber;
+    assert.equal(application.surfaceContext, selected.ctx);
     assert.equal(include.fiber.state, fiberState.active);
     assert.equal(selected.fiber.state, fiberState.active);
     assert.equal(disabled.disabled, true);

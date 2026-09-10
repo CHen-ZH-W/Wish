@@ -21,6 +21,8 @@ Run 外层循环
 - `lifecycle.ts`：终态决策、取消首因、observer pipeline 和持久化 Port。
 - `transition.ts`：带不变量检查的纯状态转换。
 - `control.ts`：steer inbox、follow-up queue、abort DTO 和明确回执。
+- `generation.ts`：跨配置代的 Run 准入、活动 Run 归属、单次取消与诚实排空。
+- `service.ts`：Cordis `runEngine` Service，拥有生产环境的 Runtime 构造和生命周期。
 
 `events/event.ts` 提供 Runtime 所需的统一事件 envelope、有界进程内重放和
 独立 observer。具体持久化不属于 Core。
@@ -32,7 +34,8 @@ Run 外层循环
 而继续执行。
 
 内层循环只驱动当前 UserTurn 的 Step。`StepPipeline` 是 Model、Context 和
-Tool 链路的接入点，默认实现由 `agent-loop/AgentLoop` 提供。每个 Step 开始时
+Tool 链路的接入点，默认实现由 `agent-loop/AgentLoop` 提供，生产构造由同一 Core
+能力目录中的 `service.ts` 接管。每个 Step 开始时
 捕获不可变快照，并提供绑定到当前 Step 执行期的 Model/Tool 输出通道；旧 Step
 持有的通道在 `execute` 返回后立即失效。pipeline 只能返回 `continue`、
 `completed`、`failed` 或 `aborted`，Runtime 会在边界校验 discriminant 及必要
@@ -81,7 +84,25 @@ Runtime 在入口复制 definition、metadata 和 plain DTO；状态、transitio
 取消、生命周期 Port、统一事件和终态收束均由 Runtime 所有。Runtime 不依赖默认
 实现，也不理解具体 Context、Model 或 Tool；组合根可以使用 `AgentLoop` 完成默认
 连接，也可以提供遵守相同 Step 契约的其他显式 `StepPipeline`。持久化和进程重启
-恢复需要由 Core 外的 `RuntimeLifecycleService` 实现承担。
+恢复需要由具体 `RuntimeLifecycleService` 实现承担。`runtime.ts` 与 `generation.ts` 等算法文件仍不依赖
+Cordis；同目录的 `service.ts` 只负责生产构造和依赖 generation，不改变状态机或恢复
+不变量，也不再形成平行的 `src/runtime/` 模块身份。
+
+## Cordis 生命周期与配置
+
+Runtime Service 注入 `agentLoop`，通过 `ctx.agentLoop.open()` 获得当前 Step pipeline，
+再构造一代 Core Runtime 和包裹它的 `RunGeneration`。Cordis 保留 `ctx.runtime` 作为插件 runtime accessor，因此
+Wish 的能力键使用 `runEngine`，Loader 名称仍为 `cordis:runtime`。
+
+Config 拥有 `maxSteps` 与 `generationDrainTimeoutMs`。依赖缺失时保持 PENDING；AgentLoop
+更新或消失时依次释放 `runEngine → agents → application → surface`。旧代先永久关闭
+新 Run 准入，再向每个仍活动的 Run 发送一次显式 abort，并等待它们原有的 completion；
+只有旧代进入 `retired` 后，Cordis 才能激活新 consumer。它不会创建、重试或重放 Run/Tool。
+
+排空超过 deadline 会产生 `run_generation_drain_timeout` 并使 process completion 失败，但
+retirement 仍保持 pending，直到真实 completion 到达。这样 timeout 是可见故障，不是绕过
+安全边界的“强制清理”；未知 Tool side effect 仍必须保持未知，后续持久化恢复只能走显式
+reconciliation。
 
 ## 验证
 
@@ -90,9 +111,12 @@ Runtime 在入口复制 definition、metadata 和 plain DTO；状态、transitio
 ```bash
 npm run typecheck
 npm run test:runtime
+npm run test:cordis-runtime
+npm run test:run-generation
 npm test
 ```
 
 Runtime 验收覆盖双层循环、Step 序号、steer/follow-up/abort、预算、completion
 hold、scope、生命周期、事件重放、不可变边界、端口协议、capture 取消、输出端口
-失效、observer 隔离、初始化回收和纯状态机不变量。
+失效、observer 隔离、初始化回收和纯状态机不变量。Generation 验收额外覆盖旧代准入关闭、
+单次 abort、原 completion 排空、超时 fail-closed、Cordis 更新先后顺序和零重放。

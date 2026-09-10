@@ -1,6 +1,6 @@
 import type { AgentProtocol } from "../src/core/agent/agent.js";
 import {
-  createWishApplication,
+  ApplicationFacade,
   type WishApplicationOptions,
 } from "../src/apps/application.js";
 import type {
@@ -26,7 +26,7 @@ const workspace: WishWorkspaceResolver = {
 declare const application: WishApplication;
 declare const applicationOptions: WishApplicationOptions;
 
-const composed: WishApplication = createWishApplication(applicationOptions);
+const composed: WishApplication = new ApplicationFacade(applicationOptions);
 
 const session = application.createSession({
   sessionId: "session-1",

@@ -1,16 +1,9 @@
 import { realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 
-import type { ModelEnvironment } from "../../models/types.js";
 import type { Session } from "../../sessions/types.js";
-import {
-  createWishHostApplication,
-  loadWishHostConfiguration,
-  type CreateWishHostApplicationInput,
-  type LoadWishHostConfigurationInput,
-  type WishHostConfiguration,
-} from "../config.js";
+import type { RunGenerationRetireOptions } from "../../core/runtime/generation.js";
+import type { ApplicationOpenInput } from "../service.js";
 import type {
   WishApplication,
   WishRunCompletion,
@@ -35,20 +28,15 @@ export const WISH_CLI_INTERRUPT_TIMEOUT_MS = 5_000;
 
 export type WishCliInterruptSignal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
-export type WishCliApplicationFactory = (
-  configuration: WishHostConfiguration,
-  input: CreateWishHostApplicationInput,
-) => WishApplication;
+export type WishCliApplicationOpener = (
+  input: ApplicationOpenInput,
+) => Promise<WishApplication>;
 
 export interface WishCliDependencies {
   readonly terminal: WishCliTerminal;
   readonly cwd?: () => string;
-  readonly homeDirectory?: () => string;
-  readonly environment?: ModelEnvironment;
-  readonly loadHostConfiguration?: (
-    input: LoadWishHostConfigurationInput,
-  ) => Promise<WishHostConfiguration>;
-  readonly createApplication?: WishCliApplicationFactory;
+  /** Application capability supplied by the process plugin or an embedder. */
+  readonly openApplication: WishCliApplicationOpener;
   readonly forceExit?: (code: number) => void;
   readonly interruptTimeoutMs?: number;
 }
@@ -56,6 +44,8 @@ export interface WishCliDependencies {
 export interface WishCli {
   run(argv: readonly string[]): Promise<number>;
   interrupt(signal: WishCliInterruptSignal): void;
+  /** Retire the Loader-managed Run generation, if one was created. */
+  retire(options?: RunGenerationRetireOptions): Promise<void>;
 }
 
 /** Create one line-oriented CLI host around the shared WishApplication. */
@@ -66,12 +56,7 @@ export function createWishCli(dependencies: WishCliDependencies): WishCli {
 class DefaultWishCli implements WishCli {
   private readonly terminal: WishCliTerminal;
   private readonly cwd: () => string;
-  private readonly homeDirectory: () => string;
-  private readonly environment: ModelEnvironment;
-  private readonly loadConfiguration: NonNullable<
-    WishCliDependencies["loadHostConfiguration"]
-  >;
-  private readonly createApplication: WishCliApplicationFactory;
+  private readonly openApplication: WishCliApplicationOpener;
   private readonly forceExit: (code: number) => void;
   private readonly interruptTimeoutMs: number;
   private readonly input: CliInputCoordinator;
@@ -86,12 +71,7 @@ class DefaultWishCli implements WishCli {
   constructor(dependencies: WishCliDependencies) {
     this.terminal = dependencies.terminal;
     this.cwd = dependencies.cwd ?? (() => process.cwd());
-    this.homeDirectory = dependencies.homeDirectory ?? homedir;
-    this.environment = dependencies.environment ?? process.env;
-    this.loadConfiguration = dependencies.loadHostConfiguration ??
-      loadWishHostConfiguration;
-    this.createApplication = dependencies.createApplication ??
-      createWishHostApplication;
+    this.openApplication = dependencies.openApplication;
     this.forceExit = dependencies.forceExit ?? ((code) => process.exit(code));
     this.interruptTimeoutMs = positiveInteger(
       dependencies.interruptTimeoutMs ?? WISH_CLI_INTERRUPT_TIMEOUT_MS,
@@ -123,11 +103,10 @@ class DefaultWishCli implements WishCli {
     }
 
     const launchDirectory = resolve(this.cwd());
-    const configuration = await this.loadConfiguration({
+    this.application = await this.openApplication({
       ...(args.dataDirectory === undefined
         ? {}
         : { dataDirectory: resolve(launchDirectory, args.dataDirectory) }),
-      homeDirectory: this.homeDirectory(),
       ...(args.modelsConfigurationPath === undefined
         ? {}
         : {
@@ -136,12 +115,9 @@ class DefaultWishCli implements WishCli {
               args.modelsConfigurationPath,
             ),
           }),
-      environment: this.environment,
-    });
-    if (this.terminateRequested) return this.terminationCode;
-    this.application = this.createApplication(configuration, {
       approval: this.input.approval,
     });
+    if (this.terminateRequested) return this.terminationCode;
 
     return args.command === "run"
       ? this.runOnce(args, launchDirectory)
@@ -162,15 +138,25 @@ class DefaultWishCli implements WishCli {
         this.terminateRequested = true;
         this.terminationCode = exitCode;
       }
-      try {
-        this.application.controlRun(this.activeRunId, {
-          type: "abort",
-          source: "wish-cli-signal",
-          reason: `Wish CLI received ${signal}`,
+      const retirementReason = `Wish CLI received ${signal}`;
+      if (
+        signal !== "SIGINT" &&
+        this.application.runGeneration !== undefined
+      ) {
+        void this.application.runGeneration.retire({
+          reason: retirementReason,
         });
-      } catch {
-        this.forceExit(exitCode);
-        return;
+      } else {
+        try {
+          this.application.controlRun(this.activeRunId, {
+            type: "abort",
+            source: "wish-cli-signal",
+            reason: retirementReason,
+          });
+        } catch {
+          this.forceExit(exitCode);
+          return;
+        }
       }
       void this.terminal.writeError(
         `\n[run] abort requested by ${signal}; send the signal again to force exit\n`,
@@ -183,6 +169,11 @@ class DefaultWishCli implements WishCli {
     this.terminateRequested = true;
     this.terminationCode = exitCode;
     this.terminal.close();
+  }
+
+  retire(options: RunGenerationRetireOptions = {}): Promise<void> {
+    return this.application?.runGeneration?.retire(options) ??
+      Promise.resolve();
   }
 
   private async runOnce(

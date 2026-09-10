@@ -5,6 +5,7 @@ import type {
 } from "../src/core/agent-loop/agent-loop.js";
 import type { StepPipeline } from "../src/core/runtime/runtime.js";
 import {
+  createFileSessionResources,
   InMemorySessionStore,
   SessionHistoryAdapter,
   SessionManager,
@@ -19,6 +20,7 @@ import {
 const memory: SessionStore = new InMemorySessionStore();
 const sessions = new SessionManager(memory);
 const history = new SessionHistoryAdapter({ sessions });
+const resources = createFileSessionResources("/tmp/wish-session-type-test");
 const file: SessionStore = new FileSessionStore({
   rootDirectory: "/tmp/wish-session-type-test",
 });
@@ -42,6 +44,7 @@ const transcript: StepPipeline<
 
 void history.context;
 void history.compaction;
+void resources;
 void file;
 void input;
 void transcript;

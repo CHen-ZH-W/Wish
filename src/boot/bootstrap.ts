@@ -13,6 +13,8 @@ import Loader, {
 import Timer from "@deepseek-ai/cordis-plugin-timer";
 
 import type { ModelEnvironment } from "../models/types.js";
+import Agents from "../core/agent/service.js";
+import AgentLoop from "../core/agent-loop/service.js";
 import {
   createLaunch,
   type ConfigurationSource,
@@ -21,7 +23,16 @@ import {
   type Surface,
 } from "./launch.js";
 import * as Cli from "../apps/cli/plugin.js";
+import Application from "../apps/service.js";
 import * as WebUi from "../apps/webui/plugin.js";
+import Compaction from "../compaction/service.js";
+import ContextEngine from "../context/service.js";
+import * as ModelPlugins from "../models/plugins.js";
+import Models from "../models/service.js";
+import Runtime from "../core/runtime/service.js";
+import Sessions from "../sessions/service.js";
+import * as BasicToolPlugins from "../tools/plugins.js";
+import Tools from "../tools/service.js";
 
 const DEFAULT_CONFIGURATION_URL = new URL("../config/cordis.yml", import.meta.url);
 const ROOT_INCLUDE_ID = "include";
@@ -37,7 +48,10 @@ export interface BootstrapOptions {
 }
 
 export interface BootstrappedProcess {
+  /** Process Root Context: owns Loader, launch, signals, and final cleanup. */
   readonly context: Context;
+  /** Selected surface's scoped view of the Loader-managed application graph. */
+  readonly surfaceContext: Context;
   readonly completion: Promise<number>;
   dispose(): Promise<void>;
 }
@@ -90,11 +104,12 @@ export async function bootstrap(
     };
     await root.loader.create(rootInclude);
     await root.loader.await();
-    assertEntriesActivated(root, options.surface);
+    const surfaceContext = assertEntriesActivated(root, options.surface);
 
     let disposal: Promise<void> | undefined;
     return Object.freeze({
       context: root,
+      surfaceContext,
       completion: launch.completion,
       dispose(): Promise<void> {
         launch.complete(typeof process.exitCode === "number" ? process.exitCode : 0);
@@ -124,6 +139,24 @@ function installBuiltins(root: Context): void {
   root.loader.builtins.group = Group;
   root.loader.builtins.timer = Timer;
   root.loader.builtins.hmr = Hmr;
+  root.loader.builtins.sessions = Sessions;
+  root.loader.builtins.models = Models;
+  root.loader.builtins["model-openai-chat-completions"] =
+    ModelPlugins.OpenAIChatCompletions;
+  root.loader.builtins["model-openai-responses"] = ModelPlugins.OpenAIResponses;
+  root.loader.builtins["model-anthropic-messages"] = ModelPlugins.AnthropicMessages;
+  root.loader.builtins["context-engine"] = ContextEngine;
+  root.loader.builtins.compaction = Compaction;
+  root.loader.builtins.tools = Tools;
+  root.loader.builtins.read = BasicToolPlugins.Read;
+  root.loader.builtins.write = BasicToolPlugins.Write;
+  root.loader.builtins.edit = BasicToolPlugins.Edit;
+  root.loader.builtins.grep = BasicToolPlugins.Grep;
+  root.loader.builtins.bash = BasicToolPlugins.Bash;
+  root.loader.builtins["agent-loop"] = AgentLoop;
+  root.loader.builtins.runtime = Runtime;
+  root.loader.builtins.agents = Agents;
+  root.loader.builtins.application = Application;
   root.loader.builtins.cli = Cli;
   root.loader.builtins.webui = WebUi;
 }
@@ -148,7 +181,7 @@ function installProcessSignals(root: Context, launch: Launch): void {
 function assertEntriesActivated(
   root: Context,
   surface: Surface,
-): void {
+): Context {
   const failures = new Map<string, string>();
   for (const entry of root.loader.entries()) {
     if (entry.disabled) continue;
@@ -176,6 +209,7 @@ function assertEntriesActivated(
         [...failures.values()].join("\n"),
     );
   }
+  return selected!.ctx;
 }
 
 function describeInactiveEntry(entry: Entry): string {

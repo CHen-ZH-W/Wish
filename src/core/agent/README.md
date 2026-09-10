@@ -12,6 +12,7 @@
   `RunInput`、`RunHandle`、`ObserveOptions` 和 `AgentProtocol`。
 - `agent.ts`：参数边界校验、scope 规范化、公开 DTO 快照以及到
   `AgentRuntimeService` 的委托。
+- `service.ts`：Cordis `agents` Service，拥有默认 Agent 定义、生产构造与生命周期。
 
 Agent 不实现主循环，不持有可变 Run 状态，也不决定终态、重试、事件
 保留、控制排队或授权。上述行为分别属于 Runtime、Event、Model、
@@ -33,9 +34,21 @@ Context 和 Tool 模块。
 
 ## 当前阶段边界
 
-Agent facade 与公共 DTO 已完成，并可通过 `AgentRuntimeService` 接入现有
-Runtime；默认组装由 Agent Loop 负责。Agent 只依赖这条最小服务契约，
-不会反向依赖具体 Runtime 实现或组装方式。
+Agent facade 与公共 DTO 已完成，并通过 `AgentRuntimeService` 接入 Runtime。
+`agent.ts` 和 `types.ts` 仍只依赖最小契约；同目录 `service.ts` 注入 `runEngine`，调用
+当前 Runtime generation 后构造默认 Agent。Agent 实际消费的是同代 `RunGeneration` 的
+窄 Runtime surface；`ApplicationFacade` 只消费已经构造好的 Agent，不拥有 Agent
+或 Runtime 构造权。
+
+## Cordis 生命周期与配置
+
+Loader stable id 是 `agents`，Context 能力键同样是 `agents`。Config 拥有默认 Agent 的
+`agentId` 和单条系统 `agentInstructions`；内置 profile 把兼容环境变量
+`WISH_AGENT_ID`、`WISH_AGENT_INSTRUCTIONS` 显式映射到这个条目。
+
+缺少 `runEngine` 时 Agents 保持 PENDING。Runtime 或 Agents generation 更新、禁用或消失
+时，`application → surface` 会被释放；旧 `RunGeneration` 关闭准入、取消并排空其
+活动 Run 后，才使用新 Agent 定义重新激活。
 
 ## 验证
 
@@ -44,6 +57,7 @@ Runtime；默认组装由 Agent Loop 负责。Agent 只依赖这条最小服务�
 ```bash
 npm run typecheck
 npm run test:agent
+npm run test:cordis-agent
 npm test
 ```
 

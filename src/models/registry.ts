@@ -19,7 +19,7 @@ import {
 export class ModelAdapterRegistry {
   private readonly factories = new Map<string, ModelAdapterFactory>();
 
-  register(protocol: string, factory: ModelAdapterFactory): void {
+  register(protocol: string, factory: ModelAdapterFactory): ModelAdapterRegistration {
     const name = requireProtocol(protocol);
     if (typeof factory !== "function") {
       throw new Error(`Model Adapter factory for "${name}" must be a function`);
@@ -28,6 +28,18 @@ export class ModelAdapterRegistry {
       throw new Error(`Model Adapter protocol "${name}" is already registered`);
     }
     this.factories.set(name, factory);
+
+    let active = true;
+    return Object.freeze({
+      protocol: name,
+      unregister: () => {
+        if (!active) return false;
+        active = false;
+        if (this.factories.get(name) !== factory) return false;
+        this.factories.delete(name);
+        return true;
+      },
+    });
   }
 
   has(protocol: string): boolean {
@@ -57,6 +69,12 @@ export class ModelAdapterRegistry {
     }
     return adapter;
   }
+}
+
+/** Exact ownership handle for one protocol Adapter contribution. */
+export interface ModelAdapterRegistration {
+  readonly protocol: string;
+  unregister(): boolean;
 }
 
 export function createDefaultModelAdapterRegistry(): ModelAdapterRegistry {

@@ -11,14 +11,81 @@ import {
   WishCliUsageError,
 } from "../dist/apps/cli/index.js";
 import {
-  createWishApplication,
+  ApplicationFacade,
 } from "../dist/apps/application.js";
+import { createWishAgent } from "../dist/core/agent/service.js";
+import { createAgentLoopPipeline } from "../dist/core/agent-loop/service.js";
+import { createWishRuntime } from "../dist/core/runtime/service.js";
 import {
   loadWishHostConfiguration,
   WishHostConfigurationError,
 } from "../dist/apps/config.js";
 import { loadModelsConfiguration } from "../dist/models/config.js";
-import { ModelAdapterRegistry } from "../dist/models/registry.js";
+import {
+  createDefaultModelAdapterRegistry,
+  ModelAdapterRegistry,
+} from "../dist/models/registry.js";
+import { createConfiguredModelResources } from "../dist/models/runtime.js";
+import { TokenizerUsageEstimator } from "../dist/models/usage.js";
+import { createFileSessionResources } from "../dist/sessions/index.js";
+import { createContextResources } from "../dist/context/service.js";
+import { createCompactionResources } from "../dist/compaction/service.js";
+
+function createStandaloneHostApplication(configuration, input) {
+  const sessions = createFileSessionResources(configuration.dataDirectory);
+  const models = createConfiguredModelResources({
+    configuration: configuration.models,
+    registry: createDefaultModelAdapterRegistry(),
+    usageEstimator: new TokenizerUsageEstimator(),
+    environment: configuration.modelEnvironment,
+  });
+  const context = createContextResources({
+      dataDirectory: configuration.dataDirectory,
+      sessions,
+      agentInstructions: configuration.agentInstructions,
+      models,
+      configuration: {
+        reservedOutputTokens: configuration.reservedOutputTokens,
+      },
+    });
+  const compaction = createCompactionResources({
+      dataDirectory: configuration.dataDirectory,
+      sessions,
+      models,
+      keepRecentTokens: configuration.keepRecentTokens,
+      summaryMaxOutputTokens: configuration.summaryMaxOutputTokens,
+    });
+  const runtime = {
+    runtime: createWishRuntime({
+      stepPipeline: createAgentLoopPipeline({
+        sessions,
+        agentId: configuration.agentId,
+        models,
+        workspace: {
+          resolve({ session }) {
+            return { cwd: session.scope, instructions: [] };
+          },
+        },
+        context,
+        compaction,
+        ...(input.approval === undefined
+          ? {}
+          : { tools: { approval: input.approval } }),
+      }),
+    }),
+  };
+  return new ApplicationFacade({
+    sessions,
+    models,
+    agent: createWishAgent({
+      id: configuration.agentId,
+      name: "Wish",
+      configuration: {
+        agentInstructions: configuration.agentInstructions,
+      },
+    }, runtime),
+  });
+}
 
 class FakeTerminal {
   constructor({ interactive, lines = [], pipedInput = "", blocking = false }) {
@@ -225,7 +292,6 @@ function fakeHostConfiguration(scope) {
     reservedOutputTokens: 1,
     keepRecentTokens: 1,
     summaryMaxOutputTokens: 1,
-    maxSteps: 2,
   };
 }
 
@@ -304,24 +370,22 @@ test("loads shared host configuration without a second Models format", async () 
     const configuration = await loadWishHostConfiguration({
       modelsConfigurationPath: path,
       homeDirectory: root,
-      environment: {
-        WISH_CONTEXT_RESERVED_OUTPUT_TOKENS: "512",
-        WISH_COMPACTION_KEEP_RECENT_TOKENS: "1024",
-        WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS: "256",
-        WISH_MAX_STEPS: "4",
-      },
+      environment: {},
+      reservedOutputTokens: 512,
+      keepRecentTokens: 1_024,
+      summaryMaxOutputTokens: 256,
     });
     assert.equal(configuration.dataDirectory, join(root, ".wish"));
     assert.equal(configuration.models.defaultModel.model, "primary");
     assert.equal(configuration.reservedOutputTokens, 512);
     assert.equal(configuration.keepRecentTokens, 1_024);
     assert.equal(configuration.summaryMaxOutputTokens, 256);
-    assert.equal(configuration.maxSteps, 4);
     assert.equal(configuration.agentInstructions.length, 1);
 
     const inline = await loadWishHostConfiguration({
       homeDirectory: root,
-      environment: { WISH_MODELS_JSON: modelsJson },
+      modelsConfigurationJson: modelsJson,
+      environment: {},
     });
     assert.equal(inline.models.defaultModel.model, "primary");
 
@@ -329,7 +393,8 @@ test("loads shared host configuration without a second Models format", async () 
       loadWishHostConfiguration({
         modelsConfigurationPath: path,
         homeDirectory: root,
-        environment: { WISH_CONTEXT_RESERVED_OUTPUT_TOKENS: "4096" },
+        environment: {},
+        reservedOutputTokens: 4_096,
       }),
       WishHostConfigurationError,
     );
@@ -451,10 +516,8 @@ test("interactive CLI reuses one Session across sequential Runs", async () => {
     const cli = createWishCli({
       terminal,
       cwd: () => root,
-      homeDirectory: () => root,
-      environment: {},
-      loadHostConfiguration: async () => fakeHostConfiguration(root),
-      createApplication(configuration, input) {
+      async openApplication(input) {
+        const configuration = fakeHostConfiguration(root);
         assert.equal(configuration.dataDirectory, join(root, ".wish"));
         assert.ok(input.approval);
         return application;
@@ -524,10 +587,7 @@ test("one-shot piped input keeps answer on stdout and denies non-TTY tools", asy
     const cli = createWishCli({
       terminal,
       cwd: () => root,
-      homeDirectory: () => root,
-      environment: {},
-      loadHostConfiguration: async () => fakeHostConfiguration(root),
-      createApplication(_configuration, input) {
+      async openApplication(input) {
         approval = input.approval;
         return application;
       },
@@ -581,7 +641,16 @@ test("real CLI composition persists Session history across one-shot invocations"
       requests.push(JSON.parse(init.body));
       return openAiTextResponse(`integrated answer ${requests.length}`);
     };
-    const environment = { WISH_MODELS_JSON: modelsJson };
+    const environment = {};
+    const openApplication = async (input) => createStandaloneHostApplication(
+      await loadWishHostConfiguration({
+      ...input,
+      homeDirectory: root,
+      modelsConfigurationJson: modelsJson,
+      environment,
+      }),
+      input,
+    );
     const firstTerminal = new FakeTerminal({
       interactive: false,
       pipedInput: "first integrated question\n",
@@ -589,8 +658,7 @@ test("real CLI composition persists Session history across one-shot invocations"
     const first = createWishCli({
       terminal: firstTerminal,
       cwd: () => root,
-      homeDirectory: () => root,
-      environment,
+      openApplication,
     });
     assert.equal(await first.run(["run", "--data-dir", "data"]), 0);
     assert.equal(firstTerminal.output, "integrated answer 1\n");
@@ -601,8 +669,7 @@ test("real CLI composition persists Session history across one-shot invocations"
     const second = createWishCli({
       terminal: secondTerminal,
       cwd: () => root,
-      homeDirectory: () => root,
-      environment,
+      openApplication,
     });
     assert.equal(await second.run([
       "run",
@@ -692,10 +759,7 @@ test("active input controls Runtime while Tool approval owns stdin exclusively",
     const cli = createWishCli({
       terminal,
       cwd: () => root,
-      homeDirectory: () => root,
-      environment: {},
-      loadHostConfiguration: async () => fakeHostConfiguration(root),
-      createApplication(_configuration, input) {
+      async openApplication(input) {
         approval = input.approval;
         return application;
       },
@@ -819,29 +883,52 @@ test("CLI controls drive the real Runtime Step and UserTurn queues", async () =>
     const cli = createWishCli({
       terminal,
       cwd: () => root,
-      homeDirectory: () => root,
-      environment: {},
-      loadHostConfiguration: async () => fakeHostConfiguration(root),
-      createApplication(_configuration, input) {
-        return createWishApplication({
-          dataDirectory: join(root, "data"),
-          agent: {
+      async openApplication(input) {
+        const dataDirectory = join(root, "data");
+        const sessions = createFileSessionResources(dataDirectory);
+        const modelResources = createConfiguredModelResources({
+          configuration: models,
+          registry: adapters,
+          usageEstimator: new TokenizerUsageEstimator(),
+        });
+        const context = createContextResources({
+          dataDirectory,
+          sessions,
+          agentInstructions: [],
+          models: modelResources,
+          configuration: { reservedOutputTokens: 1_024 },
+        });
+        const compaction = createCompactionResources({
+          dataDirectory,
+          sessions,
+          models: modelResources,
+          keepRecentTokens: 1_024,
+          summaryMaxOutputTokens: 512,
+        });
+        const runtime = {
+          runtime: createWishRuntime({
+            stepPipeline: createAgentLoopPipeline({
+              sessions,
+              agentId: "wish",
+              models: modelResources,
+              workspace: {
+                resolve({ session }) {
+                  return { cwd: session.scope, instructions: [] };
+                },
+              },
+              context,
+              compaction,
+              tools: { approval: input.approval },
+            }),
+          }, { maxSteps: 4 }),
+        };
+        return new ApplicationFacade({
+          sessions,
+          agent: createWishAgent({
             id: "wish",
             configuration: { agentInstructions: [] },
-          },
-          models: { configuration: models, registry: adapters },
-          workspace: {
-            resolve({ session }) {
-              return { cwd: session.scope, instructions: [] };
-            },
-          },
-          context: { reservedOutputTokens: 1_024 },
-          compaction: {
-            keepRecentTokens: 1_024,
-            summaryMaxOutputTokens: 512,
-          },
-          tools: { approval: input.approval },
-          runtime: { maxSteps: 4 },
+          }, runtime),
+          models: modelResources,
         });
       },
     });
@@ -937,10 +1024,7 @@ test("SIGINT aborts the active Run without terminating the interactive Session",
     const cli = createWishCli({
       terminal,
       cwd: () => root,
-      homeDirectory: () => root,
-      environment: {},
-      loadHostConfiguration: async () => fakeHostConfiguration(root),
-      createApplication: () => application,
+      openApplication: async () => application,
       forceExit: (code) => forced.push(code),
       interruptTimeoutMs: 100,
     });

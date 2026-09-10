@@ -1,63 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 
-import {
-  Agent,
-  type AgentDefinition,
-} from "../core/agent/agent.js";
-import {
-  AgentLoop,
-  type AgentLoopInputRenderer,
-  type AgentLoopMemory,
-  type AgentLoopRequestOptions,
-  type AgentLoopResult,
-} from "../core/agent-loop/agent-loop.js";
+import type { Agent } from "../core/agent/agent.js";
 import type { ModelRef } from "../core/model/model.js";
-import {
-  Runtime,
-  type RuntimeOptions,
-} from "../core/runtime/runtime.js";
-import {
-  BoundedToolScheduler,
-  ToolExecutor,
-  ToolRegistry,
-} from "../core/tools/scheduler.js";
-import {
-  ContextOverflowRecoveryPipeline,
-  ModelCompactionSummarizer,
-  SessionCompactor,
-} from "../compaction/index.js";
-import {
-  createContextBundle,
-  type ContextBundleConfigurationInput,
-} from "../context/index.js";
-import type { ContextInput } from "../context/types.js";
-import {
-  ModelAdapterRegistry,
-  createDefaultModelAdapterRegistry,
-} from "../models/registry.js";
-import {
-  createConfiguredModelRequestTokenCounter,
-  createConfiguredModelStack,
-  type ConfiguredModelStackOptions,
-} from "../models/runtime.js";
-import type {
-  ModelEnvironment,
-  ModelFetch,
-  ModelsConfiguration,
-} from "../models/types.js";
-import {
-  TokenizerUsageEstimator,
-  type UsageEstimator,
-} from "../models/usage.js";
+import type { ModelDependencies } from "../models/runtime.js";
 import {
   SessionArchivedError,
-  SessionHistoryAdapter,
-  SessionManager,
+  type SessionManager,
   SessionNotFoundError,
-  SessionTranscriptPipeline,
-  createSessionInputRenderer,
-  sessionIdFromRunScope,
 } from "../sessions/index.js";
 import type {
   ArchiveSessionInput,
@@ -67,341 +17,74 @@ import type {
   SessionHistorySnapshot,
   UpdateSessionMetadataInput,
 } from "../sessions/types.js";
-import { FileSessionStore } from
-  "../storage/sessions/file-session-store.js";
-import { FileToolResultArchive } from
-  "../storage/tool-results/file-tool-result-archive.js";
-import {
-  BASIC_TOOL_NAMES,
-  InteractiveToolAuthorizationService,
-  createBasicToolResultRenderer,
-  createDenyAllToolAuthorizationService,
-  registerBasicTools,
-  type BasicToolContext,
-  type BasicToolName,
-  type BasicToolsOptions,
-  type ToolApprovalPort,
-} from "../tools/index.js";
 import type {
   CreateWishSessionInput,
   ListWishSessionsInput,
   StartWishRunInput,
-  WishAgentConfiguration,
   WishAgentProtocol,
   WishApplication,
   WishOutputEvent,
   WishRunControl,
+  WishRunGeneration,
   WishRunHandle,
   WishRunPayload,
-  WishWorkspaceResolver,
 } from "./types.js";
 
-export interface WishModelsOptions {
-  readonly configuration: ModelsConfiguration;
-  readonly registry?: ModelAdapterRegistry;
-  readonly usageEstimator?: UsageEstimator;
-  readonly fetch?: ModelFetch;
-  readonly environment?: ModelEnvironment | (() => ModelEnvironment);
-  readonly retry?: ConfiguredModelStackOptions["retry"];
-}
+export type { ModelDependencies } from "../models/runtime.js";
 
-export interface WishCompactionOptions {
-  readonly keepRecentTokens: number;
-  readonly summaryMaxOutputTokens: number;
-  /** Defaults to the configured primary model. */
-  readonly summaryModel?: ModelRef;
+export interface SessionDependencies {
+  readonly manager: SessionManager;
 }
-
-export interface WishToolsOptions {
-  /** Missing approval is an explicit deny-all configuration. */
-  readonly approval?: ToolApprovalPort<BasicToolContext>;
-  readonly policyVersion?: string | (() => string);
-  readonly authorityVersion?: string | (() => string);
-  readonly availableTools?: readonly BasicToolName[];
-  readonly maxParallelCalls?: number;
-  readonly basic?: BasicToolsOptions;
-}
-
-export type WishRuntimeOptions = Pick<
-  RuntimeOptions<
-    WishAgentConfiguration,
-    WishRunPayload,
-    AgentLoopMemory,
-    AgentLoopResult
-  >,
-  | "maxSteps"
-  | "stepInboxLimits"
-  | "followUpQueueLimits"
-  | "maxRetainedRuns"
-  | "maxEventsPerRun"
-  | "ids"
-  | "now"
+export type ApplicationModelDependencies = Pick<
+  ModelDependencies,
+  "configuredModel"
 >;
 
 export interface WishApplicationOptions {
-  /** Owns `sessions/` and `tool-results/` below this directory. */
-  readonly dataDirectory: string;
-  readonly agent: AgentDefinition<WishAgentConfiguration>;
-  readonly models: WishModelsOptions;
-  readonly workspace: WishWorkspaceResolver;
-  readonly context: ContextBundleConfigurationInput;
-  readonly compaction: WishCompactionOptions;
-  readonly tools?: WishToolsOptions;
-  readonly request?: AgentLoopRequestOptions;
-  readonly runtime?: WishRuntimeOptions;
+  readonly sessions: SessionDependencies;
+  readonly agent: Agent<WishAgentProtocol>;
+  readonly models: ApplicationModelDependencies;
+  readonly runGeneration?: WishRunGeneration;
 }
-
-type WishRuntime = Runtime<
-  WishAgentConfiguration,
-  WishRunPayload,
-  AgentLoopMemory,
-  AgentLoopResult
->;
 
 type WishRunPayloadWithSelectedModel = WishRunPayload & {
   readonly model: ModelRef;
 };
 
-/** Build the one internal application shared later by CLI and WebUI. */
-export function createWishApplication(
-  options: WishApplicationOptions,
-): WishApplication {
-  requireApplicationOptions(options);
-  const dataDirectory = normalizeDirectory(
-    options.dataDirectory,
-    "Wish dataDirectory",
-  );
-  const agentId = requireIdentifier(options.agent.id, "Wish Agent id");
-  const workspaceResolver = options.workspace;
-  const requestOptions = snapshotRequestOptions(options.request);
-
-  const sessions = new SessionManager(new FileSessionStore({
-    rootDirectory: join(dataDirectory, "sessions"),
-  }));
-  const history = new SessionHistoryAdapter({ sessions });
-
-  const registry = options.models.registry ?? createDefaultModelAdapterRegistry();
-  const usageEstimator = options.models.usageEstimator ??
-    new TokenizerUsageEstimator();
-  const modelStack = createConfiguredModelStack({
-    configuration: options.models.configuration,
-    registry,
-    usageEstimator,
-    ...(options.models.fetch === undefined
-      ? {}
-      : { fetch: options.models.fetch }),
-    ...(options.models.environment === undefined
-      ? {}
-      : { environment: options.models.environment }),
-    ...(options.models.retry === undefined
-      ? {}
-      : { retry: options.models.retry }),
-  });
-  const requestCounter = createConfiguredModelRequestTokenCounter({
-    configuration: options.models.configuration,
-    ...(options.models.fetch === undefined
-      ? {}
-      : { fetch: options.models.fetch }),
-    ...(options.models.environment === undefined
-      ? {}
-      : { environment: options.models.environment }),
-  });
-
-  const archive = new FileToolResultArchive({
-    directory: join(dataDirectory, "tool-results"),
-    locatorRoot: dataDirectory,
-  });
-  const agentInstructions = options.agent.configuration?.agentInstructions ?? [];
-  const context = createContextBundle({
-    history: history.context,
-    agentInstructions,
-    archive,
-    models: modelStack.configuredModel,
-    counter: requestCounter,
-    configuration: options.context,
-  });
-
-  const toolRegistry = new ToolRegistry<BasicToolContext>();
-  registerBasicTools(toolRegistry, options.tools?.basic);
-  const authorization = options.tools?.approval === undefined
-    ? createDenyAllToolAuthorizationService<BasicToolContext>()
-    : new InteractiveToolAuthorizationService({
-      approval: options.tools.approval,
-      policyVersion: options.tools.policyVersion ?? "wish-app-policy-v1",
-    });
-  const executor = new ToolExecutor({
-    registry: toolRegistry,
-    authorization,
-  });
-  const scheduler = new BoundedToolScheduler({
-    executor,
-    ...(options.tools?.maxParallelCalls === undefined
-      ? {}
-      : { maxParallelCalls: options.tools.maxParallelCalls }),
-  });
-  const availableTools = Object.freeze([
-    ...(options.tools?.availableTools ?? BASIC_TOOL_NAMES),
-  ]);
-  const authorityVersion = versionReader(
-    options.tools?.authorityVersion ?? "wish-app-authority-v1",
-  );
-
-  const summaryModel = modelStack.configuredModel.resolve(
-    options.compaction.summaryModel ??
-      modelStack.configuredModel.getDefaultModel(),
-  ).ref;
-  const summarizer = new ModelCompactionSummarizer({
-    model: modelStack.model,
-    summaryModel,
-    maxOutputTokens: options.compaction.summaryMaxOutputTokens,
-  });
-  const compactor = new SessionCompactor({
-    session: history.compaction,
-    summarizer,
-    counter: requestCounter,
-    configuration: {
-      keepRecentTokens: options.compaction.keepRecentTokens,
-    },
-  });
-
-  const baseInput: AgentLoopInputRenderer<WishRunPayload> = {
-    renderUserInput(
-      { payload }: Parameters<
-        AgentLoopInputRenderer<WishRunPayload>["renderUserInput"]
-      >[0],
-    ) {
-      return Object.freeze({
-        role: "user" as const,
-        content: requireUserText(payload.text, "Wish Run input"),
-      });
-    },
-    renderSteering(
-      { message }: Parameters<
-        AgentLoopInputRenderer<WishRunPayload>["renderSteering"]
-      >[0],
-    ) {
-      return Object.freeze({
-        role: "user" as const,
-        content: requireUserText(message.text, "Wish steering input"),
-      });
-    },
-  };
-  Object.freeze(baseInput);
-  const input = createSessionInputRenderer<WishRunPayload>({
-    sessions,
-    delegate: baseInput,
-  });
-  const toolResults = context.createToolResultRenderer<WishRunPayload>({
-    delegate: createBasicToolResultRenderer(),
-    resolveSessionId: ({ snapshot }) => sessionIdFromRunScope(snapshot),
-  });
-
-  const loop = new AgentLoop<
-    WishAgentConfiguration,
-    WishRunPayload,
-    ContextInput,
-    BasicToolContext
-  >({
-    model: modelStack.model,
-    context: context.projector,
-    tools: toolRegistry,
-    toolScheduler: scheduler,
-    input,
-    toolResults,
-    environment: {
-      async resolve({ snapshot, memory, signal }) {
-        const sessionId = sessionIdFromRunScope(snapshot);
-        const session = await requireActiveOwnedSession(
-          sessions,
-          agentId,
-          sessionId,
-          signal,
-        );
-        const workspace = await workspaceResolver.resolve({ session, signal });
-        throwIfAborted(signal);
-        const model = modelStack.configuredModel.resolve(
-          memory?.model ?? snapshot.userTurn.input.model ??
-            modelStack.configuredModel.getDefaultModel(),
-        ).ref;
-        const modelSpec = modelStack.configuredModel.getModelSpec(model);
-        const contextEnvironment = context.forStep({
-          snapshot,
-          sessionId,
-          model,
-          workspace,
-        });
-        return Object.freeze({
-          model,
-          context: contextEnvironment,
-          tools: Object.freeze({
-            context: Object.freeze({
-              cwd: contextEnvironment.input.workspace.cwd,
-              modelSupportsImages: modelSpec.input.image,
-            }),
-            authorityVersion: authorityVersion(),
-            availableTools: modelSpec.toolCalling
-              ? availableTools
-              : Object.freeze([]),
-          }),
-          ...(requestOptions === undefined
-            ? {}
-            : { request: requestOptions }),
-        });
-      },
-    },
-  });
-  const recovery = new ContextOverflowRecoveryPipeline({
-    delegate: loop,
-    compactor,
-    target: {
-      resolve({ snapshot, memory }) {
-        return Object.freeze({
-          sessionId: sessionIdFromRunScope(snapshot),
-          model: modelStack.configuredModel.resolve(
-            memory?.model ?? snapshot.userTurn.input.model ??
-              modelStack.configuredModel.getDefaultModel(),
-          ).ref,
-        });
-      },
-    },
-  });
-  const transcript = new SessionTranscriptPipeline({
-    delegate: recovery,
-    sessions,
-  });
-  const runtime: WishRuntime = new Runtime({
-    ...(options.runtime ?? {}),
-    stepPipeline: transcript,
-  });
-  const agent = new Agent<WishAgentProtocol>({
-    ...options.agent,
-    id: agentId,
-    configuration: Object.freeze({
-      agentInstructions: Object.freeze([...agentInstructions]),
-    }),
-  }, runtime);
-
-  return new DefaultWishApplication({
-    sessions,
-    agent,
-    configuredModel: modelStack.configuredModel,
-  });
-}
-
 interface DefaultWishApplicationOptions {
   readonly sessions: SessionManager;
   readonly agent: Agent<WishAgentProtocol>;
-  readonly configuredModel: ReturnType<
-    typeof createConfiguredModelStack
-  >["configuredModel"];
+  readonly configuredModel: ApplicationModelDependencies["configuredModel"];
+  readonly runGeneration?: WishRunGeneration;
 }
 
-class DefaultWishApplication implements WishApplication {
+/**
+ * Transport-neutral facade for explicit non-Cordis embedding.
+ * Product processes obtain the same facade from the Application service.
+ */
+export class ApplicationFacade implements WishApplication {
   readonly agentId: string;
+  readonly runGeneration?: WishRunGeneration;
   private readonly modelByRun = new Map<string, ModelRef>();
+  private readonly options: DefaultWishApplicationOptions;
 
-  constructor(private readonly options: DefaultWishApplicationOptions) {
-    this.agentId = options.agent.definition.id;
+  constructor(options: WishApplicationOptions) {
+    requireApplicationOptions(options);
+    this.agentId = requireIdentifier(
+      options.agent.definition.id,
+      "Wish Agent id",
+    );
+    this.options = {
+      sessions: options.sessions.manager,
+      agent: options.agent,
+      configuredModel: options.models.configuredModel,
+      ...(options.runGeneration === undefined
+        ? {}
+        : { runGeneration: options.runGeneration }),
+    };
+    if (options.runGeneration !== undefined) {
+      this.runGeneration = options.runGeneration;
+    }
   }
 
   async createSession(input: CreateWishSessionInput): Promise<Session> {
@@ -477,7 +160,7 @@ class DefaultWishApplication implements WishApplication {
   controlRun(
     runId: string,
     control: WishRunControl,
-  ): ReturnType<WishRuntime["control"]> {
+  ): ReturnType<WishApplication["controlRun"]> {
     if (control.type !== "follow_up") {
       return this.options.agent.control(runId, control);
     }
@@ -561,76 +244,35 @@ function sameModel(left: ModelRef, right: ModelRef): boolean {
   return left.provider === right.provider && left.model === right.model;
 }
 
-function versionReader(
-  value: string | (() => string),
-): () => string {
-  return typeof value === "function" ? value : () => value;
-}
-
 function requireApplicationOptions(
   options: WishApplicationOptions,
 ): void {
   if (options === null || typeof options !== "object") {
     throw new Error("WishApplication requires options");
   }
-  if (options.agent === null || typeof options.agent !== "object") {
-    throw new Error("WishApplication requires an Agent definition");
+  if (
+    options.agent === null || typeof options.agent !== "object" ||
+    options.agent.definition === null ||
+    typeof options.agent.definition !== "object" ||
+    typeof options.agent.startRun !== "function" ||
+    typeof options.agent.control !== "function" ||
+    typeof options.agent.observe !== "function"
+  ) {
+    throw new Error("WishApplication requires Agent dependencies");
   }
-  if (options.models === null || typeof options.models !== "object") {
-    throw new Error("WishApplication requires Models options");
+  if (
+    options.sessions === null || typeof options.sessions !== "object" ||
+    options.sessions.manager === null ||
+    typeof options.sessions.manager !== "object"
+  ) {
+    throw new Error("WishApplication requires Sessions dependencies");
   }
-  if (options.context === null || typeof options.context !== "object") {
-    throw new Error("WishApplication requires Context options");
+  if (
+    options.models === null || typeof options.models !== "object" ||
+    typeof options.models.configuredModel?.resolve !== "function"
+  ) {
+    throw new Error("WishApplication requires Models dependencies");
   }
-  if (options.compaction === null || typeof options.compaction !== "object") {
-    throw new Error("WishApplication requires Compaction options");
-  }
-  if (options.workspace === null || typeof options.workspace !== "object" ||
-    typeof options.workspace.resolve !== "function") {
-    throw new Error("WishApplication requires a workspace resolver");
-  }
-}
-
-function snapshotRequestOptions(
-  input: AgentLoopRequestOptions | undefined,
-): AgentLoopRequestOptions | undefined {
-  if (input === undefined) return undefined;
-  if (input === null || typeof input !== "object") {
-    throw new Error("Wish request options must be an object");
-  }
-  return Object.freeze({
-    ...(input.temperature === undefined
-      ? {}
-      : { temperature: input.temperature }),
-    ...(input.maxOutputTokens === undefined
-      ? {}
-      : { maxOutputTokens: input.maxOutputTokens }),
-    ...(input.metadata === undefined
-      ? {}
-      : {
-          metadata: snapshotPlainValue(input.metadata) as Readonly<
-            Record<string, unknown>
-          >,
-        }),
-  });
-}
-
-function snapshotPlainValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map(snapshotPlainValue));
-  }
-  if (isPlainRecord(value)) {
-    return Object.freeze(Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, snapshotPlainValue(item)]),
-    ));
-  }
-  return value;
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object") return false;
-  const prototype = Object.getPrototypeOf(value) as unknown;
-  return prototype === Object.prototype || prototype === null;
 }
 
 function normalizeDirectory(value: string, label: string): string {

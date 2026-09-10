@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createWishApplication } from "../dist/apps/application.js";
+import { ApplicationFacade } from "../dist/apps/application.js";
+import { createWishAgent } from "../dist/core/agent/service.js";
+import { createAgentLoopPipeline } from "../dist/core/agent-loop/service.js";
+import { createWishRuntime } from "../dist/core/runtime/service.js";
+import { RunGeneration } from "../dist/core/runtime/generation.js";
 import {
   loadWishWebUiConfiguration,
   startWishWebUiServer,
@@ -12,6 +16,47 @@ import {
 } from "../dist/apps/webui/index.js";
 import { loadModelsConfiguration } from "../dist/models/config.js";
 import { ModelAdapterRegistry } from "../dist/models/registry.js";
+import { createConfiguredModelResources } from "../dist/models/runtime.js";
+import { TokenizerUsageEstimator } from "../dist/models/usage.js";
+import { createFileSessionResources } from "../dist/sessions/index.js";
+import { createContextResources } from "../dist/context/service.js";
+import { createCompactionResources } from "../dist/compaction/service.js";
+
+function agentLoopResources(options) {
+  const context = createContextResources({
+    dataDirectory: options.dataDirectory,
+    sessions: options.sessions,
+    agentInstructions: options.agentInstructions,
+    models: options.models,
+    configuration: {
+      reservedOutputTokens: options.reservedOutputTokens,
+    },
+  });
+  const compaction = createCompactionResources({
+    dataDirectory: options.dataDirectory,
+    sessions: options.sessions,
+    models: options.models,
+    keepRecentTokens: options.keepRecentTokens,
+    summaryMaxOutputTokens: options.summaryMaxOutputTokens,
+  });
+  return {
+    stepPipeline: createAgentLoopPipeline({
+      sessions: options.sessions,
+      agentId: options.agentId,
+      models: options.models,
+      workspace: options.workspace,
+      context,
+      compaction,
+      ...(options.tools === undefined ? {} : { tools: options.tools }),
+    }),
+  };
+}
+
+function runtimeResources(options, runtime = {}) {
+  return {
+    runtime: createWishRuntime(agentLoopResources(options), runtime),
+  };
+}
 
 function approvalInput(workspace, runId = "run-1") {
   return {
@@ -113,6 +158,16 @@ function deterministicRuntime() {
     now: () =>
       `2099-01-01T00:00:${String(++counters.time).padStart(2, "0")}Z`,
   };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((accept, fail) => {
+    resolve = accept;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 async function requestJson(baseUrl, path, options = {}) {
@@ -247,42 +302,17 @@ test("WebUI static assets build a CSP-compatible responsive application shell", 
   assert.match(script, /event\.isComposing/u);
 });
 
-test("WebUI configuration reuses host Models settings and owns listener defaults", async () => {
+test("WebUI configuration owns only listener and workspace settings", async () => {
   const root = await mkdtemp(join(tmpdir(), "wish-webui-config-"));
   try {
     const configuration = await loadWishWebUiConfiguration({
       workspaceRoot: root,
-      homeDirectory: root,
-      environment: {
-        WISH_WEBUI_HOST: "127.0.0.1",
-        WISH_WEBUI_PORT: "9123",
-        WISH_MODELS_JSON: JSON.stringify({
-          schemaVersion: 1,
-          defaultModel: "fixture/primary",
-          providers: [{
-            id: "fixture",
-            protocol: "openai-chat-completions",
-            baseUrl: "https://fixture.example.test/v1",
-            auth: { type: "none" },
-            developerRoleMode: "native",
-            models: [{
-              id: "primary",
-              status: "active",
-              contextWindowTokens: 4_096,
-              maxOutputTokens: 1_024,
-              input: { text: true, image: false },
-              reasoning: false,
-              toolCalling: true,
-              developerRole: true,
-            }],
-          }],
-        }),
-      },
+      host: "127.0.0.1",
+      port: 9123,
     });
     assert.equal(configuration.host, "127.0.0.1");
     assert.equal(configuration.port, 9123);
     assert.equal(configuration.workspaceRoot, root);
-    assert.equal(configuration.application.models.defaultModel.model, "primary");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -296,6 +326,7 @@ test("HTTP API maps Sessions, Runs, controls, and Runtime cursors", async () => 
   const observedAfter = [];
   let observerStopped = false;
   let runCount = 0;
+  let resolveSecondRun;
   const application = {
     agentId: "wish",
     async createSession(input) {
@@ -332,7 +363,9 @@ test("HTTP API maps Sessions, Runs, controls, and Runtime cursors", async () => 
         scope: input.sessionId,
         completion: runCount === 1
           ? Promise.resolve({ status: "completed" })
-          : new Promise(() => {}),
+          : new Promise((resolve) => {
+            resolveSecondRun = resolve;
+          }),
       };
     },
     controlRun(runId, control) {
@@ -515,7 +548,134 @@ test("HTTP API maps Sessions, Runs, controls, and Runtime cursors", async () => 
       { method: "POST", body: {} },
     );
     assert.equal(archived.value.session.status, "archived");
+
+    let closed = false;
+    const closing = started.close().then(() => {
+      closed = true;
+    });
+    await waitFor(
+      () => controls.some((item) =>
+        item.runId === "run-2" &&
+        item.control.type === "abort" &&
+        item.control.source === "wish-webui-shutdown"
+      ),
+      "WebUI shutdown did not abort its active Run",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false, "WebUI close must wait for Run completion");
+    assert.equal(runCount, 2, "shutdown must not replay an active Run");
+    resolveSecondRun({
+      status: "aborted",
+      cancellation: { reason: "Wish WebUI server is closing" },
+    });
+    await closing;
+    assert.equal(closed, true);
+    assert.equal(
+      controls.filter((item) =>
+        item.runId === "run-2" && item.control.type === "abort"
+      ).length,
+      1,
+      "one server generation must abort each active Run once",
+    );
+    started = undefined;
   } finally {
+    await started?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed WebUI shutdown delegates one abort to its Run generation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wish-webui-generation-"));
+  const approvals = new WebToolApprovalBroker();
+  const completion = deferred();
+  const controls = [];
+  let starts = 0;
+  const runtime = {
+    startRun(definition, input) {
+      starts += 1;
+      return Object.freeze({
+        agentId: definition.id,
+        runId: "managed-run",
+        initialUserTurnId: "managed-turn",
+        scope: input.scope,
+        completion: completion.promise,
+      });
+    },
+    control(agentId, runId, control) {
+      controls.push({ agentId, runId, control });
+      return Object.freeze({ accepted: true, kind: control.type, runId });
+    },
+    async *observe() {},
+  };
+  const runGeneration = new RunGeneration(runtime, {
+    id: "webui-generation",
+    drainTimeoutMs: 1_000,
+    abortControl: ({ reason }) => Object.freeze({
+      type: "abort",
+      source: "managed-generation",
+      reason,
+    }),
+  });
+  const application = {
+    agentId: "wish",
+    runGeneration,
+    startRun(input) {
+      return runGeneration.startRun(
+        { id: "wish" },
+        { scope: input.sessionId, payload: input.payload },
+      );
+    },
+    controlRun(runId, control) {
+      return runGeneration.control("wish", runId, control);
+    },
+    observeRun(runId, options) {
+      return runGeneration.observe("wish", runId, options);
+    },
+  };
+  let started;
+  try {
+    started = await startWishWebUiServer({
+      application,
+      approvals,
+      workspaceRoot: root,
+      host: "127.0.0.1",
+      port: 0,
+    });
+    const accepted = await requestJson(
+      started.url,
+      "/api/sessions/session-managed/runs",
+      { method: "POST", body: { text: "wait" } },
+    );
+    assert.equal(accepted.response.status, 202);
+
+    let closed = false;
+    const closing = started.close().then(() => {
+      closed = true;
+    });
+    await waitFor(() => controls.length === 1, "generation abort was not sent");
+    assert.equal(closed, false);
+    assert.equal(runGeneration.state, "retiring");
+    assert.deepEqual(controls[0], {
+      agentId: "wish",
+      runId: "managed-run",
+      control: {
+        type: "abort",
+        source: "managed-generation",
+        reason: "Wish WebUI server is closing",
+      },
+    });
+
+    completion.resolve({
+      status: "aborted",
+      cancellation: { reason: "Wish WebUI server is closing" },
+    });
+    await closing;
+    assert.equal(runGeneration.state, "retired");
+    assert.equal(controls.length, 1);
+    assert.equal(starts, 1, "WebUI shutdown must not replay the Run");
+    started = undefined;
+  } finally {
+    completion.resolve({ status: "aborted" });
     await started?.close();
     await rm(root, { recursive: true, force: true });
   }
@@ -556,23 +716,38 @@ test("real Application streams Tool approval and commits one Session transcript"
         yield { type: "done", finishReason: "stop" };
       },
     }));
-    const application = createWishApplication({
-      dataDirectory: join(root, "data"),
-      agent: { id: "wish", configuration: { agentInstructions: [] } },
-      models: {
-        configuration: fixtureConfiguration(),
-        registry: adapters,
-        fetch: async () => new Response(),
+    const dataDirectory = join(root, "data");
+    const sessions = createFileSessionResources(dataDirectory);
+    const models = createConfiguredModelResources({
+      configuration: fixtureConfiguration(),
+      registry: adapters,
+      usageEstimator: new TokenizerUsageEstimator(),
+      fetch: async () => new Response(),
+    });
+    const workspace = {
+      resolve({ session }) {
+        return { cwd: session.scope, instructions: [] };
       },
-      workspace: {
-        resolve({ session }) {
-          return { cwd: session.scope, instructions: [] };
-        },
-      },
-      context: { reservedOutputTokens: 512 },
-      compaction: { keepRecentTokens: 512, summaryMaxOutputTokens: 256 },
+    };
+    const runtime = runtimeResources({
+      dataDirectory,
+      sessions,
+      agentId: "wish",
+      models,
+      workspace,
+      agentInstructions: [],
+      reservedOutputTokens: 512,
+      keepRecentTokens: 512,
+      summaryMaxOutputTokens: 256,
       tools: { approval: approvals },
-      runtime: { ...deterministicRuntime(), maxSteps: 4 },
+    }, { ...deterministicRuntime(), maxSteps: 4 });
+    const application = new ApplicationFacade({
+      sessions,
+      agent: createWishAgent(
+        { id: "wish", configuration: { agentInstructions: [] } },
+        runtime,
+      ),
+      models,
     });
     started = await startWishWebUiServer({
       application,

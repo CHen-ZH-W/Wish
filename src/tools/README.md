@@ -7,6 +7,8 @@ Scheduler 或 AgentLoop。
 ```text
 basic/*.ts
   → ToolDefinition
+  → Cordis Tool plugin
+  → Tools service
   → Core ToolRegistry
   → Core ToolExecutor
   → Core BoundedToolScheduler
@@ -33,15 +35,17 @@ Grant 是否仍处于本次调用的有效范围。
 | `grep` | 已实现 | `parallel` | `retry-safe` | `filesystem.read` |
 | `bash` | 已实现 | `sequential` | `needs-reconciliation` | `process.exec` |
 
-五个 Tool 均已实现并完成各自定向验收，通过 `registerBasicTools` 才会进入宿主提供的
-Registry。
+五个 Tool 均已实现并完成各自定向验收。生产 Cordis 组合把它们作为五个独立 Loader
+插件注册；非 Cordis 调用仍可通过 `registerBasicTools()` 一次性装配兼容组合。
 
 ## 目录职责
 
 ```text
 src/tools/
 ├── README.md
-├── index.ts                 # 注册和公共组合入口
+├── index.ts                 # 非 Cordis 兼容注册和公共导出
+├── service.ts               # G5：Cordis tools service 与动态 Registry
+├── plugins.ts               # G5：五个独立 Basic Tool Loader 插件
 ├── authorization.ts         # App-neutral approval 到 Core authorization 的适配
 ├── basic/
 │   ├── read.ts
@@ -71,7 +75,13 @@ src/tools/
   保留错误码和消息。Read 图片以 `data:` URL 写入 `contentParts.image_url`，不会把
   base64 混入普通文本。未知输出结构使用紧凑 JSON 兜底。渲染结果固定保留
   `role=tool` 和原 `toolCallId`。
-- `index.ts`：把五个 Tool 按 `read → write → edit → grep → bash` 的固定顺序注册到
+- `service.ts`：`Tools` service 包装纯 Core `ToolRegistry`。`ctx.tools.register()` 把
+  definition 的注销 effect 绑定到调用它的插件 fiber，而不是绑定到 service provider；
+  Tool 插件卸载、依赖消失或 Root dispose 时都会自动注销对应 definition。
+- `plugins.ts`：Read、Write、Edit、Grep、Bash 是五个独立的 Loader 插件，各自注入
+  `tools` 并只拥有自己的注册生命周期。默认 `cordis.yml` 可以按 stable id 独立禁用、
+  恢复或重载其中任意一个。
+- `index.ts`：兼容入口把五个 Tool 按 `read → write → edit → grep → bash` 的固定顺序注册到
   外部提供的 `ToolRegistry<BasicToolContext>`，并返回 Registry 自己的注销句柄。
   `BasicToolsOptions` 可以分别注入各 Tool 的 Operations。注册前如果存在同名 Tool，
   Registry 保持原状；意外的中途注册失败也会回滚本次已经加入的 definition。
@@ -102,6 +112,22 @@ const authorization = new InteractiveToolAuthorizationService({
   approval: cliOrWebApprovalPort,
 });
 ```
+
+## G5：第一条动态能力切片
+
+生产启动链由 `cordis.yml` 依次声明 `cordis:tools` 与五个 Basic Tool 插件。临时
+`cordis:agent-loop` 消费 `ctx.tools.registry`，不再由 Application facade 创建或填充生产
+Registry；因此不用重建 Application，Loader 对某个 Tool 条目的 `disabled`、恢复或重载
+就会直接改变后续 Step 能看到的 Tool 集合。
+
+每个 Step 开始时从当前 Registry 取得一次 Tool 名称与 Registry version 快照。Step 执行中
+发生注册变化时，Core 的既有版本检查会明确拒绝旧快照继续 dispatch，不会把一半旧定义、
+一半新定义混入同一 Step。G8 的 `RunGeneration` 进一步在依赖图切换时关闭旧代准入、取消
+并排空其活动 Run；它不会因为 Tool generation 变化而自动重放未知 side effect。
+
+非 Cordis 嵌入可以显式调用 `createAgentLoopPipeline()`；没有传入外部 Registry 时，该
+helper 使用 `registerBasicTools()` 建立兼容默认值。这条路径不属于产品 bin 的 Cordis
+启动链。
 
 ## 集成边界
 

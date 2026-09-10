@@ -26,6 +26,14 @@ export {
   renderBasicToolResult,
 } from "./support/result-renderer.js";
 export type { BasicToolContext } from "./support/context.js";
+export { Tools } from "./service.js";
+export {
+  Bash as BashToolPlugin,
+  Edit as EditToolPlugin,
+  Grep as GrepToolPlugin,
+  Read as ReadToolPlugin,
+  Write as WriteToolPlugin,
+} from "./plugins.js";
 
 export const BASIC_TOOL_NAMES = Object.freeze([
   "read",

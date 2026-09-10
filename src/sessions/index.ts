@@ -1,5 +1,13 @@
 export { SessionManager } from "./session.js";
 export {
+  createFileSessionResources,
+  Sessions,
+} from "./service.js";
+export type {
+  Config as SessionsConfig,
+  SessionResources,
+} from "./service.js";
+export {
   InMemorySessionStore,
 } from "./memory-store.js";
 export type { InMemorySessionStoreOptions } from "./memory-store.js";

@@ -15,7 +15,112 @@
 - id: app
   name: 'cordis:group'
   group: true
+  # The complete Wish business graph is private to this application subtree.
+  # Process infrastructure (`launch`, Loader, Timer and HMR) remains shared by
+  # the Root Context. A second application group can therefore publish the
+  # same service names without seeing or replacing this generation.
+  isolate:
+    sessions: true
+    models: true
+    contextEngine: true
+    compaction: true
+    tools: true
+    agentLoop: true
+    runEngine: true
+    agents: true
+    application: true
   config:
+    - id: sessions
+      name: 'cordis:sessions'
+      config:
+        dataDirectory: !!js launch.environment.WISH_DATA_DIR
+
+    - id: models
+      name: 'cordis:models'
+      config:
+        configurationPath: !!js launch.environment.WISH_MODELS_CONFIG
+        configurationJson: !!js launch.environment.WISH_MODELS_JSON
+        model: !!js launch.environment.WISH_MODEL
+        fallbackModels: !!js >-
+          launch.environment.WISH_FALLBACK_MODELS === undefined
+            ? undefined
+            : launch.environment.WISH_FALLBACK_MODELS.split(',').map(value => value.trim())
+        maxRetries: !!js >-
+          launch.environment.WISH_MODEL_MAX_RETRIES === undefined || launch.environment.WISH_MODEL_MAX_RETRIES === ''
+            ? undefined
+            : Number(launch.environment.WISH_MODEL_MAX_RETRIES)
+
+    - id: model-openai-chat-completions
+      name: 'cordis:model-openai-chat-completions'
+
+    - id: model-openai-responses
+      name: 'cordis:model-openai-responses'
+
+    - id: model-anthropic-messages
+      name: 'cordis:model-anthropic-messages'
+
+    - id: context-engine
+      name: 'cordis:context-engine'
+      config:
+        reservedOutputTokens: !!js >-
+          launch.environment.WISH_CONTEXT_RESERVED_OUTPUT_TOKENS === undefined || launch.environment.WISH_CONTEXT_RESERVED_OUTPUT_TOKENS === ''
+            ? undefined
+            : Number(launch.environment.WISH_CONTEXT_RESERVED_OUTPUT_TOKENS)
+
+    - id: compaction
+      name: 'cordis:compaction'
+      config:
+        keepRecentTokens: !!js >-
+          launch.environment.WISH_COMPACTION_KEEP_RECENT_TOKENS === undefined || launch.environment.WISH_COMPACTION_KEEP_RECENT_TOKENS === ''
+            ? undefined
+            : Number(launch.environment.WISH_COMPACTION_KEEP_RECENT_TOKENS)
+        summaryMaxOutputTokens: !!js >-
+          launch.environment.WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS === undefined || launch.environment.WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS === ''
+            ? undefined
+            : Number(launch.environment.WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS)
+
+    - id: tools
+      name: 'cordis:tools'
+
+    - id: tool-read
+      name: 'cordis:read'
+
+    - id: tool-write
+      name: 'cordis:write'
+
+    - id: tool-edit
+      name: 'cordis:edit'
+
+    - id: tool-grep
+      name: 'cordis:grep'
+
+    - id: tool-bash
+      name: 'cordis:bash'
+
+    - id: agent-loop
+      name: 'cordis:agent-loop'
+
+    - id: runtime
+      name: 'cordis:runtime'
+      config:
+        maxSteps: !!js >-
+          launch.environment.WISH_MAX_STEPS === undefined || launch.environment.WISH_MAX_STEPS === ''
+            ? undefined
+            : Number(launch.environment.WISH_MAX_STEPS)
+        generationDrainTimeoutMs: !!js >-
+          launch.environment.WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS === undefined || launch.environment.WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS === ''
+            ? undefined
+            : Number(launch.environment.WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS)
+
+    - id: agents
+      name: 'cordis:agents'
+      config:
+        agentId: !!js launch.environment.WISH_AGENT_ID
+        agentInstructions: !!js launch.environment.WISH_AGENT_INSTRUCTIONS
+
+    - id: application
+      name: 'cordis:application'
+
     - id: cli
       name: 'cordis:cli'
       disabled: !!js launch.surface !== 'cli'
@@ -23,3 +128,10 @@
     - id: webui
       name: 'cordis:webui'
       disabled: !!js launch.surface !== 'webui'
+      config:
+        host: !!js launch.environment.WISH_WEBUI_HOST
+        port: !!js >-
+          launch.environment.WISH_WEBUI_PORT === undefined || launch.environment.WISH_WEBUI_PORT === ''
+            ? undefined
+            : Number(launch.environment.WISH_WEBUI_PORT)
+        workspaceRoot: !!js launch.environment.WISH_WEBUI_WORKSPACE_ROOT

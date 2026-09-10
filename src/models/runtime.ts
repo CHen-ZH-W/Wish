@@ -63,6 +63,17 @@ export interface ConfiguredModelStack {
   readonly model: RetryingModel;
 }
 
+/** Complete Models graph consumed by an Application composition. */
+export interface ConfiguredModelResources extends ConfiguredModelStack {
+  readonly requestCounter: ModelRequestTokenCounter;
+}
+
+/** Narrow request/runtime view consumed outside the Models owner. */
+export type ModelDependencies = Pick<
+  ConfiguredModelResources,
+  "configuredModel" | "model" | "requestCounter"
+>;
+
 /** Build the fixed Models decorator order consumed by Core AgentLoop. */
 export function createConfiguredModelStack(
   options: ConfiguredModelStackOptions,
@@ -78,6 +89,15 @@ export function createConfiguredModelStack(
     ...options.retry,
   });
   return Object.freeze({ configuredModel, measuredModel, model });
+}
+
+/** Build both the request path and its preflight token-counting companion. */
+export function createConfiguredModelResources(
+  options: ConfiguredModelStackOptions,
+): ConfiguredModelResources {
+  const stack = createConfiguredModelStack(options);
+  const requestCounter = createConfiguredModelRequestTokenCounter(options);
+  return Object.freeze({ ...stack, requestCounter });
 }
 
 /** Register every exact-count tokenizer supported by the configured protocols. */

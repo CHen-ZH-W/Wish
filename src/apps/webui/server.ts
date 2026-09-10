@@ -10,6 +10,10 @@ import { resolve } from "node:path";
 
 import { EventCursorExpiredError } from "../../core/events/event.js";
 import type { ModelRef } from "../../core/model/model.js";
+import {
+  RunGenerationRetiredError,
+  type RunGenerationDrainTimeoutError,
+} from "../../core/runtime/generation.js";
 import { ModelsConfigurationError } from "../../models/config.js";
 import {
   SessionAlreadyExistsError,
@@ -76,6 +80,9 @@ export interface WishWebUiServerOptions {
   readonly maxRetainedRuns?: number;
   readonly now?: () => Date;
   readonly onError?: (error: unknown) => void;
+  readonly onRunGenerationDrainTimeout?: (
+    error: RunGenerationDrainTimeoutError,
+  ) => void;
 }
 
 export interface StartedWishWebUiServer {
@@ -93,7 +100,13 @@ interface WebServerState {
   readonly maxRetainedRuns: number;
   readonly now: () => Date;
   readonly runs: Map<string, WishWebRunView>;
+  /** Completion barriers for Runs started by this server generation. */
+  readonly runCompletions: Map<string, Promise<void>>;
+  readonly shutdownAbortedRuns: Set<string>;
   readonly shutdown: AbortController;
+  readonly onRunGenerationDrainTimeout: (
+    error: RunGenerationDrainTimeoutError,
+  ) => void;
 }
 
 class WishWebApiError extends Error {
@@ -134,7 +147,11 @@ export async function startWishWebUiServer(
     ),
     now: options.now ?? (() => new Date()),
     runs: new Map(),
+    runCompletions: new Map(),
+    shutdownAbortedRuns: new Set(),
     shutdown: new AbortController(),
+    onRunGenerationDrainTimeout: options.onRunGenerationDrainTimeout ??
+      (() => {}),
   };
   const server = createServer((request, response) => {
     void routeRequest(state, request, response).catch((error: unknown) => {
@@ -178,8 +195,11 @@ async function routeRequest(
   const url = new URL(request.url ?? "/", "http://wish.local");
   const operation = new AbortController();
   const abort = () => operation.abort("HTTP request was disconnected");
+  const shutdown = () => operation.abort(state.shutdown.signal.reason);
   request.once("aborted", abort);
+  state.shutdown.signal.addEventListener("abort", shutdown, { once: true });
   try {
+    requireServing(state);
     const asset = WEB_ASSETS.get(url.pathname);
     if ((method === "GET" || method === "HEAD") && asset !== undefined) {
       await sendWebAsset(response, asset, method === "HEAD");
@@ -268,6 +288,7 @@ async function routeRequest(
     if (method === "POST" && sessionRuns !== undefined) {
       const body = await readJsonObject(request, state.maxJsonBodyBytes);
       requireOnlyKeys(body, ["text", "model"]);
+      requireServing(state);
       const handle = await state.application.startRun({
         sessionId: sessionRuns,
         payload: {
@@ -282,7 +303,7 @@ async function routeRequest(
         validDate(state.now(), "WebUI clock").toISOString(),
       );
       state.runs.set(handle.runId, accepted.run);
-      void handle.completion.then(
+      const completion = handle.completion.then(
         (completion) => {
           state.runs.set(handle.runId, Object.freeze({
             ...accepted.run,
@@ -294,7 +315,13 @@ async function routeRequest(
         () => {
           state.runs.delete(handle.runId);
         },
-      );
+      ).finally(() => {
+        state.runCompletions.delete(handle.runId);
+      });
+      state.runCompletions.set(handle.runId, completion);
+      void completion.catch(() => {
+        // Both branches above settle normally; retain a final safety handler.
+      });
       sendJson(response, 202, accepted);
       return;
     }
@@ -395,6 +422,7 @@ async function routeRequest(
     throw apiError(404, "not_found", "API route was not found");
   } finally {
     request.off("aborted", abort);
+    state.shutdown.signal.removeEventListener("abort", shutdown);
   }
 }
 
@@ -782,6 +810,9 @@ function mapError(error: unknown): WishWebApiError {
   if (error instanceof ModelsConfigurationError) {
     return apiError(400, "invalid_model", error.message);
   }
+  if (error instanceof RunGenerationRetiredError) {
+    return apiError(503, error.code, error.message);
+  }
   if (error instanceof Error && /already has an active Run/u.test(error.message)) {
     return apiError(409, "session_run_active", error.message);
   }
@@ -814,8 +845,32 @@ function writeResponse(response: ServerResponse, text: string): Promise<void> {
 
 async function closeServer(server: Server, state: WebServerState): Promise<void> {
   state.shutdown.abort("Wish WebUI server is closing");
+  state.approvals.close();
+  const generationRetirement = state.application.runGeneration?.retire({
+    reason: "Wish WebUI server is closing",
+    onDrainTimeout: state.onRunGenerationDrainTimeout,
+  });
+  if (generationRetirement === undefined) abortRunningRuns(state);
+  await new Promise<void>((accept, reject) => {
+    server.close((error) => {
+      if (error === undefined) accept();
+      else reject(error);
+    });
+  });
+  if (generationRetirement === undefined) abortRunningRuns(state);
+  while (state.runCompletions.size > 0) {
+    await Promise.all([...state.runCompletions.values()]);
+  }
+  await generationRetirement;
+}
+
+function abortRunningRuns(state: WebServerState): void {
   for (const run of state.runs.values()) {
-    if (run.status !== "running") continue;
+    if (
+      run.status !== "running" ||
+      state.shutdownAbortedRuns.has(run.runId)
+    ) continue;
+    state.shutdownAbortedRuns.add(run.runId);
     try {
       state.application.controlRun(run.runId, {
         type: "abort",
@@ -826,13 +881,16 @@ async function closeServer(server: Server, state: WebServerState): Promise<void>
       // A terminal/pruned Run needs no shutdown action.
     }
   }
-  state.approvals.close();
-  await new Promise<void>((accept, reject) => {
-    server.close((error) => {
-      if (error === undefined) accept();
-      else reject(error);
-    });
-  });
+}
+
+function requireServing(state: WebServerState): void {
+  if (state.shutdown.signal.aborted) {
+    throw apiError(
+      503,
+      "server_shutting_down",
+      "Wish WebUI server is shutting down",
+    );
+  }
 }
 
 function pruneRuns(state: WebServerState): void {

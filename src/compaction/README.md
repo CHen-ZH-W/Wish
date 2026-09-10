@@ -36,7 +36,8 @@ src/compaction/
 ├── planner.ts
 ├── summarizer.ts
 ├── compaction.ts
-└── recovery.ts
+├── recovery.ts
+└── service.ts          # G6.3 Cordis owner 与 standalone helper
 ```
 
 - `types.ts`：定义 Session、Summarizer、Compactor 的窄 Port 和结果 DTO。
@@ -44,6 +45,20 @@ src/compaction/
 - `summarizer.ts`：把一份完整 `oldEntries` transcript 发给摘要模型。
 - `compaction.ts`：协调一次 read、plan、summarize 和 append。
 - `recovery.ts`：在 AgentLoop 外层执行至多一次压缩与同 Step 重投影。
+- `service.ts`：注入 Sessions/Models，拥有 summarizer 与 compactor 的生产构造。
+
+## G6.3：Cordis Service
+
+`src/compaction/service.ts` 提供 `compaction` service。它自己的 Schemastery Config
+管理 `keepRecentTokens` 和 `summaryMaxOutputTokens`，通过 Sessions 的 compaction view、
+Models 的请求栈与 request counter 构造 `ModelCompactionSummarizer → SessionCompactor`。
+纯 `CompactionSessionPort`、planner、summarizer、compactor 和 recovery pipeline 都不继承
+或导入 Cordis。
+
+AgentLoop service 消费 `compaction.open()` 返回的 `ContextOverflowCompactor`；
+Application Service 与 facade 都不看见 compactor，也不选择 summary model
+或构造 summarizer/compactor。`createCompactionResources()` 仅是显式 standalone 组合
+helper，产品进程使用 service。
 
 ## Session 边界
 
@@ -113,8 +128,8 @@ Session 中；Context 会把 coverage 内的历史 user 原话逐字加入模型
 ## 仍在外部的能力
 
 - Session Store 的实际持久化与 revision 事务；
-- summary model 与 request tokenizer 的具体 Provider adapter；
-- Session ID、Agent model 和 summary model 的配置解析；
+- request tokenizer 的具体 Provider adapter；
+- Session ID、Agent model 与可选 summary model 的上层选择；
 - 持久化 checkpoint 的 UI 呈现与审计元数据；
 - Provider 已开始响应后的 overflow 协调。
 
@@ -125,6 +140,6 @@ Session 中；Context 会把 coverage 内的历史 user 原话逐字加入模型
 ```bash
 npm run typecheck
 npm run test:compaction
+npm run test:cordis-context
 npm test
 ```
-

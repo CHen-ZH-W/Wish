@@ -7,13 +7,15 @@ AgentLoop 与 Run/UserTurn/Step 生命周期。
 ## 结构与依赖
 
 ```text
-Models configuration
+Cordis Models service
+  ← OpenAI Chat Completions Adapter plugin
+  ← OpenAI Responses Adapter plugin
+  ← Anthropic Messages Adapter plugin
+  → Models configuration
   → ConfiguredModel
   → UsageResolvingModel
   → core/model.RetryingModel
   → core/agent-loop.AgentLoop
-  → core/runtime.Runtime
-  → core/agent.Agent
 ```
 
 - `types.ts`：公开的 Provider、Model、兼容性、价格和 Adapter DTO。
@@ -23,6 +25,9 @@ Models configuration
 - `config.ts`：JSON/环境配置加载、启动期校验、完整模型引用解析和覆盖合并。
 - `registry.ts`：协议到 Adapter factory 的显式注册表。
 - `runtime.ts`：严格按 `ModelRequest.model` 路由，并在调用时解析 headers/凭据。
+- `service.ts`：G6.2 Cordis wrapper，拥有配置来源、Registry、usage estimator 和每个
+  AgentLoop 与 Application 使用的请求资源组合。
+- `plugins.ts`：三个协议 Adapter 的独立 Loader 插件；每项注册都绑定调用插件 fiber。
 - `providers/`：OpenAI Responses、OpenAI Chat Completions-compatible 与
   Anthropic Messages 转换。
 - `usage.ts`：按完整模型身份注册 tokenizer、补齐缺失 usage、计算费用。
@@ -138,12 +143,18 @@ npm run models:check-generated
 
 `loadModelsConfigurationFile` 从显式 `path` 或 `WISH_MODELS_CONFIG` 读取文件；
 `loadModelsConfiguration` 也可直接接收已解析值、JSON 字符串或
-`WISH_MODELS_JSON`，三者都没有时回退到 generated defaults。Host 还会在没有显式 JSON/路径时读取
-`<WISH_DATA_DIR>/models.json`，默认位置是 `~/.wish/models.json`；文件不存在才使用
-generated defaults。旧的 `schemaVersion: 1` 文件继续完整替换；新的
+`WISH_MODELS_JSON`，三者都没有时回退到 generated defaults。这些环境入口仍是 Models
+模块的独立 API；Wish 的生产启动链不会让它们在 Host 深处隐式生效。
+
+生产启动由 `cordis.yml` 的 `models` Config 显式选择 JSON/路径；默认 profile 只在 Loader
+边界把兼容的 `WISH_MODELS_CONFIG` / `WISH_MODELS_JSON` 映射过去。Host 在没有显式
+JSON/路径时读取 `<dataDirectory>/models.json`，默认位置是 `~/.wish/models.json`；文件
+不存在才使用 generated defaults。旧的 `schemaVersion: 1` 文件继续完整替换；新的
 `schemaVersion: 2` 文件使用上述 overlay 语义。
 `WISH_MODEL`、`WISH_FALLBACK_MODELS` 和
-`WISH_MODEL_MAX_RETRIES` 可以覆盖文件的初始进程选择。
+`WISH_MODEL_MAX_RETRIES` 同样由默认 profile 映射为 `models` Config 的初始进程选择；外部
+profile 直接配置 `model`、`fallbackModels` 和 `maxRetries`。CLI `--models-config` 仍作为
+本次 surface 的最高优先级覆盖交给 Models service。
 
 模型选择顺序由组合根保持：显式 Run/Agent 模型 → `ConfiguredModel` 当前进程
 默认值 → 文件 `defaultModel` → 第一个 Provider `defaultModel`。每次模型请求仍必须
@@ -157,7 +168,7 @@ auth、developer authority、价格和引用都会在加载阶段失败。
 
 ## 协议
 
-`createDefaultModelAdapterRegistry()` 注册：
+生产 profile 把以下三种协议作为三个独立插件注册到 `ctx.models`：
 
 - `openai-responses`：OpenAI 原生 input items、developer authority、图片、reasoning
   summary、增量函数调用、Responses SSE 和 usage；默认请求不由 Provider 保存。
@@ -166,8 +177,18 @@ auth、developer authority、价格和引用都会在加载阶段失败。
 - `anthropic-messages`：独立 system、显式 developer system-fallback、图片、thinking、
   tool_use 增量 JSON、cache read/create usage 和 Messages SSE。
 
-新协议通过 `ModelAdapterRegistry.register(protocol, factory)` 增加，不依据模型名或
-URL 推断协议。AbortSignal 会传给真实 `fetch`；Provider response 不进入 Core DTO。
+新协议插件注入 `models`，再调用 `ctx.models.register(protocol, factory)`；注册 effect
+属于调用插件 fiber，所以 stable-id disable、reload、Models service 消失和 Root dispose
+都会撤销对应协议，恢复后可以重新注册。`createDefaultModelAdapterRegistry()` 只保留给
+非 Cordis 的独立组合与现有模块测试。协议仍不依据模型名或 URL 推断；AbortSignal 会
+传给真实 `fetch`，Provider response 不进入 Core DTO。
+
+`Models.open()` 创建 `ConfiguredModel → UsageResolvingModel → RetryingModel` 和配套
+`ModelRequestTokenCounter`，然后把完整请求依赖交给 AgentLoop service；Application
+只得到模型选择所需的 `configuredModel` view。`ApplicationFacade` 不创建
+Registry、estimator、模型请求栈或 request counter。
+Provider 凭据仍在每次调用时从 `launch.environment` 的原引用读取，配置 DTO 不保存密钥。
+`RetryingModel` 继续是纯 Core 对象，没有继承 Cordis Service。
 
 ## Usage 与费用
 
@@ -216,6 +237,7 @@ OpenAI Responses 与 Chat Completions 当前没有注册“精确”本地计数
 
 ```bash
 npm run typecheck
+npm run test:cordis-models
 npm run test:model-generation
 npm run test:models-runtime
 npm run test:model-providers

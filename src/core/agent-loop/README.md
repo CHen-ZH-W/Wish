@@ -20,6 +20,7 @@ AgentLoop 单 Step：
 - `types.ts`：跨 Step memory、最终结果、输入渲染、Step 环境和 Tool Result
   渲染接口。
 - `agent-loop.ts`：默认 `StepPipeline`，按固定顺序驱动一次完整 Step。
+- `service.ts`：Cordis `agentLoop` Service，拥有生产环境的依赖解析、构造和生命周期。
 
 ## 固定主干
 
@@ -81,8 +82,8 @@ Tool、审批界面、Sandbox、Workflow、Memory、Skill 和传输层仍位于 
 ## 依赖方向
 
 ```text
-外部 composition root
-  ├─ 实现 Model / ContextProvider / authorization / concrete Tools
+Cordis agentLoop Service
+  ├─ 消费 Sessions / Models / ContextEngine / Compaction / Tools
   └─ 组装 Runtime(stepPipeline = AgentLoop)
 
 Agent facade → Runtime → StepPipeline contract
@@ -92,6 +93,23 @@ AgentLoop → Context + Model + Tools + Runtime DTO + Events channel
 Context / Model / Tools / Runtime 不依赖 AgentLoop
 ```
 
+`agent-loop.ts` 和 `types.ts` 是不依赖 Cordis 的算法与契约；`service.ts` 与它们归属
+同一个 Core 能力模块，但只负责运行时依赖图。这样不会再产生一个平行的
+`src/agent-loop/` 模块身份。
+
+## Cordis 生命周期与配置
+
+`AgentLoop` Service 注入 `sessions`、`models`、`contextEngine`、`compaction` 和
+`tools`。任一依赖缺失时 provider 保持 PENDING；依赖 generation 更新或消失时，
+Cordis 会释放 `agentLoop → runEngine → agents → application → surface` 的下游
+generation，恢复后重新激活。
+
+生产 Registry 来自 `ctx.tools.registry`。单个 Tool 插件注册、卸载或恢复会改变后续
+Step 读取的 Registry 快照。缺少审批 Port 时显式使用 deny-all，保持 fail closed。
+
+Loader stable id 是 `agent-loop`。Config 当前只拥有 `maxParallelCalls`，无效首次加载
+或更新由 Schemastery 拒绝，Loader 保留 last-known-good generation。
+
 ## 验证
 
 在 Wish 根目录运行：
@@ -99,5 +117,6 @@ Context / Model / Tools / Runtime 不依赖 AgentLoop
 ```bash
 npm run typecheck
 npm run test:agent-loop
+npm run test:cordis-agent-loop
 npm test
 ```
