@@ -95,7 +95,7 @@ export interface RuntimeResources extends RuntimeDependencies {
 
 /** Cordis owner of the process-local Run controller. */
 export class Runtime extends Service {
-  static readonly inject = ["agentLoop"];
+  static readonly inject = ["launch", "agentLoop"];
   static readonly Config = Config;
 
   readonly maxSteps: number | undefined;

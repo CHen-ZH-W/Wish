@@ -26,7 +26,7 @@ AgentLoop projection
                同一 Step 最多重新投影一次
 ```
 
-## 当前实现
+## 目录职责
 
 ```text
 src/compaction/
@@ -37,7 +37,7 @@ src/compaction/
 ├── summarizer.ts
 ├── compaction.ts
 ├── recovery.ts
-└── service.ts          # G6.3 Cordis owner 与 standalone helper
+└── service.ts          # Cordis owner 与 standalone helper
 ```
 
 - `types.ts`：定义 Session、Summarizer、Compactor 的窄 Port 和结果 DTO。
@@ -47,7 +47,7 @@ src/compaction/
 - `recovery.ts`：在 AgentLoop 外层执行至多一次压缩与同 Step 重投影。
 - `service.ts`：注入 Sessions/Models，拥有 summarizer 与 compactor 的生产构造。
 
-## G6.3：Cordis Service
+## Cordis 集成
 
 `src/compaction/service.ts` 提供 `compaction` service。它自己的 Schemastery Config
 管理 `keepRecentTokens` 和 `summaryMaxOutputTokens`，通过 Sessions 的 compaction view、

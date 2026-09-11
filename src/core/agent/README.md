@@ -32,9 +32,9 @@ Context 和 Tool 模块。
    防止调用方后续修改 definition、metadata 或 payload，改变已提交语义；
    非 plain object 被视为不透明能力对象，不由 Agent 解释或改写。
 
-## 当前阶段边界
+## 模块边界
 
-Agent facade 与公共 DTO 已完成，并通过 `AgentRuntimeService` 接入 Runtime。
+Agent facade 与公共 DTO 通过 `AgentRuntimeService` 接入 Runtime。
 `agent.ts` 和 `types.ts` 仍只依赖最小契约；同目录 `service.ts` 注入 `runEngine`，调用
 当前 Runtime generation 后构造默认 Agent。Agent 实际消费的是同代 `RunGeneration` 的
 窄 Runtime surface；`ApplicationFacade` 只消费已经构造好的 Agent，不拥有 Agent

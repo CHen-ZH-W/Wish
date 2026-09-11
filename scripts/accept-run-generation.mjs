@@ -218,6 +218,7 @@ test("Cordis Runtime update drains the old generation before activating the new 
   }
 
   const root = new Context();
+  root.provide("launch", { fail() {} });
   const generations = [];
   let oldHandle;
   const consumer = root.plugin({

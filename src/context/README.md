@@ -19,13 +19,9 @@ Models adapter ──窗口与请求前计数─┘             │
 让它针对历史 `oldEntries` 生成 checkpoint，再重新投影一次。Context 不生成摘要、
 不修改 Session，也不把整个最终模型请求交给 Compaction。
 
-## 当前进度
+## 契约与目录
 
-六个增量步骤已经完成：集成 Port、History、Instructions、State、History Policy、
-Tool Result archive-first admission、请求前 Budget Evaluator，以及可直接交给
-AgentLoop 的最终组合入口都已实现。Context 模块不会在超限时自行压缩。
-
-当前契约包括：
+Context 模块不会在超限时自行压缩。它的主要契约包括：
 
 - `ContextInput`：一次 Step 的 Run/UserTurn/Step/Session 身份、完整模型身份，以及
   组合层已经解析的 workspace/runtime facts。
@@ -42,14 +38,12 @@ AgentLoop 的最终组合入口都已实现。Context 模块不会在超限时�
 - `ContextConfiguration`：明确 output reserve、单项 Tool Result admission 参数和
   provider 注册顺序。
 
-当前目录：
-
 ```text
 src/context/
 ├── README.md
 ├── context.ts
 ├── index.ts
-├── service.ts              # G6.3 Cordis owner 与 standalone helper
+├── service.ts              # Cordis owner 与 standalone helper
 ├── types.ts
 ├── providers/
 │   ├── history.ts
@@ -135,7 +129,7 @@ tailChars      = 1024
 
 ## Tool Result archive-first admission
 
-这一阶段由两个明确接缝组成：
+这项能力由两个明确接缝组成：
 
 ```text
 完整 Core ToolResult
@@ -261,7 +255,7 @@ const loop = new AgentLoop({
 变化不会改变该 Step 的 Context 输入。Bundle 只提供组合所需对象：它不启动
 AgentLoop、不调用模型、不写 Session，也不生成摘要。
 
-## G6.3：Cordis Service
+## Cordis 集成
 
 `src/context/service.ts` 提供名为 `contextEngine` 的 service，避免和 Cordis 自身的
 `Context` 类型混淆。它注入 `sessions` 与 `models`，拥有
@@ -302,9 +296,9 @@ Cordis ContextEngine service
 `Record<string, unknown>` 隐藏扩展口。每个 Step 由组合层重新构造输入快照，Context
 不缓存旧的 cwd、时间或 Runtime 状态。
 
-## 后续边界
+## 模块边界
 
-`src/context` 的计划能力已经收口。相邻的独立 `src/compaction` 模块现已处理一次有界的
+相邻的独立 `src/compaction` 模块处理一次有界的
 `context_over_budget` 恢复；它通过 Session Port 追加 checkpoint，再让同一 Step 重新
 投影一次。Context 仍不导入 Compaction，也不自行生成摘要。
 

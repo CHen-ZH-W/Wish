@@ -105,7 +105,9 @@ class OpenAICompatibleModel implements Model {
           yield errorEvent(providerStreamError(chunk.error));
           return;
         }
-        if (chunk.usage !== undefined) {
+        // OpenAI-compatible providers may emit `usage: null` on intermediate
+        // chunks before publishing the final usage object.
+        if (chunk.usage !== undefined && chunk.usage !== null) {
           usage = parseUsage(chunk.usage);
         }
         const choice = firstChoice(chunk.choices);

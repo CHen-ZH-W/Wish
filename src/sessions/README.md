@@ -17,21 +17,7 @@ AgentLoop 组合层 ──提交 User/Assistant/Tool──┐
 Context 和 Compaction 必须通过 Sessions adapter 读取同一份事实，不能分别维护两套
 历史。Session transcript 也不保存 Context 临时注入的 system/developer 指令。
 
-## 当前进度
-
-Sessions 第一版已经完成：
-
-- Session、Message、Checkpoint、History Snapshot 和 Store Port；
-- `create`、`get`、`list`、`updateMetadata`、`archive`、`readHistory`、
-  `appendMessages`、`appendCheckpoint` 门面；
-- 深复制与冻结、连续 sequence、幂等追加、revision CAS 和 Tool 单元校验；
-- Context/Compaction 共用的 history adapter；
-- AgentLoop input renderer 和 transcript pipeline adapter；
-- 与文件系统分离的内存 Store 和文件 Store；
-- 类型测试、事务验收和完整 Context/Compaction/AgentLoop 组合验收；
-- G6.1 Cordis `sessions` service、Loader 配置、依赖生命周期和跨 generation 持久化。
-
-当前目录：
+## 目录职责
 
 ```text
 src/sessions/
@@ -52,7 +38,7 @@ src/storage/sessions/
 
 文件系统逻辑只存在于 `src/storage/sessions/`，不会混入 Sessions 领域模块。
 
-## G6.1：Cordis Service
+## Cordis 集成
 
 `Sessions` 是领域层外面的生命周期和装配 wrapper。它提供默认 `dataDirectory`，构造
 `FileSessionStore`、`SessionManager` 和唯一的 `SessionHistoryAdapter`，并作为

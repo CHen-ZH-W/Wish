@@ -76,10 +76,10 @@ begin
 外部授权或 Sandbox 实现可以在执行副作用前调用
 `assertActiveToolAuthorizationGrant()`，验证 Grant 仍处于本次调用的动态执行范围。
 
-## 当前阶段边界
+## 模块边界
 
-Tools Core 自身的注册、授权、单调用执行和多调用调度主干已经完成。
-`agent-loop/AgentLoop` 已通过 Step-local Event Port 把 Scheduler 接入 Runtime，
+Tools Core 拥有注册、授权、单调用执行和多调用调度主干。
+`agent-loop/AgentLoop` 通过 Step-local Event Port 把 Scheduler 接入 Runtime，
 形成 Context → Model → Tools → next Step 的默认闭环；Tools 本身不反向依赖该
 组合层。
 

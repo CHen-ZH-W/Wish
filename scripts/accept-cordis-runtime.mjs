@@ -61,6 +61,11 @@ test("Runtime owns Core construction and follows AgentLoop generations", async (
   let agentLoopProvider;
   try {
     agentLoopProvider = await root.plugin(StubAgentLoop);
+    assert.equal(runtimeProvider.state, fiberState.pending);
+    assert.equal(consumer.state, fiberState.pending);
+
+    root.provide("launch", { fail() {} });
+    await runtimeProvider.await();
     await consumer.await();
     assert.equal(runtimeProvider.state, fiberState.active);
     assert.equal(consumer.state, fiberState.active);
@@ -205,6 +210,7 @@ test("Runtime schema and source keep Application and Core algorithms narrow", as
 
   assert.match(serviceSource, /new CoreRuntime/u);
   assert.match(serviceSource, /new RunGeneration/u);
+  assert.match(serviceSource, /static readonly inject = \["launch", "agentLoop"\]/u);
   assert.match(serviceSource, /this\.ctx\.agentLoop\.open/u);
   assert.match(serviceSource, /super\(ctx, "runEngine"\)/u);
   assert.doesNotMatch(facadeSource, /new Runtime/u);

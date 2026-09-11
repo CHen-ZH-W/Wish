@@ -78,10 +78,10 @@ Runtime 在入口复制 definition、metadata 和 plain DTO；状态、transitio
 及 completion 都不依赖调用方继续保持原对象不变。初始化 transition 失败会回收
 已占用的 Run ID 和 scope，不留下无法完成的活动 Run。
 
-## 当前阶段边界
+## 模块边界
 
-进程内 Runtime 主干已经完成：双层调度、canonical state、控制队列、不可变快照、
-取消、生命周期 Port、统一事件和终态收束均由 Runtime 所有。Runtime 不依赖默认
+双层调度、canonical state、控制队列、不可变快照、取消、生命周期 Port、统一事件和
+终态收束均由 Runtime 所有。Runtime 不依赖默认
 实现，也不理解具体 Context、Model 或 Tool；组合根可以使用 `AgentLoop` 完成默认
 连接，也可以提供遵守相同 Step 契约的其他显式 `StepPipeline`。持久化和进程重启
 恢复需要由具体 `RuntimeLifecycleService` 实现承担。`runtime.ts` 与 `generation.ts` 等算法文件仍不依赖
@@ -90,7 +90,7 @@ Cordis；同目录的 `service.ts` 只负责生产构造和依赖 generation，�
 
 ## Cordis 生命周期与配置
 
-Runtime Service 注入 `agentLoop`，通过 `ctx.agentLoop.open()` 获得当前 Step pipeline，
+Runtime Service 注入 `launch` 与 `agentLoop`，通过 `ctx.agentLoop.open()` 获得当前 Step pipeline，
 再构造一代 Core Runtime 和包裹它的 `RunGeneration`。Cordis 保留 `ctx.runtime` 作为插件 runtime accessor，因此
 Wish 的能力键使用 `runEngine`，Loader 名称仍为 `cordis:runtime`。
 

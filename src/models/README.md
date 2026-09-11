@@ -25,7 +25,7 @@ Cordis Models service
 - `config.ts`：JSON/环境配置加载、启动期校验、完整模型引用解析和覆盖合并。
 - `registry.ts`：协议到 Adapter factory 的显式注册表。
 - `runtime.ts`：严格按 `ModelRequest.model` 路由，并在调用时解析 headers/凭据。
-- `service.ts`：G6.2 Cordis wrapper，拥有配置来源、Registry、usage estimator 和每个
+- `service.ts`：Cordis wrapper，拥有配置来源、Registry、usage estimator 和每个
   AgentLoop 与 Application 使用的请求资源组合。
 - `plugins.ts`：三个协议 Adapter 的独立 Loader 插件；每项注册都绑定调用插件 fiber。
 - `providers/`：OpenAI Responses、OpenAI Chat Completions-compatible 与
@@ -176,6 +176,9 @@ auth、developer authority、价格和引用都会在加载阶段失败。
   增量 Tool Call、SSE、stream usage 和两种 max-token 字段。
 - `anthropic-messages`：独立 system、显式 developer system-fallback、图片、thinking、
   tool_use 增量 JSON、cache read/create usage 和 Messages SSE。
+
+OpenAI-compatible SSE 的中间 chunk 可以携带 `usage: null`；它按缺失 usage 处理，只有
+实际 usage 对象才会更新最终完成事件的统计。
 
 新协议插件注入 `models`，再调用 `ctx.models.register(protocol, factory)`；注册 effect
 属于调用插件 fiber，所以 stable-id disable、reload、Models service 消失和 Root dispose

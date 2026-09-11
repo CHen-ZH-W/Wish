@@ -111,6 +111,10 @@ test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", as
         } },
         { data: {
           choices: [],
+          usage: null,
+        } },
+        { data: {
+          choices: [],
           usage: {
             prompt_tokens: 20,
             prompt_tokens_details: { cached_tokens: 4, cache_creation_tokens: 2 },

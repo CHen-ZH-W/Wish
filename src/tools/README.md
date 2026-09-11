@@ -25,18 +25,18 @@ CLI / WebUI approval
 参数解析、能力申请、授权复核和一次性 Grant 签发；具体 Tool 在访问资源前再次检查
 Grant 是否仍处于本次调用的有效范围。
 
-## 当前状态
+## Tool 契约
 
-| Tool | 状态 | executionMode | recoveryPolicy | capability |
-| --- | --- | --- | --- | --- |
-| `read` | 已实现 | `parallel` | `retry-safe` | `filesystem.read` |
-| `write` | 已实现 | `sequential` | `needs-reconciliation` | `filesystem.write` |
-| `edit` | 已实现 | `sequential` | `needs-reconciliation` | `filesystem.read`, `filesystem.write` |
-| `grep` | 已实现 | `parallel` | `retry-safe` | `filesystem.read` |
-| `bash` | 已实现 | `sequential` | `needs-reconciliation` | `process.exec` |
+| Tool | executionMode | recoveryPolicy | capability |
+| --- | --- | --- | --- |
+| `read` | `parallel` | `retry-safe` | `filesystem.read` |
+| `write` | `sequential` | `needs-reconciliation` | `filesystem.write` |
+| `edit` | `sequential` | `needs-reconciliation` | `filesystem.read`, `filesystem.write` |
+| `grep` | `parallel` | `retry-safe` | `filesystem.read` |
+| `bash` | `sequential` | `needs-reconciliation` | `process.exec` |
 
-五个 Tool 均已实现并完成各自定向验收。生产 Cordis 组合把它们作为五个独立 Loader
-插件注册；非 Cordis 调用仍可通过 `registerBasicTools()` 一次性装配兼容组合。
+生产 Cordis 组合把五个 Tool 作为独立 Loader 插件注册；非 Cordis 调用可通过
+`registerBasicTools()` 一次性装配兼容组合。
 
 ## 目录职责
 
@@ -44,8 +44,8 @@ Grant 是否仍处于本次调用的有效范围。
 src/tools/
 ├── README.md
 ├── index.ts                 # 非 Cordis 兼容注册和公共导出
-├── service.ts               # G5：Cordis tools service 与动态 Registry
-├── plugins.ts               # G5：五个独立 Basic Tool Loader 插件
+├── service.ts               # Cordis tools service 与动态 Registry
+├── plugins.ts               # 五个独立 Basic Tool Loader 插件
 ├── authorization.ts         # App-neutral approval 到 Core authorization 的适配
 ├── basic/
 │   ├── read.ts
@@ -113,16 +113,16 @@ const authorization = new InteractiveToolAuthorizationService({
 });
 ```
 
-## G5：第一条动态能力切片
+## Cordis 集成
 
-生产启动链由 `cordis.yml` 依次声明 `cordis:tools` 与五个 Basic Tool 插件。临时
-`cordis:agent-loop` 消费 `ctx.tools.registry`，不再由 Application facade 创建或填充生产
+生产启动链由 `cordis.yml` 依次声明 `cordis:tools` 与五个 Basic Tool 插件。
+`cordis:agent-loop` 消费 `ctx.tools.registry`，不由 Application facade 创建或填充生产
 Registry；因此不用重建 Application，Loader 对某个 Tool 条目的 `disabled`、恢复或重载
 就会直接改变后续 Step 能看到的 Tool 集合。
 
 每个 Step 开始时从当前 Registry 取得一次 Tool 名称与 Registry version 快照。Step 执行中
 发生注册变化时，Core 的既有版本检查会明确拒绝旧快照继续 dispatch，不会把一半旧定义、
-一半新定义混入同一 Step。G8 的 `RunGeneration` 进一步在依赖图切换时关闭旧代准入、取消
+一半新定义混入同一 Step。`RunGeneration` 在依赖图切换时关闭旧代准入、取消
 并排空其活动 Run；它不会因为 Tool generation 变化而自动重放未知 side effect。
 
 非 Cordis 嵌入可以显式调用 `createAgentLoopPipeline()`；没有传入外部 Registry 时，该
@@ -131,11 +131,9 @@ helper 使用 `registerBasicTools()` 建立兼容默认值。这条路径不属�
 
 ## 集成边界
 
-完整集成验收使用真实的 Registry、Executor、Bounded Scheduler、ContextProjector、
-AgentLoop 和 Runtime。首个 Step 向 Model 暴露五个 schema，并执行五个经过独立能力
-授权的 Tool Call；下一 Step 按原调用顺序收到五条配对的 Tool Message，包括 Read
-图片的 `contentParts.image_url`。文件与进程 Operations 使用确定性注入，因此该验收
-证明 Core 到基础 Tool 的组合合同，不声称真实 Sandbox 或远端 Provider 已完成验证。
+完整组合使用真实的 Registry、Executor、Bounded Scheduler、ContextProjector、AgentLoop
+和 Runtime。首个 Step 向 Model 暴露五个 schema；Tool 执行后，下一 Step 按原调用顺序
+收到配对的 Tool Message，包括 Read 图片的 `contentParts.image_url`。
 
 Operations 接口保留在各自 Tool 文件中，不集中为一个跨 Tool 大接口。宿主可用它们
 接入远端文件系统、图像处理器或进程后端；默认实现只负责本地能力。
