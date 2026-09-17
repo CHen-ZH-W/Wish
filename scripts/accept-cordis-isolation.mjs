@@ -10,7 +10,22 @@ import { bootstrap } from "../dist/boot/bootstrap.js";
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const fiberState = Object.freeze({ pending: 0, active: 2 });
 const businessServices = Object.freeze([
+  "sessionPersistence",
   "sessions",
+  "storage",
+  "storageBackend",
+  "runtimeLifecycle",
+  "modelCatalogPersistence",
+  "toolResultArchive",
+  "toolOutputArtifacts",
+  "workspace",
+  "filesystem",
+  "filesystemSearch",
+  "shell",
+  "approval",
+  "approvalRules",
+  "sandboxPolicy",
+  "permissions",
   "models",
   "contextEngine",
   "compaction",
@@ -24,7 +39,22 @@ const businessServices = Object.freeze([
 const probeModule = `
 export const inject = [
   "launch",
+  "sessionPersistence",
   "sessions",
+  "storage",
+  "storageBackend",
+  "runtimeLifecycle",
+  "modelCatalogPersistence",
+  "toolResultArchive",
+  "toolOutputArtifacts",
+  "workspace",
+  "filesystem",
+  "filesystemSearch",
+  "shell",
+  "approval",
+  "approvalRules",
+  "sandboxPolicy",
+  "permissions",
   "models",
   "contextEngine",
   "compaction",
@@ -37,7 +67,23 @@ export const inject = [
 
 export function apply(ctx, config) {
   globalThis.__wishCordisG7Snapshots.set(config.realm, Object.freeze({
+    sessionPersistence: ctx.sessionPersistence,
     sessions: ctx.sessions.manager,
+    storage: ctx.storage,
+    storageBinding: ctx.storageBackend,
+    storageBackend: ctx.storage.backend("file"),
+    runtimeLifecycle: ctx.runtimeLifecycle,
+    modelCatalogPersistence: ctx.modelCatalogPersistence,
+    toolResultArchive: ctx.toolResultArchive,
+    toolOutputArtifacts: ctx.toolOutputArtifacts,
+    workspace: ctx.workspace,
+    filesystem: ctx.filesystem,
+    filesystemSearch: ctx.filesystemSearch,
+    shell: ctx.shell,
+    approval: ctx.approval,
+    approvalRules: ctx.approvalRules,
+    sandboxPolicy: ctx.sandboxPolicy,
+    permissions: ctx.permissions,
     models: ctx.models.registry,
     tools: ctx.tools.registry,
     agentDefinition: ctx.agents.definition,
@@ -154,7 +200,23 @@ test("two application realms isolate providers, registrations, updates, and disp
 
     const firstLeft = globalThis.__wishCordisG7Snapshots.get("left");
     const firstRight = globalThis.__wishCordisG7Snapshots.get("right");
+    assert.notEqual(firstLeft.sessionPersistence, firstRight.sessionPersistence);
     assert.notEqual(firstLeft.sessions, firstRight.sessions);
+    assert.notEqual(firstLeft.storage, firstRight.storage);
+    assert.notEqual(firstLeft.storageBinding, firstRight.storageBinding);
+    assert.notEqual(firstLeft.storageBackend, firstRight.storageBackend);
+    assert.notEqual(firstLeft.runtimeLifecycle, firstRight.runtimeLifecycle);
+    assert.notEqual(
+      firstLeft.modelCatalogPersistence,
+      firstRight.modelCatalogPersistence,
+    );
+    assert.notEqual(firstLeft.toolResultArchive, firstRight.toolResultArchive);
+    assert.notEqual(firstLeft.workspace, firstRight.workspace);
+    assert.notEqual(firstLeft.filesystem, firstRight.filesystem);
+    assert.notEqual(firstLeft.approval, firstRight.approval);
+    assert.notEqual(firstLeft.approvalRules, firstRight.approvalRules);
+    assert.notEqual(firstLeft.sandboxPolicy, firstRight.sandboxPolicy);
+    assert.notEqual(firstLeft.permissions, firstRight.permissions);
     assert.notEqual(firstLeft.models, firstRight.models);
     assert.notEqual(firstLeft.tools, firstRight.tools);
     assert.notEqual(firstLeft.agentDefinition, firstRight.agentDefinition);
@@ -213,10 +275,53 @@ function applicationGroup(options) {
   isolate:
 ${businessServices.map((service) => `    ${service}: true`).join("\n")}
   config:
+    - id: ${options.id}-storage
+      name: 'cordis:storage'
+    - id: ${options.id}-storage-file
+      name: 'cordis:storage-file'
+      config:
+        id: file
+        rootDirectory: ${JSON.stringify(join(options.dataDirectory, "storage"))}
+    - id: ${options.id}-runtime-lifecycle
+      name: 'cordis:runtime-lifecycle-journal'
+      config:
+        backendId: file
+    - id: ${options.id}-tool-result-archive
+      name: 'cordis:tool-result-archive-blob'
+      config:
+        backendId: file
+    - id: ${options.id}-tool-output-artifacts
+      name: 'cordis:tool-output-artifacts-blob'
+      config:
+        backendId: file
+    - id: ${options.id}-model-catalog-storage
+      name: 'cordis:model-catalog-storage'
+      config:
+        backendId: file
+    - id: ${options.id}-session-persistence
+      name: 'cordis:session-file'
     - id: ${options.id}-sessions
       name: 'cordis:sessions'
       config:
         dataDirectory: ${JSON.stringify(options.dataDirectory)}
+    - id: ${options.id}-workspace
+      name: 'cordis:workspace-local'
+    - id: ${options.id}-approval
+      name: 'cordis:approval-hub'
+    - id: ${options.id}-approval-rules
+      name: 'cordis:approval-rules-storage'
+      config:
+        backendId: file
+    - id: ${options.id}-filesystem
+      name: 'cordis:filesystem-local'
+    - id: ${options.id}-filesystem-search
+      name: 'cordis:filesystem-search-local'
+    - id: ${options.id}-shell
+      name: 'cordis:shell-linux-native'
+    - id: ${options.id}-sandbox-policy
+      name: 'cordis:sandbox-policy-default'
+    - id: ${options.id}-permissions
+      name: 'cordis:permissions-default'
     - id: ${options.id}-models
       name: 'cordis:models'
     - id: ${options.id}-${options.adapter}

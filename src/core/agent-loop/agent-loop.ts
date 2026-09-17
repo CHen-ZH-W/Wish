@@ -27,6 +27,7 @@ import type {
 import type {
   AgentLoopEnvironmentResolver,
   AgentLoopInputRenderer,
+  AgentLoopInputSource,
   AgentLoopMemory,
   AgentLoopResult,
   AgentLoopStepEnvironment,
@@ -37,8 +38,10 @@ export type {
   AgentLoopContextEnvironment,
   AgentLoopEnvironmentResolver,
   AgentLoopInputRenderer,
+  AgentLoopInputSource,
   AgentLoopMemory,
   AgentLoopRequestOptions,
+  AgentLoopRequestView,
   AgentLoopResult,
   AgentLoopStepEnvironment,
   AgentLoopToolEnvironment,
@@ -75,6 +78,7 @@ interface PreparedMemory {
   readonly prior?: AgentLoopMemory;
   readonly messages: readonly ModelMessage[];
   readonly currentUserMessageIndex: number;
+  readonly currentInputSource: AgentLoopInputSource;
   readonly usage?: ModelUsage;
 }
 
@@ -132,6 +136,7 @@ export class AgentLoop<
       model,
       messages: prepared.messages,
       currentUserMessageIndex: prepared.currentUserMessageIndex,
+      currentInputSource: prepared.currentInputSource,
       ...(prepared.usage === undefined ? {} : { usage: prepared.usage }),
     });
 
@@ -163,6 +168,9 @@ export class AgentLoop<
         ...(environment.request?.maxOutputTokens === undefined
           ? {}
           : { maxOutputTokens: environment.request.maxOutputTokens }),
+        ...(environment.request?.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: environment.request.reasoningEffort }),
         ...(environment.request?.metadata === undefined
           ? {}
           : { metadata: environment.request.metadata }),
@@ -170,7 +178,16 @@ export class AgentLoop<
       projection = await this.options.context.projectFromProviders({
         request,
         providers: environment.context.providers,
-        providerInput: environment.context.input,
+        providerInput: environment.context.projectInput === undefined
+          ? environment.context.input
+          : environment.context.projectInput(Object.freeze({
+            input: environment.context.input,
+            request: Object.freeze({
+              currentMessage: memory.messages[memory.currentUserMessageIndex]!,
+              source: memory.currentInputSource ?? "unknown",
+              availableTools: Object.freeze(request.tools.map((tool) => tool.name)),
+            }),
+          })),
         currentUserMessageIndex: memory.currentUserMessageIndex,
         signal: input.signal,
       });
@@ -299,6 +316,7 @@ export class AgentLoop<
         model,
         messages,
         currentUserMessageIndex: memory.currentUserMessageIndex,
+        currentInputSource: memory.currentInputSource ?? "unknown",
         ...((memory.usage === undefined && output.usage === undefined)
           ? {}
           : { usage: addUsage(memory.usage, output.usage) }),
@@ -341,17 +359,22 @@ export class AgentLoop<
         }))]
       : [...existing.messages];
     let currentUserMessageIndex = existing?.currentUserMessageIndex ?? 0;
+    let currentInputSource = existing === undefined
+      ? validateInputSource(input.snapshot.userTurn.inputSource ?? "unknown")
+      : existing.currentInputSource ?? "unknown";
     for (const message of input.snapshot.steering) {
       messages.push(validateUserMessage(await this.options.input.renderSteering({
         message,
         snapshot: input.snapshot,
       })));
       currentUserMessageIndex = messages.length - 1;
+      currentInputSource = "steering";
     }
     return Object.freeze({
       ...(existing === undefined ? {} : { prior: existing }),
       messages: Object.freeze(messages),
       currentUserMessageIndex,
+      currentInputSource,
       ...(existing?.usage === undefined ? {} : { usage: existing.usage }),
     });
   }
@@ -535,8 +558,19 @@ function freezeMemory(memory: AgentLoopMemory): AgentLoopMemory {
     model: freezeModelRef(memory.model),
     messages: Object.freeze(memory.messages.map(freezeMessage)),
     currentUserMessageIndex: memory.currentUserMessageIndex,
+    ...(memory.currentInputSource === undefined
+      ? {}
+      : { currentInputSource: validateInputSource(memory.currentInputSource) }),
     ...(memory.usage === undefined ? {} : { usage: freezeUsage(memory.usage) }),
   });
+}
+
+function validateInputSource(source: AgentLoopInputSource): AgentLoopInputSource {
+  if (
+    source !== "user" && source !== "steering" &&
+    source !== "follow_up" && source !== "unknown"
+  ) throw new Error("Unknown AgentLoop input source");
+  return source;
 }
 
 function validateEnvironment<ContextInput, ToolContext>(

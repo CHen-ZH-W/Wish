@@ -7,6 +7,12 @@ export type AgentRunId = string;
 /** Stable identity for one UserTurn inside a Run. */
 export type UserTurnId = string;
 
+/** Host-declared provenance, separate from message role and untrusted payload. */
+export type RunInputSource = "user" | "follow_up" | "unknown";
+
+/** Input delivery provenance; this is not an authorization grant. */
+export type AgentInputSource = RunInputSource | "steering";
+
 /** Transport-neutral data that adapters may attach to public DTOs. */
 export type AgentMetadata = Readonly<Record<string, unknown>>;
 
@@ -30,6 +36,8 @@ export interface AgentDefinition<Configuration = unknown> {
 export interface RunInput<Payload = unknown> {
   readonly scope: string;
   readonly payload: Payload;
+  /** Omitted inputs retain unknown provenance; adapters must opt in explicitly. */
+  readonly inputSource?: RunInputSource;
   readonly runId?: AgentRunId;
   readonly parentRunId?: AgentRunId;
   readonly metadata?: AgentMetadata;

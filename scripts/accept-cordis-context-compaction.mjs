@@ -17,6 +17,12 @@ import ContextEngine, {
 import * as ModelPlugins from "../dist/models/plugins.js";
 import Models from "../dist/models/service.js";
 import Sessions from "../dist/sessions/service.js";
+import { StorageHub } from "../dist/storage/index.js";
+import FileStorage from "../dist/storage/providers/file/plugin.js";
+import FileSessionPersistence from
+  "../dist/sessions/providers/file/plugin.js";
+import BlobToolResultArchiveProvider from
+  "../dist/tools/results/providers/blob.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const fiberState = Object.freeze({ pending: 0, active: 2, disposed: 4 });
@@ -48,6 +54,13 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
   let contextProvider;
   let compactionProvider;
   try {
+    await root.plugin(StorageHub);
+    await root.plugin(FileStorage, {
+      id: "file",
+      rootDirectory: "./storage",
+    });
+    await root.plugin(BlobToolResultArchiveProvider, { backendId: "file" });
+    await root.plugin(FileSessionPersistence);
     await root.plugin(Sessions, { dataDirectory: "./state" });
     await root.plugin(Models);
     await root.plugin(ModelPlugins.OpenAIChatCompletions);
@@ -72,6 +85,16 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
     const models = root.models.open(configuration, {
       fetch: async () => new Response(),
     });
+    const dynamicContext = root.plugin({
+      inject: ["contextEngine"],
+      apply(ctx) {
+        ctx.contextEngine.registerProvider({
+          id: "fixture-dynamic",
+          provide() { return []; },
+        });
+      },
+    });
+    await dynamicContext.await();
     const context = root.contextEngine.open({
       dataDirectory: join(directory, "state"),
       agentInstructions: [],
@@ -85,9 +108,31 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
       summaryMaxOutputTokens: 128,
     });
     assert.equal(context.configuration.reservedOutputTokens, 256);
+    assert.deepEqual(context.configuration.providerOrder, [
+      "instructions",
+      "history",
+      "state",
+      "fixture-dynamic",
+    ]);
     assert.equal(typeof context.forStep, "function");
+    assert.equal(context.released, false);
     assert.equal(compactor.keepRecentTokens, 512);
     assert.equal(typeof compactor.compact, "function");
+    assert.equal(context.release(), true);
+    assert.equal(context.release(), false);
+    await dynamicContext.dispose();
+    const withoutDynamic = root.contextEngine.open({
+      dataDirectory: join(directory, "state"),
+      agentInstructions: [],
+      models,
+      configuration: { reservedOutputTokens: 256 },
+    });
+    assert.deepEqual(withoutDynamic.configuration.providerOrder, [
+      "instructions",
+      "history",
+      "state",
+    ]);
+    withoutDynamic.release();
 
     const firstContextEngine = root.contextEngine;
     await contextProvider.update({ reservedOutputTokens: 384 });
@@ -275,7 +320,7 @@ test("schemas reject invalid generations and AgentLoop consumes capabilities", a
     "utf8",
   );
   const agentLoopSource = await readFile(
-    join(repositoryRoot, "src/core/agent-loop/service.ts"),
+    join(repositoryRoot, "src/composition/agent-loop-service.ts"),
     "utf8",
   );
   for (const construction of [
@@ -291,11 +336,22 @@ test("schemas reject invalid generations and AgentLoop consumes capabilities", a
   assert.match(agentLoopSource, /this\.ctx\.contextEngine\.open/u);
   assert.match(agentLoopSource, /this\.ctx\.compaction\.open/u);
 
-  const runtimeSource = await readFile(
-    join(repositoryRoot, "src/core/runtime/service.ts"),
+  const contextEngineSource = await readFile(
+    join(repositoryRoot, "src/context/service.ts"),
     "utf8",
   );
-  assert.match(runtimeSource, /this\.ctx\.agentLoop\.open/u);
+  assert.doesNotMatch(contextEngineSource, /new FileToolResultArchive/u);
+  assert.match(contextEngineSource, /this\.ctx\.toolResultArchive\.open/u);
+  assert.match(
+    contextEngineSource,
+    /inject = \["sessions", "models", "toolResultArchive"\]/u,
+  );
+
+  const runtimeSource = await readFile(
+    join(repositoryRoot, "src/composition/runtime-service.ts"),
+    "utf8",
+  );
+  assert.match(runtimeSource, /this\.ctx\.get\("agentLoop"\)/u);
 
   const applicationServiceSource = await readFile(
     join(repositoryRoot, "src/apps/service.ts"),

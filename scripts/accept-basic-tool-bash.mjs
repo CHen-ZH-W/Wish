@@ -1,19 +1,45 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { ToolExecutor } from "../dist/core/tools/executor.js";
 import { ToolRegistry } from "../dist/core/tools/registry.js";
-import { createBashTool } from "../dist/tools/basic/bash.js";
+import { LocalFilesystemBackend } from
+  "../dist/filesystem/providers/local.js";
+import { HostShellBackend } from "../dist/shell/providers/host.js";
+import { createBashTool } from "../dist/shell/consumers/model-tool.js";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
-} from "../dist/tools/support/truncate.js";
+} from "../dist/tools/presentation/truncate.js";
+import { basicToolContext } from "./support/basic-tool-context.mjs";
 
 const scope = Object.freeze({ runId: "run", userTurnId: "turn", stepId: "step" });
 let callOrdinal = 0;
+
+function memoryArtifactStore() {
+  const values = new Map();
+  let ordinal = 0;
+  return {
+    async put(request) {
+      const locator = `memory-artifact:${++ordinal}`;
+      values.set(locator, Buffer.from(request.value));
+      return Object.freeze({
+        kind: "blob",
+        locator,
+        metadata: Object.freeze({
+          mediaType: request.mediaType,
+          bytes: request.value.byteLength,
+        }),
+      });
+    },
+    async get(request) {
+      return values.get(request.artifact.locator);
+    },
+  };
+}
 
 async function executeBash(definition, input, options = {}) {
   const registry = new ToolRegistry();
@@ -39,48 +65,47 @@ async function executeBash(definition, input, options = {}) {
   });
   return await executor.execute({
     call: parsed.call,
-    context: { cwd: options.cwd ?? "/workspace" },
+    context: options.context ?? basicToolContext(options.cwd ?? "/workspace"),
     scope,
     snapshot,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 }
 
-test("defines the exact Bash schema, scheduling, recovery, and capability", () => {
+test("defines Bash scheduling, recovery, explicit authority, and safe defaults", () => {
   const definition = createBashTool();
   assert.equal(definition.name, "bash");
   assert.equal(definition.executionMode, "sequential");
   assert.equal(definition.recoveryPolicy, "needs-reconciliation");
-  assert.deepEqual(JSON.parse(definition.inputSchemaJson), {
-    type: "object",
-    properties: {
-      command: {
-        type: "string",
-        description: "Shell command to execute",
-      },
-      timeout: {
-        type: "number",
-        exclusiveMinimum: 0,
-        description: "Optional timeout in seconds; omitted means no timeout",
-      },
-    },
-    required: ["command"],
-    additionalProperties: false,
-  });
+  const schema = JSON.parse(definition.inputSchemaJson);
+  assert.deepEqual(schema.required, ["command"]);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.properties.permissions.required, [
+    "filesystem",
+    "network",
+    "externalSideEffect",
+    "destructive",
+  ]);
   assert.deepEqual(
     definition.resolveCapabilities({ command: "printf hello" }, { cwd: "/workspace" }),
     {
-      requirements: [{ capability: "process.exec" }],
+      requirements: [
+        {
+          capability: "process.exec",
+          commands: ["printf hello"],
+          cwd: "/workspace",
+        },
+        { capability: "filesystem.read", paths: ["."] },
+        { capability: "filesystem.write", paths: ["."] },
+      ],
+      effects: { destructive: false, openWorld: false },
     },
   );
 });
 
 test("accepts only command and an optional positive timeout in seconds", () => {
   const definition = createBashTool();
-  assert.deepEqual(definition.parse({ command: "" }), {
-    ok: true,
-    input: { command: "" },
-  });
+  assert.equal(definition.parse({ command: "" }).ok, false);
   assert.equal(definition.parse({}).ok, false);
   assert.equal(definition.parse({ command: "pwd", timeout: 0 }).ok, false);
   assert.equal(definition.parse({ command: "pwd", timeout: -1 }).ok, false);
@@ -89,10 +114,19 @@ test("accepts only command and an optional positive timeout in seconds", () => {
     definition.parse({ command: "pwd", cwd: "/tmp" }).message,
     /unsupported field "cwd"/u,
   );
-  assert.match(
-    definition.parse({ command: "pwd", permissions: ["network"] }).message,
-    /unsupported field "permissions"/u,
+  assert.equal(
+    definition.parse({ command: "pwd", permissions: ["network"] }).ok,
+    false,
   );
+  assert.equal(definition.parse({
+    command: "pwd",
+    permissions: {
+      filesystem: { read: ["src"], write: [] },
+      network: false,
+      externalSideEffect: false,
+      destructive: false,
+    },
+  }).ok, true);
 });
 
 test("uses the context cwd and passes timeout, signal, and merged data callback", async () => {
@@ -115,7 +149,17 @@ test("uses the context cwd and passes timeout, signal, and merged data callback"
       signal: controller.signal,
       onAuthorize(input) {
         assert.deepEqual(input.capabilities, {
-          requirements: [{ capability: "process.exec" }],
+          requirements: [
+            {
+              capability: "process.exec",
+              commands: ["run command"],
+              cwd: "/work/project",
+              timeoutSeconds: 2.5,
+            },
+            { capability: "filesystem.read", paths: ["."] },
+            { capability: "filesystem.write", paths: ["."] },
+          ],
+          effects: { destructive: false, openWorld: false },
         });
       },
     },
@@ -143,7 +187,7 @@ test("returns a stable empty-output marker and accepts a null exit code", async 
         },
       },
     }),
-    { command: "" },
+    { command: "true" },
   );
   assert.equal(result.ok, true);
   assert.deepEqual(result.output, {
@@ -172,13 +216,15 @@ test("non-zero exits fail with the retained output and exit metadata", async () 
   assert.equal(result.error.details.output, result.error.message);
 });
 
-test("tail truncation stores complete output in a temporary artifact", async () => {
+test("tail truncation stores complete output through the artifact seam", async () => {
   const fullOutput = Array.from(
     { length: DEFAULT_MAX_LINES + 1 },
     (_, index) => `line-${index + 1}`,
   ).join("\n");
+  const artifacts = memoryArtifactStore();
   const result = await executeBash(
     createBashTool({
+      artifacts,
       operations: {
         async exec(_command, _cwd, options) {
           options.onData(Buffer.from(fullOutput));
@@ -192,22 +238,22 @@ test("tail truncation stores complete output in a temporary artifact", async () 
   assert.equal(result.ok, true);
   assert.equal(result.output.truncation.truncatedBy, "lines");
   assert.equal(result.output.truncation.totalLines, DEFAULT_MAX_LINES + 1);
-  assert.equal(result.output.artifact.kind, "file");
+  assert.equal(result.output.artifact.kind, "blob");
   assert.equal(result.output.artifact.metadata.bytes, Buffer.byteLength(fullOutput));
-  try {
-    assert.equal(await readFile(result.output.artifact.locator, "utf8"), fullOutput);
-    assert.equal((await stat(result.output.artifact.locator)).mode & 0o777, 0o600);
-    assert.match(result.output.content[0].text, /line-2/u);
-    assert.match(result.output.content[0].text, /Full output:/u);
-  } finally {
-    await rm(result.output.artifact.locator, { force: true });
-  }
+  assert.equal(
+    Buffer.from(await artifacts.get({ artifact: result.output.artifact })).toString("utf8"),
+    fullOutput,
+  );
+  assert.match(result.output.content[0].text, /line-2/u);
+  assert.match(result.output.content[0].text, /Full output:/u);
 });
 
 test("byte truncation preserves a UTF-8-safe tail and the complete artifact", async () => {
   const fullOutput = "🙂".repeat(DEFAULT_MAX_BYTES);
+  const artifacts = memoryArtifactStore();
   const result = await executeBash(
     createBashTool({
+      artifacts,
       operations: {
         async exec(_command, _cwd, options) {
           const buffer = Buffer.from(fullOutput);
@@ -228,11 +274,30 @@ test("byte truncation preserves a UTF-8-safe tail and the complete artifact", as
     Buffer.byteLength(result.output.content[0].text, "utf8") <= DEFAULT_MAX_BYTES,
     true,
   );
-  try {
-    assert.equal(await readFile(result.output.artifact.locator, "utf8"), fullOutput);
-  } finally {
-    await rm(result.output.artifact.locator, { force: true });
-  }
+  assert.equal(
+    Buffer.from(await artifacts.get({ artifact: result.output.artifact })).toString("utf8"),
+    fullOutput,
+  );
+});
+
+test("artifact capture is bounded and fails closed without local temp files", async () => {
+  const artifacts = memoryArtifactStore();
+  const result = await executeBash(
+    createBashTool({
+      artifacts,
+      maxArtifactBytes: 10,
+      operations: {
+        async exec(_command, _cwd, options) {
+          options.onData(Buffer.alloc(DEFAULT_MAX_BYTES + 1, 0x61));
+          return { exitCode: 0 };
+        },
+      },
+    }),
+    { command: "large" },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.output.artifact, undefined);
+  assert.match(result.output.content[0].text, /artifact unavailable/u);
 });
 
 test("timeout and abort return their stable Tool errors", async () => {
@@ -280,13 +345,21 @@ test("timeout and abort return their stable Tool errors", async () => {
   assert.equal(aborted.error.message, "bash cancelled");
 });
 
-test("the local backend merges output and executes in BasicToolContext.cwd", async () => {
+test("the explicit Host Shell merges output and executes in BasicToolContext.cwd", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-bash-local-"));
+  const filesystem = new LocalFilesystemBackend();
+  const shell = new HostShellBackend(filesystem, { enabled: true });
   try {
     const result = await executeBash(
-      createBashTool(),
+      createBashTool({ shell }),
       { command: "printf 'stdout\\n'; printf 'stderr\\n' >&2; pwd" },
-      { cwd: directory },
+      {
+        context: basicToolContext(directory, {
+          filesystem,
+          shell,
+          profile: "full-access",
+        }),
+      },
     );
     assert.equal(result.ok, true);
     assert.match(result.output.content[0].text, /stdout/u);
@@ -303,16 +376,24 @@ test("the local timeout kills the shell's complete process tree", async (context
     return;
   }
   const directory = await mkdtemp(join(tmpdir(), "wish-bash-tree-"));
+  const filesystem = new LocalFilesystemBackend();
+  const shell = new HostShellBackend(filesystem, { enabled: true });
   const marker = join(directory, "descendant-survived.txt");
   try {
     const result = await executeBash(
-      createBashTool(),
+      createBashTool({ shell }),
       {
         command:
           `(sleep 0.25; printf survived > ${shellQuote(marker)}) & wait`,
         timeout: 0.05,
       },
-      { cwd: directory },
+      {
+        context: basicToolContext(directory, {
+          filesystem,
+          shell,
+          profile: "full-access",
+        }),
+      },
     );
     assert.equal(result.ok, false);
     assert.equal(result.error.code, "timeout");

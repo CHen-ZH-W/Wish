@@ -1,4 +1,4 @@
-import type { AgentDefinition } from "../agent/types.js";
+import type { AgentDefinition, AgentInputSource } from "../agent/types.js";
 import type { ContextProvider } from "../context/context.js";
 import type {
   ModelMessage,
@@ -17,7 +17,19 @@ export interface AgentLoopMemory {
   readonly model: ModelRef;
   readonly messages: readonly ModelMessage[];
   readonly currentUserMessageIndex: number;
+  /** Old transcript snapshots without provenance remain unknown. */
+  readonly currentInputSource?: AgentLoopInputSource;
   readonly usage?: ModelUsage;
+}
+
+/** Steering denotes delivery, not authenticated human intent or permission. */
+export type AgentLoopInputSource = AgentInputSource;
+
+/** Frozen model-visible facts captured after rendering and Tool filtering. */
+export interface AgentLoopRequestView {
+  readonly currentMessage: ModelMessage;
+  readonly source: AgentLoopInputSource;
+  readonly availableTools: readonly string[];
 }
 
 /** Successful terminal value produced by the default Agent Step pipeline. */
@@ -43,6 +55,11 @@ export interface AgentLoopInputRenderer<Payload = unknown> {
 export interface AgentLoopContextEnvironment<ContextInput = unknown> {
   readonly providers: readonly ContextProvider<ContextInput>[];
   readonly input: ContextInput;
+  /** Optional host projection; existing static Provider inputs remain valid. */
+  readonly projectInput?: (input: {
+    readonly input: ContextInput;
+    readonly request: AgentLoopRequestView;
+  }) => ContextInput;
 }
 
 export interface AgentLoopToolEnvironment<ToolContext = unknown> {
@@ -55,6 +72,7 @@ export interface AgentLoopToolEnvironment<ToolContext = unknown> {
 export interface AgentLoopRequestOptions {
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
+  readonly reasoningEffort?: string;
   readonly metadata?: ModelMetadata;
 }
 

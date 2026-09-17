@@ -1,0 +1,43 @@
+{
+  "src/index.ts": {
+    "before": "5d9ea00ede52a1b03abbf10a0df75d886403debe25a2a0495c6814dc6842220b",
+    "after": "3cbb38cd3f6b27ecf6523a70575f13dd9d6b3070e198a05233aba573b64bc763",
+    "previous": "b05c4e44a00849145f37d21e3190a297b4cfc8697bf1b095dfcfe185f8b534b7",
+    "upgrade": [
+      {
+        "from": "static readonly coordinationVersion = 2",
+        "to": "static readonly coordinationVersion = 3"
+      },
+      {
+        "from": "        await Promise.all(fibers.map(fiber => fiber.await()))",
+        "to": "        await Promise.all(fibers.map(fiber => fiber.await()))\n        // A dependent may initially be PENDING while an asynchronous Provider\n        // initializes. Settle Loader's full lifecycle graph before validation.\n        await this.ctx.loader.await()"
+      }
+    ]
+  },
+  "lib/index.js": {
+    "before": "7ec3296a902154a2b9906dceb4d81b996ff4c8373709e116ea8dac69058ee2b1",
+    "after": "f3059b1941a0f47ae01641a09605335473c968239682088977c4caafde386a29",
+    "previous": "934afbc3723a4683d0f7b342d30224df80b323885b4cf2624c155a8ce227d085",
+    "upgrade": [
+      {
+        "from": "static coordinationVersion = 2",
+        "to": "static coordinationVersion = 3"
+      },
+      {
+        "from": "          await Promise.all(fibers.map((fiber) => fiber.await()));",
+        "to": "          await Promise.all(fibers.map((fiber) => fiber.await()));\n          // Settle dependent PENDING -> LOADING -> ACTIVE transitions as well.\n          await this.ctx.loader.await();"
+      }
+    ]
+  },
+  "lib/types/index.d.ts": {
+    "before": "7a7d64c5630d7fab2a8675166c317c10ed67ca50d83556781d46dd07f85684eb",
+    "after": "e3b0a92eba9cd0997ec71f7fedace81057c0b2a29f131c7d85fcfd0162e0e977",
+    "previous": "a8229bc95ea7a6639e0b41635e73a424ab1ace4d6e321ef51e28b79a42452a37",
+    "upgrade": [
+      {
+        "from": "static readonly coordinationVersion = 2",
+        "to": "static readonly coordinationVersion = 3"
+      }
+    ]
+  }
+}

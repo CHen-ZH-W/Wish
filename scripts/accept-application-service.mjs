@@ -9,27 +9,44 @@ import { Context } from "@deepseek-ai/cordis";
 
 import { createWishCli } from "../dist/apps/cli/index.js";
 import Application from "../dist/apps/service.js";
-import Agents from "../dist/core/agent/service.js";
-import AgentLoop from "../dist/core/agent-loop/service.js";
+import Agents from "../dist/composition/agent-service.js";
+import AgentLoop from "../dist/composition/agent-loop-service.js";
 import { bootstrap, BootstrapError } from "../dist/boot/bootstrap.js";
 import Compaction from "../dist/compaction/service.js";
 import ContextEngine from "../dist/context/service.js";
 import Models from "../dist/models/service.js";
-import Runtime from "../dist/core/runtime/service.js";
+import Runtime from "../dist/composition/runtime-service.js";
 import Sessions from "../dist/sessions/service.js";
+import { StorageHub } from "../dist/storage/index.js";
+import FileStorage from "../dist/storage/providers/file/plugin.js";
+import JournalRuntimeLifecycleProvider from
+  "../dist/core/runtime/durability/providers/journal.js";
+import FileSessionPersistence from
+  "../dist/sessions/providers/file/plugin.js";
+import BlobToolResultArchiveProvider from
+  "../dist/tools/results/providers/blob.js";
 import Tools from "../dist/tools/service.js";
+import LocalWorkspace from "../dist/workspace/providers/local.js";
+import ApprovalHub from "../dist/approval/service.js";
+import StorageApprovalRules from
+  "../dist/permissions/rules/providers/storage.js";
+import DefaultPermissions from "../dist/permissions/providers/default.js";
+import LocalFilesystem from "../dist/filesystem/providers/local.js";
+import LinuxNativeShell from "../dist/shell/providers/linux-native.js";
+import DefaultSandboxPolicy from "../dist/sandbox/providers/default.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const fiberState = Object.freeze({ pending: 0, active: 2, disposed: 4 });
 
 test("Application service is the only production composition boundary", async () => {
-  const [facade, service, cliPlugin, webUiPlugin, bootstrapSource, profile] =
+  const [facade, service, cliPlugin, webUiPlugin, bootstrapSource, catalogSource, profile] =
     await Promise.all([
       readFile(join(repositoryRoot, "src/apps/application.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/apps/service.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/apps/cli/plugin.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/apps/webui/plugin.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/boot/bootstrap.ts"), "utf8"),
+      readFile(join(repositoryRoot, "src/boot/plugin-catalog.ts"), "utf8"),
       readFile(join(repositoryRoot, "config/cordis.yml"), "utf8"),
     ]);
 
@@ -42,13 +59,17 @@ test("Application service is the only production composition boundary", async ()
   await assert.rejects(access(join(repositoryRoot, "src/apps/legacy/plugin.ts")));
   assert.match(service, /export class Application extends Service/u);
   assert.match(service, /return new ApplicationFacade\(/u);
-  assert.match(cliPlugin, /inject = \["launch", "application"\]/u);
-  assert.match(webUiPlugin, /inject = \["launch", "application"\]/u);
+  assert.match(cliPlugin, /inject = \["launch", "approval", "application"\]/u);
+  assert.match(
+    webUiPlugin,
+    /inject = \["launch", "approval", "approvalRules", "application"\]/u,
+  );
   assert.match(
     service,
-    /"launch",\s+"sessions",\s+"models",\s+"contextEngine",\s+"compaction",\s+"agents"/u,
+    /"launch",\s+"sessions",\s+"models",\s+"contextEngine",\s+"compaction",\s+"runtimeLifecycle",\s+"agents"/u,
   );
-  assert.match(bootstrapSource, /builtins\.application = Application/u);
+  assert.match(bootstrapSource, /installWishPluginCatalog/u);
+  assert.match(catalogSource, /"application": "\.\.\/apps\/service\.js"/u);
   assert.match(profile, /id: application\s+name: 'cordis:application'/u);
   assert.ok(profile.indexOf("id: agents") < profile.indexOf("id: application"));
   assert.ok(profile.indexOf("id: application") < profile.indexOf("id: cli"));
@@ -74,7 +95,22 @@ test("Application availability drives consumer PENDING, disposal, and reactivati
     environment: {},
   });
   await root.plugin(Tools);
+  await root.plugin(StorageHub);
+  await root.plugin(FileStorage, {
+    id: "file",
+    rootDirectory: ".wish/storage",
+  });
+  await root.plugin(JournalRuntimeLifecycleProvider, { backendId: "file" });
+  await root.plugin(BlobToolResultArchiveProvider, { backendId: "file" });
+  await root.plugin(FileSessionPersistence);
   await root.plugin(Sessions, { dataDirectory: ".wish" });
+  await root.plugin(LocalWorkspace);
+  await root.plugin(ApprovalHub);
+  await root.plugin(StorageApprovalRules, { backendId: "file" });
+  await root.plugin(LocalFilesystem);
+  await root.plugin(LinuxNativeShell);
+  await root.plugin(DefaultSandboxPolicy);
+  await root.plugin(DefaultPermissions);
   await root.plugin(Models);
   await root.plugin(ContextEngine);
   await root.plugin(Compaction);
@@ -131,7 +167,7 @@ test("the real CLI surface cannot boot without the Application service", async (
       }),
       (error) =>
         error instanceof BootstrapError &&
-        /pending \(waiting for application\)/u.test(error.message),
+        /pending \(waiting for approval, application\)/u.test(error.message),
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

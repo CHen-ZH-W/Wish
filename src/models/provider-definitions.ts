@@ -74,7 +74,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS: readonly BuiltInProviderDefinition[]
       protocol: "openai-chat-completions",
       baseUrl: "https://api.deepseek.com",
       auth: bearer("DEEPSEEK_API_KEY"),
-      defaultModel: "deepseek-v4-flash",
+      defaultModel: "deepseek-flash",
       request: Object.freeze({
         streamUsage: true,
         supportsTemperature: false,

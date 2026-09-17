@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { loadModelsConfiguration } from "../dist/models/config.js";
+import { loadModelsConfiguration, resolveConfiguredModel } from "../dist/models/config.js";
 import { createDefaultModelAdapterRegistry } from "../dist/models/registry.js";
 import { ConfiguredModel } from "../dist/models/runtime.js";
+import { mapAnthropicRequest } from "../dist/models/providers/anthropic-messages-request.js";
+import { mapOpenAIRequest } from "../dist/models/providers/openai-compatible-request.js";
+import { mapOpenAIResponsesRequest } from "../dist/models/providers/openai-responses-request.js";
 
 async function collect(iterable) {
   const events = [];
@@ -83,6 +86,42 @@ function request(provider, messages, overrides = {}) {
     ...overrides,
   };
 }
+
+test("request adapters use model defaults, not capability ceilings", () => {
+  const user = [{ role: "user", content: "hello" }];
+  for (const [protocol, map, field] of [
+    ["openai-chat-completions", mapOpenAIRequest, "max_tokens"],
+    ["openai-responses", mapOpenAIResponsesRequest, "max_output_tokens"],
+    ["anthropic-messages", mapAnthropicRequest, "max_tokens"],
+  ]) {
+    const provider = protocol === "anthropic-messages" ? "anthropic" : "openai";
+    const configured = configuration(protocol, { maxTokensField: field });
+    const model = resolveConfiguredModel(configured, `${provider}/model-a`);
+    const input = { model, headers: {}, fetch: async () => new Response() };
+    const withoutLimit = request(provider, user, { tools: [], maxOutputTokens: undefined });
+    const mapped = map(withoutLimit, input);
+    if (protocol === "anthropic-messages") assert.equal(mapped.body[field], 2048, "required protocol fallback respects the model ceiling");
+    else assert.equal(field in mapped.body, false, "optional request limit is omitted");
+    const withDefault = { ...input, model: { ...model, spec: { ...model.spec, defaultMaxOutputTokens: 1024 } } };
+    assert.equal(map(withoutLimit, withDefault).body[field], 1024);
+    assert.equal(map({ ...withoutLimit, maxOutputTokens: 512 }, withDefault).body[field], 512);
+  }
+});
+
+test("advertised DeepSeek reasoning efforts override only one request", () => {
+  const configuration = loadModelsConfiguration({ environment: {} });
+  const model = resolveConfiguredModel(configuration, "deepseek/deepseek-flash");
+  const input = { model, headers: {}, fetch: async () => new Response() };
+  const base = { model: model.ref, messages: [{ role: "user", content: "hello" }], tools: [] };
+  assert.deepEqual(model.spec.reasoningControl?.efforts, ["none", "low", "high", "max"]);
+  assert.equal(mapOpenAIRequest(base, input).body.reasoning_effort, "high");
+  assert.equal(mapOpenAIRequest({ ...base, reasoningEffort: "low" }, input).body.reasoning_effort, "low");
+  assert.equal(mapOpenAIRequest({ ...base, reasoningEffort: "max" }, input).body.reasoning_effort, "max");
+  const disabled = mapOpenAIRequest({ ...base, reasoningEffort: "none" }, input).body;
+  assert.deepEqual(disabled.thinking, { type: "disabled" });
+  assert.equal("reasoning_effort" in disabled, false);
+  assert.throws(() => mapOpenAIRequest({ ...base, reasoningEffort: "ultra" }, input), /not supported/u);
+});
 
 test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", async () => {
   let captured;

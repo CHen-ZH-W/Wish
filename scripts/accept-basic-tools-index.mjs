@@ -6,7 +6,7 @@ import {
   BASIC_TOOL_NAMES,
   createBasicToolResultRenderer,
   registerBasicTools,
-} from "wish/tools";
+} from "wish/composition/coding-tools";
 
 const scope = Object.freeze({ runId: "run", userTurnId: "turn", stepId: "step" });
 

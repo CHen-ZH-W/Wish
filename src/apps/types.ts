@@ -4,12 +4,15 @@ import type {
   AgentRunId,
   ObserveOptions,
   RunHandle,
+  RunInputSource,
 } from "../core/agent/agent.js";
 import type {
   AgentLoopResult,
 } from "../core/agent-loop/agent-loop.js";
 import type { OutputEvent } from "../core/events/event.js";
 import type { ModelRef } from "../core/model/model.js";
+import type { ModelReasoningEffort } from "../models/types.js";
+import type { SessionReasoningPort } from "../models/session-reasoning.js";
 import type {
   RunCompletion,
   RuntimeAgentProtocol,
@@ -19,11 +22,18 @@ import type {
 } from "../core/runtime/runtime.js";
 import type { RunGeneration } from "../core/runtime/generation.js";
 import type {
+  ResolveRuntimeReconciliationRequest,
+  RuntimeReconciliationCommit,
+  RuntimeLifecycleStartupSnapshot,
+} from "../core/runtime/durability/types.js";
+import type {
   ContextInstruction,
-  ContextWorkspaceFacts,
 } from "../context/types.js";
+import type { AgentPermissionConfiguration } from "../permissions/index.js";
 import type {
   ArchiveSessionInput,
+  RestoreSessionInput,
+  DeleteSessionInput,
   GetSessionInput,
   ListSessionsInput,
   ReadSessionHistoryInput,
@@ -36,6 +46,8 @@ import type {
 /** Configuration owned by one shared Wish Agent definition. */
 export interface WishAgentConfiguration {
   readonly agentInstructions: readonly ContextInstruction[];
+  /** Optional for legacy embedders; product Agent definitions always set it. */
+  readonly permissions?: AgentPermissionConfiguration;
 }
 
 /** Transport-neutral input shared by an initial Run and follow-up UserTurns. */
@@ -43,6 +55,8 @@ export interface WishRunPayload {
   readonly text: string;
   /** Optional Run-level selection; the AgentLoop fixes it at the first Step. */
   readonly model?: ModelRef;
+  /** Fixed at new-Run admission; follow-up and steering cannot change it. */
+  readonly reasoningEffort?: ModelReasoningEffort;
 }
 
 export type WishAgentProtocol = RuntimeAgentProtocol<
@@ -73,6 +87,8 @@ export interface CreateWishSessionInput {
 export interface StartWishRunInput {
   readonly sessionId: SessionId;
   readonly payload: WishRunPayload;
+  /** Trusted adapter metadata, never inferred from payload text or model role. */
+  readonly inputSource?: RunInputSource;
   readonly runId?: AgentRunId;
   readonly metadata?: AgentMetadata;
   /** Cancels only the asynchronous Session/model preflight before Runtime starts. */
@@ -81,12 +97,12 @@ export interface StartWishRunInput {
 
 export type ListWishSessionsInput = Omit<ListSessionsInput, "agentId">;
 
-/** Resolves fresh Context/Tool workspace facts for an immutable Step. */
-export interface WishWorkspaceResolver {
-  resolve(input: {
-    readonly session: Session;
-    readonly signal: AbortSignal;
-  }): Promise<ContextWorkspaceFacts> | ContextWorkspaceFacts;
+/** Narrow management surface; it does not expose Runtime lifecycle writes. */
+export interface WishRuntimeRecovery {
+  snapshot(signal?: AbortSignal): Promise<RuntimeLifecycleStartupSnapshot>;
+  resolve(
+    request: ResolveRuntimeReconciliationRequest,
+  ): Promise<RuntimeReconciliationCommit>;
 }
 
 /**
@@ -94,15 +110,21 @@ export interface WishWorkspaceResolver {
  * Product entrypoints obtain it from the Loader-managed Application service.
  */
 export interface WishApplication {
+  readonly sessionFeatures?: import("./session-features.js").SessionFeatures;
+  readonly sessionReasoning?: SessionReasoningPort;
   readonly agentId: AgentId;
   /** Lifecycle owner of Runs admitted by a Loader-managed graph generation. */
   readonly runGeneration?: WishRunGeneration;
+  /** Present in product graphs after startup recovery has passed its gate. */
+  readonly runtimeRecovery?: WishRuntimeRecovery;
 
   createSession(input: CreateWishSessionInput): Promise<Session>;
   getSession(input: GetSessionInput): Promise<Session>;
   listSessions(input?: ListWishSessionsInput): Promise<readonly Session[]>;
   updateSessionMetadata(input: UpdateSessionMetadataInput): Promise<Session>;
   archiveSession(input: ArchiveSessionInput): Promise<Session>;
+  restoreSession(input: RestoreSessionInput): Promise<Session>;
+  deleteSession(input: DeleteSessionInput): Promise<void>;
   readSessionHistory(
     input: ReadSessionHistoryInput,
   ): Promise<SessionHistorySnapshot>;

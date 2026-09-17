@@ -1,9 +1,6 @@
 import type { ToolAuthorizationInput } from "../../core/tools/authorization.js";
-import type {
-  BasicToolContext,
-  ToolApprovalPort,
-  ToolApprovalResponse,
-} from "../../tools/index.js";
+import type { ToolApprovalPort, ToolApprovalResponse } from "../../tools/index.js";
+import type { WishToolExecutionContext } from "../../composition/tool-context.js";
 import type { WishCliTerminal } from "./terminal.js";
 
 const MAX_VISIBLE_INPUT_CHARS = 8_192;
@@ -12,12 +9,12 @@ export interface CliToolApprovalOptions {
   readonly terminal: WishCliTerminal;
 }
 
-/** One-shot terminal approval; it never creates a persistent allow rule. */
-export class CliToolApprovalPort implements ToolApprovalPort<BasicToolContext> {
+/** Terminal approval surface supporting explicit retention scopes. */
+export class CliToolApprovalPort implements ToolApprovalPort<WishToolExecutionContext> {
   constructor(private readonly options: CliToolApprovalOptions) {}
 
   async requestApproval(
-    input: ToolAuthorizationInput<BasicToolContext>,
+    input: ToolAuthorizationInput<WishToolExecutionContext>,
     signal?: AbortSignal,
   ): Promise<ToolApprovalResponse> {
     if (!this.options.terminal.interactive) {
@@ -32,7 +29,7 @@ export class CliToolApprovalPort implements ToolApprovalPort<BasicToolContext> {
 
     await this.options.terminal.writeError(formatApproval(input));
     const answer = await this.options.terminal.readLine(
-      "Allow this call once? [y/N] ",
+      "Allow? [y] once / [r] run / [s] session / [w] workspace / [N] deny: ",
       signal,
     );
     if (signal?.aborted === true) {
@@ -42,10 +39,20 @@ export class CliToolApprovalPort implements ToolApprovalPort<BasicToolContext> {
       });
     }
     const normalized = answer?.trim().toLowerCase();
-    if (normalized === "y" || normalized === "yes") {
+    const scope = normalized === "r" || normalized === "run"
+      ? "run" as const
+      : normalized === "s" || normalized === "session"
+      ? "session" as const
+      : normalized === "w" || normalized === "workspace"
+      ? "workspace" as const
+      : normalized === "y" || normalized === "yes"
+      ? "once" as const
+      : undefined;
+    if (scope !== undefined) {
       return Object.freeze({
         status: "approved" as const,
-        metadata: Object.freeze({ source: "wish-cli", persistence: "once" }),
+        scope,
+        metadata: Object.freeze({ source: "wish-cli", persistence: scope }),
       });
     }
     return Object.freeze({
@@ -57,7 +64,7 @@ export class CliToolApprovalPort implements ToolApprovalPort<BasicToolContext> {
   }
 }
 
-function formatApproval(input: ToolAuthorizationInput<BasicToolContext>): string {
+function formatApproval(input: ToolAuthorizationInput<WishToolExecutionContext>): string {
   const callInput = input.call.status === "ready"
     ? visibleJson(input.call.input)
     : "<invalid input>";

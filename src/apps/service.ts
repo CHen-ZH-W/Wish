@@ -1,13 +1,13 @@
 import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
-import type { BasicToolContext, ToolApprovalPort } from "../tools/index.js";
 import { ApplicationFacade } from "./application.js";
+import { SessionFeatureRegistry, type SessionFeature } from "./session-features.js";
 import {
   loadWishHostConfiguration,
   type WishHostConfiguration,
 } from "./config.js";
-import type { WishApplication } from "./types.js";
+import type { WishApplication, WishRuntimeRecovery } from "./types.js";
 
 /** Application owns no Loader row settings; its inputs come from its services. */
 export interface Config {}
@@ -20,6 +20,7 @@ export const inject = [
   "models",
   "contextEngine",
   "compaction",
+  "runtimeLifecycle",
   "agents",
 ];
 
@@ -29,12 +30,17 @@ export interface ApplicationConfigurationOverrides {
   readonly modelsConfigurationPath?: string;
 }
 
-export interface ApplicationOpenInput extends ApplicationConfigurationOverrides {
-  readonly approval?: ToolApprovalPort<BasicToolContext>;
-}
+export interface ApplicationOpenInput extends ApplicationConfigurationOverrides {}
 
 /** Cordis owner of the transport-neutral Wish Application facade. */
 export class Application extends Service {
+  private readonly features = new SessionFeatureRegistry();
+  registerSessionFeature(key: string, feature: SessionFeature): () => void {
+    const unregister = this.features.register(key, feature);
+    try { this.ctx.effect(() => unregister, `session-feature:${key}`); }
+    catch (error) { unregister(); throw error; }
+    return unregister;
+  }
   static readonly inject = inject;
 
   constructor(ctx: Context) {
@@ -75,21 +81,27 @@ export class Application extends Service {
 
   /** Open one lifecycle-bound Application generation for a process surface. */
   async open(input: ApplicationOpenInput = {}): Promise<WishApplication> {
-    const { approval, ...overrides } = input;
-    const configuration = await this.resolve(overrides);
+    const configuration = await this.resolve(input);
+    const lifecycle = this.ctx.runtimeLifecycle;
+    const recovery: WishRuntimeRecovery = Object.freeze({
+      snapshot: (signal?: AbortSignal) => lifecycle.recoverySnapshot(signal),
+      resolve: (request: Parameters<WishRuntimeRecovery["resolve"]>[0]) =>
+        lifecycle.resolveReconciliation(request),
+    });
     const resources = this.ctx.agents.open({
       dataDirectory: configuration.dataDirectory,
       modelsConfiguration: configuration.models,
       reservedOutputTokens: configuration.reservedOutputTokens,
       keepRecentTokens: configuration.keepRecentTokens,
       summaryMaxOutputTokens: configuration.summaryMaxOutputTokens,
-      ...(approval === undefined ? {} : { approval }),
     });
     return new ApplicationFacade({
+      sessionFeatures: this.features,
       sessions: resources.sessions,
       models: resources.models,
       agent: resources.agent,
       runGeneration: resources.generation,
+      recovery,
     });
   }
 }

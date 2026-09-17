@@ -1,12 +1,21 @@
 export { SessionManager } from "./session.js";
 export {
-  createFileSessionResources,
   Sessions,
 } from "./service.js";
+export { createFileSessionResources } from "./standalone.js";
 export type {
   Config as SessionsConfig,
   SessionResources,
+  SessionResourcesHandle,
 } from "./service.js";
+export {
+  SessionPersistence,
+  SessionPersistenceClosedError,
+} from "./persistence.js";
+export type {
+  OpenSessionPersistenceRequest,
+  SessionPersistenceHandle,
+} from "./persistence.js";
 export {
   InMemorySessionStore,
 } from "./memory-store.js";
@@ -45,6 +54,8 @@ export type {
   AppendSessionMessagesInput,
   AppendSessionMessagesResult,
   ArchiveSessionInput,
+  RestoreSessionInput,
+  DeleteSessionInput,
   CreateSessionInput,
   GetSessionInput,
   ListSessionsInput,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -107,10 +108,16 @@ test("generator normalizes all sources deterministically without inventing unsup
   assert.equal(models.openai.some((model) =>
     model.id === "unsupported-realtime"
   ), false);
-  assert.equal(models.deepseek[0].id, "deepseek-v4-flash");
-  assert.equal(models.deepseek[0].request.supportsTemperature, false);
-  assert.equal(models.deepseek[0].price.inputPerMillionTokens, 1);
-  assert.equal(models.deepseek[0].price.cachedInputPerMillionTokens, 0.1);
+  assert.deepEqual(models.deepseek.map(model => model.id), [
+    "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro",
+  ]);
+  assert.equal(models.deepseek[0].input.image, true);
+  assert.equal(models.deepseek[0].maxOutputTokens, 393216);
+  assert.equal(models.deepseek[0].price, undefined, "tiered current pricing must remain unknown");
+  assert.equal(models.deepseek[1].status, "deprecated");
+  assert.equal(models.deepseek[2].status, "deprecated");
+  assert.equal(models.deepseek[3].input.image, false);
+  assert.ok(models.deepseek.every(model => model.price === undefined));
   assert.equal(models.opencode.some((model) =>
     model.id === "unsupported-anthropic"
   ), false);
@@ -140,13 +147,25 @@ test("generator fails the complete refresh when a required source fails", async 
   );
 });
 
-test("generator rejects a partial source that loses the required default", async () => {
+test("official DeepSeek catalog survives stale third-party names and prices", async () => {
   const sources = fixtureSources();
   sources[MODEL_SOURCE_URLS.modelsDev].deepseek.models = {
-    "deepseek-v4-pro": { tool_call: true },
+    "deepseek-v4-pro": { tool_call: true, cost: { input: 999, output: 999 } },
   };
-  await assert.rejects(
-    generateModels({ fetch: fixtureFetch(sources) }),
-    /Required default model "deepseek\/deepseek-v4-flash" is missing/u,
-  );
+  const models = await generateModels({ fetch: fixtureFetch(sources) });
+  assert.equal(models.deepseek[0].id, "deepseek-flash");
+  assert.ok(models.deepseek.every(model => model.price === undefined));
+
+  delete sources[MODEL_SOURCE_URLS.modelsDev].deepseek;
+  const withoutThirdParty = await generateModels({ fetch: fixtureFetch(sources) });
+  assert.deepEqual(withoutThirdParty.deepseek, models.deepseek);
+});
+
+test("checked-in DeepSeek snapshot matches the official generator definition", async () => {
+  const source = await readFile(new URL("../src/models/models.generated.ts", import.meta.url), "utf8");
+  const json = source.split("export const GENERATED_MODELS = ")[1]?.split(" as const satisfies")[0];
+  assert.ok(json, "generated file must contain the catalog object");
+  const checkedIn = JSON.parse(json);
+  const generated = await generateModels({ fetch: fixtureFetch(fixtureSources()) });
+  assert.deepEqual(checkedIn.deepseek, generated.deepseek);
 });

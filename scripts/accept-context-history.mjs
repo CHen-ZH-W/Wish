@@ -16,7 +16,12 @@ function contextInput(overrides = {}) {
     stepId: "step-1",
     sessionId: "session/one",
     model,
-    workspace: { cwd: "/workspace", instructions: [] },
+    workspace: {
+      cwd: "/workspace",
+      fingerprint: "workspace:fixture",
+      revision: "workspace-revision:fixture",
+      instructions: [],
+    },
     runtime: {
       capturedAt: "2026-09-03T00:00:00.000Z",
       stateVersion: 1,

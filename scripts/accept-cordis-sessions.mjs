@@ -11,9 +11,16 @@ import { bootstrap } from "../dist/boot/bootstrap.js";
 import Sessions, {
   Config as SessionsConfig,
 } from "../dist/sessions/service.js";
+import FileSessionPersistence from
+  "../dist/sessions/providers/file/plugin.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const fiberState = Object.freeze({ pending: 0, active: 2, disposed: 4 });
+const fiberState = Object.freeze({
+  pending: 0,
+  active: 2,
+  disposed: 4,
+  unloading: 5,
+});
 
 test("Sessions service owns construction, dependency lifecycle, and persistence", async () => {
   const rootDirectory = await mkdtemp(join(tmpdir(), "wish-cordis-sessions-"));
@@ -38,6 +45,7 @@ test("Sessions service owns construction, dependency lifecycle, and persistence"
   assert.equal(consumer.state, fiberState.pending);
   let provider;
   try {
+    const persistence = await root.plugin(FileSessionPersistence);
     provider = await root.plugin(Sessions, { dataDirectory: "./state-a" });
     await consumer.await();
     assert.equal(consumer.state, fiberState.active);
@@ -98,6 +106,7 @@ test("Sessions service owns construction, dependency lifecycle, and persistence"
     assert.equal(consumer.state, fiberState.pending);
     assert.equal(disposals, 3);
     assert.deepEqual(consumer.getEffects(), []);
+    await persistence.dispose();
   } finally {
     await root.fiber.dispose();
     await rm(rootDirectory, { recursive: true, force: true });
@@ -153,6 +162,9 @@ test("Loader stable id disables and restores Sessions without losing facts", asy
       }),
       (error) => error?.code === "session_not_found",
     );
+    await overrideApplication.runGeneration?.retire({
+      reason: "Direct Application acceptance generation completed",
+    });
 
     const id = "include:sessions";
     const entry = booted.context.loader.resolve(id);
@@ -220,6 +232,7 @@ test("Sessions owns its schema and Application no longer constructs its graph", 
     environment: {},
   });
   try {
+    await invalidRoot.plugin(FileSessionPersistence);
     await assert.rejects(
       async () => await invalidRoot.plugin(Sessions, { dataDirectory: 42 }),
       /expected string/u,
@@ -243,4 +256,122 @@ test("Sessions owns its schema and Application no longer constructs its graph", 
   }
   assert.match(applicationSource, /sessions: options\.sessions\.manager/u);
   assert.doesNotMatch(applicationSource, /options\.sessions\.history/u);
+
+  const sessionsSource = await readFile(
+    join(repositoryRoot, "src/sessions/service.ts"),
+    "utf8",
+  );
+  assert.doesNotMatch(sessionsSource, /new FileSessionStore/u);
+  assert.match(sessionsSource, /this\.ctx\.sessionPersistence\.open/u);
+});
+
+test("session-file Provider loss makes Sessions pending and closes old stores", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-session-provider-"));
+  const root = new Context();
+  root.provide("launch", {
+    cwd: directory,
+    homeDirectory: directory,
+    environment: {},
+  });
+  const sessions = root.plugin(Sessions, { dataDirectory: "./state" });
+  assert.equal(sessions.state, fiberState.pending);
+  const first = await root.plugin(FileSessionPersistence);
+  await sessions.await();
+  const oldStore = root.sessions.manager.store;
+  await oldStore.create({
+    sessionId: "durable",
+    agentId: "agent",
+    scope: directory,
+  });
+
+  await first.dispose();
+  assert.equal(root.get("sessions"), undefined);
+  assert.equal(sessions.state, fiberState.pending);
+  await assert.rejects(
+    oldStore.get({ sessionId: "durable" }),
+    (error) => error?.code === "session_persistence_closed",
+  );
+
+  await root.plugin(FileSessionPersistence);
+  await sessions.await();
+  assert.equal(
+    (await root.sessions.manager.get({ sessionId: "durable" })).sessionId,
+    "durable",
+  );
+  await root.fiber.dispose();
+  await rm(directory, { recursive: true, force: true });
+});
+
+test("session-file Provider retirement waits for Session generation handles", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-session-handle-"));
+  const root = new Context();
+  root.provide("launch", {
+    cwd: directory,
+    homeDirectory: directory,
+    environment: {},
+  });
+  const sessionsFiber = root.plugin(Sessions, { dataDirectory: "./state" });
+  const persistence = await root.plugin(FileSessionPersistence);
+  await sessionsFiber;
+
+  let handle;
+  let allowDrain = () => undefined;
+  let markDrainStarted = () => undefined;
+  const drainBarrier = new Promise((resolve) => {
+    allowDrain = resolve;
+  });
+  const drainStarted = new Promise((resolve) => {
+    markDrainStarted = resolve;
+  });
+  const consumer = root.plugin({
+    inject: ["sessions"],
+    apply(ctx) {
+      handle = ctx.sessions.acquire();
+      ctx.effect(() => async () => {
+        markDrainStarted();
+        await drainBarrier;
+        handle.release();
+      }, "session-generation.drain-and-release");
+    },
+  });
+
+  try {
+    await consumer;
+    const oldStore = handle.manager.store;
+    await oldStore.create({
+      sessionId: "leased-session",
+      agentId: "agent",
+      scope: directory,
+    });
+
+    let retired = false;
+    const retiring = persistence.dispose().then(() => {
+      retired = true;
+    });
+    await drainStarted;
+    assert.equal(root.get("sessions"), undefined);
+    assert.equal(sessionsFiber.state, fiberState.unloading);
+    assert.equal(handle.released, false);
+    assert.equal(
+      (await oldStore.get({ sessionId: "leased-session" })).sessionId,
+      "leased-session",
+    );
+    await Promise.resolve();
+    assert.equal(retired, false);
+
+    allowDrain();
+    await retiring;
+    assert.equal(retired, true);
+    assert.equal(sessionsFiber.state, fiberState.pending);
+    assert.equal(handle.released, true);
+    assert.equal(handle.release(), false);
+    await assert.rejects(
+      oldStore.get({ sessionId: "leased-session" }),
+      (error) => error?.code === "session_persistence_closed",
+    );
+  } finally {
+    allowDrain();
+    await root.fiber.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { Context } from "@deepseek-ai/cordis";
+
 import { ModelCatalog } from "../dist/models/catalog.js";
 import { loadModelsConfiguration } from "../dist/models/config.js";
-import { FileCatalogStore } from "../dist/storage/models/file-catalog-store.js";
+import { StorageHub } from "../dist/storage/index.js";
+import { DomainModelCatalogStore } from "../dist/models/persistence/domain-store.js";
+import DomainModelCatalogProvider from
+  "../dist/models/persistence/storage-provider.js";
+import { FileCatalogStore } from "../dist/models/persistence/file-store.js";
+import { FileStorageBackend } from "../dist/storage/providers/file/backend.js";
+import FileStorageProvider from "../dist/storage/providers/file/plugin.js";
 
 function configuration() {
   return loadModelsConfiguration({
@@ -41,15 +49,73 @@ function configuration() {
   });
 }
 
-test("Catalog diff is read-only and sync atomically preserves failed Provider LKG", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "wish-model-catalog-"));
-  try {
-    const path = join(directory, "catalog.json");
-    let temporary = 0;
-    const store = new FileCatalogStore({
-      path,
-      temporaryId: () => `fixture-${++temporary}`,
-    });
+const storeVariants = [
+  {
+    name: "FileCatalogStore",
+    async create(directory) {
+      const path = join(directory, "catalog.json");
+      let temporary = 0;
+      return {
+        store: new FileCatalogStore({
+          path,
+          temporaryId: () => `fixture-${++temporary}`,
+        }),
+        async corrupt() {
+          await writeFile(path, "{", "utf8");
+        },
+        async assertLayout() {
+          assert.deepEqual(await readdir(directory), ["catalog.json"]);
+        },
+        async dispose() {},
+      };
+    },
+  },
+  {
+    name: "DomainModelCatalogStore",
+    async create(directory) {
+      const root = new Context();
+      await root.plugin(StorageHub);
+      let revision = 0;
+      const backend = new FileStorageBackend({
+        id: "file",
+        rootDirectory: directory,
+        revision: () => `catalog-revision-${++revision}`,
+      });
+      root.storage.register(backend);
+      return {
+        store: new DomainModelCatalogStore({
+          storage: root.storage,
+          backendId: "file",
+        }),
+        async corrupt() {
+          await backend.kv.put({
+            namespace: "models/catalog",
+            key: "global",
+            value: new TextEncoder().encode("{"),
+            precondition: { kind: "any" },
+          });
+        },
+        async assertLayout() {
+          assert.equal(
+            (await recursiveFiles(directory)).some((path) => path.includes(".tmp-")),
+            false,
+          );
+        },
+        async dispose() {
+          await root.fiber.dispose();
+        },
+      };
+    },
+  },
+];
+
+for (const variant of storeVariants) {
+  test(`${variant.name}: Catalog diff is read-only and sync atomically preserves failed Provider LKG`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "wish-model-catalog-"));
+    let fixture;
+    try {
+      fixture = await variant.create(directory);
+      const { store } = fixture;
     await store.save({
       schemaVersion: 1,
       updatedAt: "2026-09-01T00:00:00Z",
@@ -143,22 +209,104 @@ test("Catalog diff is read-only and sync atomically preserves failed Provider LK
     assert.equal(discovered.capabilities.reasoning, true);
     assert.equal(discovered.capabilities.imageInput, "unknown");
 
-    assert.deepEqual(await readdir(directory), ["catalog.json"]);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+      await fixture.assertLayout();
+    } finally {
+      await fixture?.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test(`${variant.name}: rejects invalid input and malformed persisted state`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "wish-model-catalog-invalid-"));
+    let fixture;
+    try {
+      fixture = await variant.create(directory);
+      await assert.rejects(
+        () => fixture.store.save({
+          schemaVersion: 2,
+          updatedAt: "invalid",
+          providers: [],
+        }),
+        /schemaVersion/u,
+      );
+      await fixture.corrupt();
+      await assert.rejects(
+        () => fixture.store.load(),
+        variant.name === "DomainModelCatalogStore"
+          ? (error) => error?.code === "storage_corruption"
+          : /invalid JSON/u,
+      );
+    } finally {
+      await fixture?.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("Model Catalog Domain Provider follows selected Backend lifecycle", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-model-catalog-provider-"));
+  const root = new Context();
+  root.provide("launch", {
+    cwd: directory,
+    homeDirectory: directory,
+    environment: {},
+  });
+  await root.plugin(StorageHub);
+  const domainProvider = root.plugin(DomainModelCatalogProvider, {
+    backendId: "file",
+  });
+  const generations = [];
+  const consumer = root.plugin({
+    inject: ["modelCatalogPersistence"],
+    apply(ctx) {
+      generations.push(ctx.modelCatalogPersistence.open());
+    },
+  });
+  assert.equal(domainProvider.state, 0);
+  const firstBackend = await root.plugin(FileStorageProvider, {
+    id: "file",
+    rootDirectory: "./storage",
+  });
+  await consumer.await();
+  assert.equal(generations.length, 1);
+  await generations[0].save({
+    schemaVersion: 1,
+    updatedAt: "2026-09-11T00:00:00.000Z",
+    providers: [],
+  });
+  const oldStore = generations[0];
+
+  await firstBackend.dispose();
+  assert.equal(root.get("modelCatalogPersistence"), undefined);
+  assert.equal(consumer.state, 0);
+  await assert.rejects(
+    oldStore.load(),
+    (error) => error?.code === "storage_closed",
+  );
+
+  await root.plugin(FileStorageProvider, {
+    id: "file",
+    rootDirectory: "./storage",
+  });
+  await consumer.await();
+  assert.equal(generations.length, 2);
+  assert.equal(
+    (await generations[1].load()).updatedAt,
+    "2026-09-11T00:00:00.000Z",
+  );
+  await root.fiber.dispose();
+  await rm(directory, { recursive: true, force: true });
 });
 
-test("File Catalog Store rejects malformed persisted state", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "wish-model-catalog-invalid-"));
-  try {
-    const path = join(directory, "catalog.json");
-    const store = new FileCatalogStore({ path, temporaryId: () => "fixture" });
-    await assert.rejects(
-      () => store.save({ schemaVersion: 2, updatedAt: "invalid", providers: [] }),
-      /schemaVersion/u,
-    );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+async function recursiveFiles(directory, prefix = "") {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const relativePath = join(prefix, entry.name);
+    if (entry.isDirectory()) {
+      result.push(...await recursiveFiles(join(directory, entry.name), relativePath));
+    } else {
+      result.push(relativePath);
+    }
   }
-});
+  return result;
+}

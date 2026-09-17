@@ -8,6 +8,130 @@
     "wish-webui": "./dist/apps/webui/main.js"
   },
   "exports": {
+    "./skills": {
+      "types": "./dist/skills/index.d.ts",
+      "import": "./dist/skills/index.js"
+    },
+    "./skills/types": {
+      "types": "./dist/skills/types.d.ts",
+      "import": "./dist/skills/types.js"
+    },
+    "./skills/service": {
+      "types": "./dist/skills/service.d.ts",
+      "import": "./dist/skills/service.js"
+    },
+    "./skills/local": {
+      "types": "./dist/skills/local.d.ts",
+      "import": "./dist/skills/local.js"
+    },
+    "./skills/providers/local": {
+      "types": "./dist/skills/providers/local.d.ts",
+      "import": "./dist/skills/providers/local.js"
+    },
+    "./skills/consumers/context": {
+      "types": "./dist/skills/consumers/context.d.ts",
+      "import": "./dist/skills/consumers/context.js"
+    },
+    "./skills/consumers/model-tools": {
+      "types": "./dist/skills/consumers/model-tools.d.ts",
+      "import": "./dist/skills/consumers/model-tools.js"
+    },
+    "./skills/consumers/mode-controls": {
+      "types": "./dist/skills/consumers/mode-controls.d.ts",
+      "import": "./dist/skills/consumers/mode-controls.js"
+    },
+    "./skills/consumers/session-feature": {
+      "types": "./dist/skills/consumers/session-feature.d.ts",
+      "import": "./dist/skills/consumers/session-feature.js"
+    },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "import": "./dist/memory/index.js"
+    },
+    "./memory/types": {
+      "types": "./dist/memory/types.d.ts",
+      "import": "./dist/memory/types.js"
+    },
+    "./memory/service": {
+      "types": "./dist/memory/service.d.ts",
+      "import": "./dist/memory/service.js"
+    },
+    "./memory/curation/service": {
+      "types": "./dist/memory/curation/service.d.ts",
+      "import": "./dist/memory/curation/service.js"
+    },
+    "./memory/curation/types": {
+      "types": "./dist/memory/curation/types.d.ts",
+      "import": "./dist/memory/curation/types.js"
+    },
+    "./memory/curation/extractor": {
+      "types": "./dist/memory/curation/extractor.d.ts",
+      "import": "./dist/memory/curation/extractor.js"
+    },
+    "./memory/curation/scheduler": {
+      "types": "./dist/memory/curation/scheduler.d.ts",
+      "import": "./dist/memory/curation/scheduler.js"
+    },
+    "./memory/providers/storage": {
+      "types": "./dist/memory/providers/storage.d.ts",
+      "import": "./dist/memory/providers/storage.js"
+    },
+    "./memory/providers/child-snapshot": {
+      "types": "./dist/memory/providers/child-snapshot.d.ts",
+      "import": "./dist/memory/providers/child-snapshot.js"
+    },
+    "./memory/providers/curation": {
+      "types": "./dist/memory/providers/curation.d.ts",
+      "import": "./dist/memory/providers/curation.js"
+    },
+    "./memory/consumers/context": {
+      "types": "./dist/memory/consumers/context.d.ts",
+      "import": "./dist/memory/consumers/context.js"
+    },
+    "./memory/consumers/model-tools": {
+      "types": "./dist/memory/consumers/model-tools.d.ts",
+      "import": "./dist/memory/consumers/model-tools.js"
+    },
+    "./memory/consumers/mode-controls": {
+      "types": "./dist/memory/consumers/mode-controls.d.ts",
+      "import": "./dist/memory/consumers/mode-controls.js"
+    },
+    "./memory/consumers/session-feature": {
+      "types": "./dist/memory/consumers/session-feature.d.ts",
+      "import": "./dist/memory/consumers/session-feature.js"
+    },
+    "./memory/consumers/subagent-resources": {
+      "types": "./dist/memory/consumers/subagent-resources.d.ts",
+      "import": "./dist/memory/consumers/subagent-resources.js"
+    },
+    "./memory/consumers/runtime-evidence": {
+      "types": "./dist/memory/consumers/runtime-evidence.d.ts",
+      "import": "./dist/memory/consumers/runtime-evidence.js"
+    },
+    "./memory/consumers/workflow-evidence": {
+      "types": "./dist/memory/consumers/workflow-evidence.d.ts",
+      "import": "./dist/memory/consumers/workflow-evidence.js"
+    },
+    "./memory/adapters/session-evidence": {
+      "types": "./dist/memory/adapters/session-evidence.d.ts",
+      "import": "./dist/memory/adapters/session-evidence.js"
+    },
+    "./memory/adapters/workflow-evidence": {
+      "types": "./dist/memory/adapters/workflow-evidence.d.ts",
+      "import": "./dist/memory/adapters/workflow-evidence.js"
+    },
+    "./memory/child-resources": {
+      "types": "./dist/memory/child-resources.d.ts",
+      "import": "./dist/memory/child-resources.js"
+    },
+    "./tasks": {
+      "types": "./dist/tasks/index.d.ts",
+      "import": "./dist/tasks/index.js"
+    },
+    "./workflow": {
+      "types": "./dist/workflow/index.d.ts",
+      "import": "./dist/workflow/index.js"
+    },
     "./apps/application": {
       "types": "./dist/apps/application.d.ts",
       "import": "./dist/apps/application.js"
@@ -24,25 +148,49 @@
       "types": "./dist/apps/webui/index.d.ts",
       "import": "./dist/apps/webui/index.js"
     },
-    "./core/agent-loop/service": {
-      "types": "./dist/core/agent-loop/service.d.ts",
-      "import": "./dist/core/agent-loop/service.js"
+    "./composition/agent-loop-service": {
+      "types": "./dist/composition/agent-loop-service.d.ts",
+      "import": "./dist/composition/agent-loop-service.js"
     },
-    "./core/runtime/service": {
-      "types": "./dist/core/runtime/service.d.ts",
-      "import": "./dist/core/runtime/service.js"
+    "./composition/agent-loop-standalone": {
+      "types": "./dist/composition/agent-loop-standalone.d.ts",
+      "import": "./dist/composition/agent-loop-standalone.js"
+    },
+    "./composition/runtime-service": {
+      "types": "./dist/composition/runtime-service.d.ts",
+      "import": "./dist/composition/runtime-service.js"
+    },
+    "./composition/agent-service": {
+      "types": "./dist/composition/agent-service.d.ts",
+      "import": "./dist/composition/agent-service.js"
+    },
+    "./composition/tool-context": {
+      "types": "./dist/composition/tool-context.d.ts",
+      "import": "./dist/composition/tool-context.js"
+    },
+    "./composition/coding-tools": {
+      "types": "./dist/composition/coding-tools.d.ts",
+      "import": "./dist/composition/coding-tools.js"
     },
     "./core/runtime/generation": {
       "types": "./dist/core/runtime/generation.d.ts",
       "import": "./dist/core/runtime/generation.js"
     },
+    "./core/runtime/continuation": {
+      "types": "./dist/core/runtime/continuation.d.ts",
+      "import": "./dist/core/runtime/continuation.js"
+    },
+    "./core/runtime/durability": {
+      "types": "./dist/core/runtime/durability/index.d.ts",
+      "import": "./dist/core/runtime/durability/index.js"
+    },
+    "./core/runtime/durability/providers/journal": {
+      "types": "./dist/core/runtime/durability/providers/journal.d.ts",
+      "import": "./dist/core/runtime/durability/providers/journal.js"
+    },
     "./core/agent": {
       "types": "./dist/core/agent/agent.d.ts",
       "import": "./dist/core/agent/agent.js"
-    },
-    "./core/agent/service": {
-      "types": "./dist/core/agent/service.d.ts",
-      "import": "./dist/core/agent/service.js"
     },
     "./core/runtime": {
       "types": "./dist/core/runtime/runtime.d.ts",
@@ -96,9 +244,37 @@
       "types": "./dist/sessions/types.d.ts",
       "import": "./dist/sessions/types.js"
     },
+    "./sessions/persistence": {
+      "types": "./dist/sessions/persistence.d.ts",
+      "import": "./dist/sessions/persistence.js"
+    },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools/index.js"
+    },
+    "./web": {
+      "types": "./dist/web/index.d.ts",
+      "import": "./dist/web/index.js"
+    },
+    "./web/search-service": {
+      "types": "./dist/web/search-service.d.ts",
+      "import": "./dist/web/search-service.js"
+    },
+    "./web/fetch-service": {
+      "types": "./dist/web/fetch-service.d.ts",
+      "import": "./dist/web/fetch-service.js"
+    },
+    "./web/providers/http-fetch": {
+      "types": "./dist/web/providers/http-fetch.d.ts",
+      "import": "./dist/web/providers/http-fetch.js"
+    },
+    "./web/providers/searxng-search": {
+      "types": "./dist/web/providers/searxng-search.d.ts",
+      "import": "./dist/web/providers/searxng-search.js"
+    },
+    "./web/tools": {
+      "types": "./dist/web/tools.d.ts",
+      "import": "./dist/web/tools.js"
     },
     "./models/types": {
       "types": "./dist/models/types.d.ts",
@@ -132,6 +308,22 @@
       "types": "./dist/models/catalog.d.ts",
       "import": "./dist/models/catalog.js"
     },
+    "./models/catalog-persistence": {
+      "types": "./dist/models/catalog-persistence.d.ts",
+      "import": "./dist/models/catalog-persistence.js"
+    },
+    "./models/persistence/domain-store": {
+      "types": "./dist/models/persistence/domain-store.d.ts",
+      "import": "./dist/models/persistence/domain-store.js"
+    },
+    "./models/persistence/storage-provider": {
+      "types": "./dist/models/persistence/storage-provider.d.ts",
+      "import": "./dist/models/persistence/storage-provider.js"
+    },
+    "./models/persistence/file-store": {
+      "types": "./dist/models/persistence/file-store.d.ts",
+      "import": "./dist/models/persistence/file-store.js"
+    },
     "./models/providers/openai-compatible": {
       "types": "./dist/models/providers/openai-compatible.d.ts",
       "import": "./dist/models/providers/openai-compatible.js"
@@ -148,29 +340,352 @@
       "types": "./dist/models/providers/anthropic-messages-tokens.d.ts",
       "import": "./dist/models/providers/anthropic-messages-tokens.js"
     },
+    "./workspace": {
+      "types": "./dist/workspace/index.d.ts",
+      "import": "./dist/workspace/index.js"
+    },
+    "./workspace/service": {
+      "types": "./dist/workspace/service.d.ts",
+      "import": "./dist/workspace/service.js"
+    },
+    "./workspace/providers/local": {
+      "types": "./dist/workspace/providers/local.d.ts",
+      "import": "./dist/workspace/providers/local.js"
+    },
+    "./approval": {
+      "types": "./dist/approval/index.d.ts",
+      "import": "./dist/approval/index.js"
+    },
+    "./approval/service": {
+      "types": "./dist/approval/service.d.ts",
+      "import": "./dist/approval/service.js"
+    },
+    "./permissions/rules": {
+      "types": "./dist/permissions/rules/index.d.ts",
+      "import": "./dist/permissions/rules/index.js"
+    },
+    "./permissions/rules/service": {
+      "types": "./dist/permissions/rules/service.d.ts",
+      "import": "./dist/permissions/rules/service.js"
+    },
+    "./permissions/rules/providers/storage": {
+      "types": "./dist/permissions/rules/providers/storage.d.ts",
+      "import": "./dist/permissions/rules/providers/storage.js"
+    },
+    "./permissions/rules/providers/memory": {
+      "types": "./dist/permissions/rules/providers/memory.d.ts",
+      "import": "./dist/permissions/rules/providers/memory.js"
+    },
+    "./permissions": {
+      "types": "./dist/permissions/index.d.ts",
+      "import": "./dist/permissions/index.js"
+    },
+    "./permissions/service": {
+      "types": "./dist/permissions/service.d.ts",
+      "import": "./dist/permissions/service.js"
+    },
+    "./permissions/providers/default": {
+      "types": "./dist/permissions/providers/default.d.ts",
+      "import": "./dist/permissions/providers/default.js"
+    },
+    "./filesystem": {
+      "types": "./dist/filesystem/index.d.ts",
+      "import": "./dist/filesystem/index.js"
+    },
+    "./filesystem/service": {
+      "types": "./dist/filesystem/service.d.ts",
+      "import": "./dist/filesystem/service.js"
+    },
+    "./filesystem/providers/local": {
+      "types": "./dist/filesystem/providers/local.d.ts",
+      "import": "./dist/filesystem/providers/local.js"
+    },
+    "./filesystem/model-tools": {
+      "types": "./dist/filesystem/consumers/model-tools/index.d.ts",
+      "import": "./dist/filesystem/consumers/model-tools/index.js"
+    },
+    "./filesystem/search": {
+      "types": "./dist/filesystem/search/index.d.ts",
+      "import": "./dist/filesystem/search/index.js"
+    },
+    "./filesystem/search/service": {
+      "types": "./dist/filesystem/search/service.d.ts",
+      "import": "./dist/filesystem/search/service.js"
+    },
+    "./filesystem/search/providers/local": {
+      "types": "./dist/filesystem/search/providers/local.d.ts",
+      "import": "./dist/filesystem/search/providers/local.js"
+    },
+    "./filesystem/search/model-tool": {
+      "types": "./dist/filesystem/search/consumers/index.d.ts",
+      "import": "./dist/filesystem/search/consumers/index.js"
+    },
+    "./shell": {
+      "types": "./dist/shell/index.d.ts",
+      "import": "./dist/shell/index.js"
+    },
+    "./shell/service": {
+      "types": "./dist/shell/service.d.ts",
+      "import": "./dist/shell/service.js"
+    },
+    "./shell/providers/linux-native": {
+      "types": "./dist/shell/providers/linux-native.d.ts",
+      "import": "./dist/shell/providers/linux-native.js"
+    },
+    "./shell/providers/host": {
+      "types": "./dist/shell/providers/host.d.ts",
+      "import": "./dist/shell/providers/host.js"
+    },
+    "./shell/model-tool": {
+      "types": "./dist/shell/consumers/index.d.ts",
+      "import": "./dist/shell/consumers/index.js"
+    },
+    "./tmux": {
+      "types": "./dist/tmux/index.d.ts",
+      "import": "./dist/tmux/index.js"
+    },
+    "./tmux/service": {
+      "types": "./dist/tmux/service.d.ts",
+      "import": "./dist/tmux/service.js"
+    },
+    "./tmux/providers/local": {
+      "types": "./dist/tmux/providers/local.d.ts",
+      "import": "./dist/tmux/providers/local.js"
+    },
+    "./subagents": {
+      "types": "./dist/subagents/index.d.ts",
+      "import": "./dist/subagents/index.js"
+    },
+    "./subagents/service": {
+      "types": "./dist/subagents/service.d.ts",
+      "import": "./dist/subagents/service.js"
+    },
+    "./subagents/runtime": {
+      "types": "./dist/subagents/runtime.d.ts",
+      "import": "./dist/subagents/runtime.js"
+    },
+    "./subagents/providers/tmux-execution": {
+      "types": "./dist/subagents/providers/tmux-execution.d.ts",
+      "import": "./dist/subagents/providers/tmux-execution.js"
+    },
+    "./apps/cli/subagent-launcher": {
+      "types": "./dist/apps/cli/subagent-launcher.d.ts",
+      "import": "./dist/apps/cli/subagent-launcher.js"
+    },
+    "./subagents/model-tools": {
+      "types": "./dist/subagents/consumers/model-tools/index.d.ts",
+      "import": "./dist/subagents/consumers/model-tools/index.js"
+    },
+    "./plan": {
+      "types": "./dist/plan/index.d.ts",
+      "import": "./dist/plan/index.js"
+    },
+    "./plan/service": {
+      "types": "./dist/plan/service.d.ts",
+      "import": "./dist/plan/service.js"
+    },
+    "./plan/providers/storage": {
+      "types": "./dist/plan/providers/storage.d.ts",
+      "import": "./dist/plan/providers/storage.js"
+    },
+    "./plan/model-tools": {
+      "types": "./dist/plan/consumers/model-tools/index.d.ts",
+      "import": "./dist/plan/consumers/model-tools/index.js"
+    },
+    "./coordinator": {
+      "types": "./dist/coordinator/index.d.ts",
+      "import": "./dist/coordinator/index.js"
+    },
+    "./coordinator/service": {
+      "types": "./dist/coordinator/service.d.ts",
+      "import": "./dist/coordinator/service.js"
+    },
+    "./coordinator/providers/storage": {
+      "types": "./dist/coordinator/providers/storage.d.ts",
+      "import": "./dist/coordinator/providers/storage.js"
+    },
+    "./coordinator/model-tools": {
+      "types": "./dist/coordinator/consumers/model-tools/index.d.ts",
+      "import": "./dist/coordinator/consumers/model-tools/index.js"
+    },
+    "./sandbox": {
+      "types": "./dist/sandbox/index.d.ts",
+      "import": "./dist/sandbox/index.js"
+    },
+    "./sandbox/service": {
+      "types": "./dist/sandbox/service.d.ts",
+      "import": "./dist/sandbox/service.js"
+    },
+    "./sandbox/providers/default": {
+      "types": "./dist/sandbox/providers/default.d.ts",
+      "import": "./dist/sandbox/providers/default.js"
+    },
+    "./sessions/providers/file/store": {
+      "types": "./dist/sessions/providers/file/store.d.ts",
+      "import": "./dist/sessions/providers/file/store.js"
+    },
+    "./sessions/providers/file/plugin": {
+      "types": "./dist/sessions/providers/file/plugin.d.ts",
+      "import": "./dist/sessions/providers/file/plugin.js"
+    },
+    "./tools/results": {
+      "types": "./dist/tools/results/index.d.ts",
+      "import": "./dist/tools/results/index.js"
+    },
+    "./tools/results/types": {
+      "types": "./dist/tools/results/types.d.ts",
+      "import": "./dist/tools/results/types.js"
+    },
+    "./tools/results/service": {
+      "types": "./dist/tools/results/service.d.ts",
+      "import": "./dist/tools/results/service.js"
+    },
+    "./tools/results/providers/blob": {
+      "types": "./dist/tools/results/providers/blob.d.ts",
+      "import": "./dist/tools/results/providers/blob.js"
+    },
+    "./tools/results/providers/file": {
+      "types": "./dist/tools/results/providers/file.d.ts",
+      "import": "./dist/tools/results/providers/file.js"
+    },
+    "./tools/results/artifacts": {
+      "types": "./dist/tools/results/artifacts/index.d.ts",
+      "import": "./dist/tools/results/artifacts/index.js"
+    },
+    "./tools/results/artifacts/service": {
+      "types": "./dist/tools/results/artifacts/service.d.ts",
+      "import": "./dist/tools/results/artifacts/service.js"
+    },
+    "./tools/results/artifacts/providers/blob": {
+      "types": "./dist/tools/results/artifacts/providers/blob.d.ts",
+      "import": "./dist/tools/results/artifacts/providers/blob.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    },
+    "./storage/service": {
+      "types": "./dist/storage/service.d.ts",
+      "import": "./dist/storage/service.js"
+    },
+    "./storage/binding": {
+      "types": "./dist/storage/binding.d.ts",
+      "import": "./dist/storage/binding.js"
+    },
+    "./storage/domain": {
+      "types": "./dist/storage/domain.d.ts",
+      "import": "./dist/storage/domain.js"
+    },
+    "./storage/blob": {
+      "types": "./dist/storage/blob.d.ts",
+      "import": "./dist/storage/blob.js"
+    },
+    "./storage/journal": {
+      "types": "./dist/storage/journal.d.ts",
+      "import": "./dist/storage/journal.js"
+    },
+    "./storage/providers/file": {
+      "types": "./dist/storage/providers/file/backend.d.ts",
+      "import": "./dist/storage/providers/file/backend.js"
+    },
+    "./storage/providers/file/plugin": {
+      "types": "./dist/storage/providers/file/plugin.d.ts",
+      "import": "./dist/storage/providers/file/plugin.js"
+    },
+    "./storage/providers/file/blob": {
+      "types": "./dist/storage/providers/file/blob.d.ts",
+      "import": "./dist/storage/providers/file/blob.js"
+    },
+    "./storage/providers/file/journal": {
+      "types": "./dist/storage/providers/file/journal.d.ts",
+      "import": "./dist/storage/providers/file/journal.js"
+    },
+    "./storage/models/domain-model-catalog-store": {
+      "types": "./dist/models/persistence/domain-store.d.ts",
+      "import": "./dist/models/persistence/domain-store.js"
+    },
+    "./storage/models/domain-model-catalog-provider": {
+      "types": "./dist/models/persistence/storage-provider.d.ts",
+      "import": "./dist/models/persistence/storage-provider.js"
+    },
     "./storage/models/file-catalog-store": {
-      "types": "./dist/storage/models/file-catalog-store.d.ts",
-      "import": "./dist/storage/models/file-catalog-store.js"
+      "types": "./dist/models/persistence/file-store.d.ts",
+      "import": "./dist/models/persistence/file-store.js"
     },
     "./storage/sessions/file-session-store": {
-      "types": "./dist/storage/sessions/file-session-store.d.ts",
-      "import": "./dist/storage/sessions/file-session-store.js"
+      "types": "./dist/sessions/providers/file/store.d.ts",
+      "import": "./dist/sessions/providers/file/store.js"
     },
-    "./storage/tool-results/file-tool-result-archive": {
-      "types": "./dist/storage/tool-results/file-tool-result-archive.d.ts",
-      "import": "./dist/storage/tool-results/file-tool-result-archive.js"
+    "./storage/sessions/file-session-provider": {
+      "types": "./dist/sessions/providers/file/plugin.d.ts",
+      "import": "./dist/sessions/providers/file/plugin.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-webui-assets.mjs",
+    "postinstall": "node scripts/apply-cordis-hmr-patch.mjs",
+    "prebuild": "node scripts/apply-cordis-hmr-patch.mjs",
+    "pretypecheck": "node scripts/apply-cordis-hmr-patch.mjs",
+    "build:native": "node scripts/build-linux-sandbox.mjs",
+    "build": "tsc -p tsconfig.json && npm run build:native && node scripts/copy-webui-assets.mjs && node scripts/build-webui-client.mjs",
     "models:generate": "node scripts/models/generate-models.mjs",
     "models:check-generated": "node scripts/models/generate-models.mjs --check",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && node scripts/accept-cordis-baseline.mjs && node scripts/accept-cordis-boot.mjs && node scripts/accept-application-service.mjs && node scripts/accept-cordis-config.mjs && node scripts/accept-app-plugin-config.mjs && node scripts/accept-cordis-lifecycle.mjs && node scripts/accept-cordis-tools.mjs && node scripts/accept-cordis-sessions.mjs && node scripts/accept-cordis-models.mjs && node scripts/accept-cordis-context-compaction.mjs && node scripts/accept-cordis-agent-loop.mjs && node scripts/accept-cordis-runtime.mjs && node scripts/accept-run-generation.mjs && node scripts/accept-cordis-agent.mjs && node scripts/accept-cordis-isolation.mjs && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-generation.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-input-tokens.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-context-history.mjs && node scripts/accept-context-providers.mjs && node scripts/accept-context-tool-results.mjs && node scripts/accept-tool-result-archive.mjs && node scripts/accept-context-budget.mjs && node scripts/accept-compaction.mjs && node scripts/accept-context-bundle.mjs && node scripts/accept-sessions.mjs && node scripts/accept-tools.mjs && node scripts/accept-tool-authorization.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs && node scripts/accept-apps-composition.mjs && node scripts/accept-apps-cli.mjs && node scripts/accept-apps-webui.mjs",
+    "pretest": "npm run test:permissions && node scripts/accept-permission-policies.mjs && node scripts/accept-plan.mjs && node scripts/accept-coordinator.mjs && node scripts/accept-module-boundaries.mjs && node scripts/accept-filesystem-local.mjs && node scripts/accept-filesystem-search-local.mjs && node scripts/accept-shell.mjs && node scripts/accept-tmux.mjs && node scripts/accept-subagents.mjs && node scripts/accept-subagent-tools.mjs && node scripts/accept-subagent-child.mjs && node scripts/accept-sandbox-policy.mjs && node scripts/accept-approval-rules.mjs && node scripts/accept-web-fetch.mjs && node scripts/accept-web-search.mjs && node scripts/accept-state-handoff.mjs && node scripts/accept-workflow-continuations.mjs",
+    "test": "npm run build && node scripts/accept-plugin-inspection.mjs && node scripts/accept-plugin-management.mjs && node scripts/accept-plugin-lifecycle.mjs && node scripts/accept-plugin-stop.mjs && npm run test:skills:built && npm run test:memory:built && node scripts/accept-context-request-view.mjs && node scripts/accept-context-dynamic-providers.mjs && node scripts/accept-cordis-baseline.mjs && node scripts/accept-workspace-contract.mjs && node scripts/accept-storage-hub.mjs && node scripts/accept-storage-file-kv.mjs && node scripts/accept-storage-file-blob.mjs && node scripts/accept-storage-file-journal.mjs && node scripts/accept-storage-domain.mjs && node scripts/accept-runtime-durability.mjs && node scripts/accept-cordis-boot.mjs && node scripts/accept-application-service.mjs && node scripts/accept-cordis-config.mjs && node scripts/accept-app-plugin-config.mjs && node scripts/accept-cordis-lifecycle.mjs && node scripts/accept-cordis-tools.mjs && node scripts/accept-cordis-sessions.mjs && node scripts/accept-cordis-models.mjs && node scripts/accept-cordis-context-compaction.mjs && node scripts/accept-cordis-agent-loop.mjs && node scripts/accept-cordis-runtime.mjs && node scripts/accept-step-execution.mjs && node scripts/accept-step-replacement.mjs && node scripts/accept-hmr-patch.mjs && node scripts/accept-hmr-coordination.mjs && node scripts/accept-native-step-reload.mjs && node scripts/accept-run-generation.mjs && node scripts/accept-cordis-agent.mjs && node scripts/accept-cordis-isolation.mjs && node scripts/accept-agent.mjs && node scripts/accept-runtime.mjs && node scripts/accept-events.mjs && node scripts/accept-model.mjs && node scripts/accept-model-runtime.mjs && node scripts/accept-model-generation.mjs && node scripts/accept-model-providers.mjs && node scripts/accept-model-usage.mjs && node scripts/accept-model-input-tokens.mjs && node scripts/accept-model-composition.mjs && node scripts/accept-model-catalog.mjs && node scripts/accept-context.mjs && node scripts/accept-context-history.mjs && node scripts/accept-context-providers.mjs && node scripts/accept-context-tool-results.mjs && node scripts/accept-tool-result-archive.mjs && node scripts/accept-tool-result-archive-blob.mjs && node scripts/accept-context-budget.mjs && node scripts/accept-compaction.mjs && node scripts/accept-context-bundle.mjs && node scripts/accept-sessions.mjs && node scripts/accept-tools.mjs && node scripts/accept-tool-authorization.mjs && node scripts/accept-basic-tools-path.mjs && node scripts/accept-basic-tools-truncate.mjs && node scripts/accept-basic-tools-mutation-queue.mjs && node scripts/accept-basic-tool-write.mjs && node scripts/accept-basic-tool-edit.mjs && node scripts/accept-basic-tool-read.mjs && node scripts/accept-basic-tool-grep.mjs && node scripts/accept-basic-tool-bash.mjs && node scripts/accept-basic-tools-result-renderer.mjs && node scripts/accept-basic-tools-index.mjs && node scripts/accept-basic-tools-integration.mjs && node scripts/accept-agent-loop.mjs && node scripts/accept-apps-composition.mjs && node scripts/accept-apps-cli.mjs && node scripts/accept-apps-webui.mjs",
+    "test:skills": "npm run build && npm run test:skills:built",
+    "test:skills:built": "node scripts/accept-skills.mjs && node scripts/accept-skills-consumers.mjs",
+    "test:memory": "npm run build && npm run test:memory:built",
+    "test:memory:built": "node scripts/accept-memory.mjs && node scripts/accept-memory-storage.mjs && node scripts/accept-memory-consumers.mjs && node scripts/accept-memory-session-isolation.mjs && node scripts/accept-memory-curation.mjs && node scripts/accept-memory-curation-provider.mjs && node scripts/accept-memory-evidence.mjs && node scripts/accept-memory-child-resources.mjs && node scripts/accept-memory-boot.mjs",
+    "test:memory:boot": "npm run build && node scripts/accept-memory-boot.mjs",
+    "test:memory-real": "npm run build && node scripts/accept-memory-child-real.mjs",
+    "test:context-request-view": "npm run build && node scripts/accept-context-request-view.mjs",
+    "test:workspace": "npm run build && node scripts/accept-workspace-contract.mjs && node scripts/accept-workspace-directory-picker.mjs",
+    "test:permissions": "npm run build && node scripts/accept-approval-hub.mjs && node scripts/accept-permissions.mjs",
+    "test:permission-policies": "npm run build && node scripts/accept-permission-policies.mjs",
+    "test:plan": "npm run build && node scripts/accept-plan.mjs && node scripts/accept-plan-review.mjs",
+    "test:tasks": "npm run build && node scripts/accept-tasks.mjs",
+    "test:workflow": "npm run build && node scripts/accept-workflow.mjs && node scripts/accept-workflow-schedulers.mjs && node scripts/accept-workflow-composition.mjs",
+    "test:coordinator": "npm run build && node scripts/accept-coordinator.mjs",
+    "test:filesystem": "npm run build && node scripts/accept-filesystem-local.mjs && node scripts/accept-filesystem-search-local.mjs",
+    "test:shell": "npm run build && node scripts/accept-shell.mjs && node scripts/accept-basic-tool-bash.mjs",
+    "test:module-boundaries": "npm run build && node scripts/accept-module-boundaries.mjs",
+    "test:shell:tmux-real": "npm run build && node scripts/accept-shell-tmux-real.mjs",
+    "test:tmux": "npm run build && node scripts/accept-tmux.mjs",
+    "test:tmux:real": "npm run build && node scripts/accept-tmux-real.mjs",
+    "test:subagents": "npm run build && node scripts/accept-subagents.mjs",
+    "test:state-handoff": "npm run build && node scripts/accept-state-handoff.mjs",
+    "test:state-handoff:real": "npm run build && node scripts/accept-state-handoff-real.mjs",
+    "test:stateful-code-reload:real": "npm run build && node scripts/accept-stateful-code-reload-real.mjs",
+    "test:subagent-tools": "npm run build && node scripts/accept-subagent-tools.mjs",
+    "test:subagent-child": "npm run build && node scripts/accept-subagent-child.mjs",
+    "test:subagent:real": "npm run build && node scripts/accept-subagent-real.mjs",
+    "test:subagent:runtime-real": "npm run build && node scripts/accept-subagent-runtime-real.mjs",
+    "test:sandbox": "npm run build && node scripts/accept-sandbox-policy.mjs && node scripts/accept-approval-rules.mjs",
+    "test:web": "npm run build && node scripts/accept-web-fetch.mjs && node scripts/accept-web-search.mjs",
+    "test:storage": "npm run build && node scripts/accept-storage-hub.mjs && node scripts/accept-storage-file-kv.mjs && node scripts/accept-storage-file-blob.mjs && node scripts/accept-storage-file-journal.mjs && node scripts/accept-storage-domain.mjs",
+    "test:runtime-durability": "npm run build && node scripts/accept-runtime-durability.mjs",
     "test:cordis-baseline": "npm run build && node scripts/accept-cordis-baseline.mjs",
+    "test:plugin-module-reload": "npm run build && node scripts/accept-plugin-module-reload.mjs",
     "test:cordis-boot": "npm run build && node scripts/accept-cordis-boot.mjs",
     "test:application-service": "npm run build && node scripts/accept-application-service.mjs",
     "test:cordis-config": "npm run build && node scripts/accept-cordis-config.mjs",
+    "test:plugin-inspection": "npm run build && node scripts/accept-plugin-inspection.mjs",
+    "test:plugin-management": "npm run build && node scripts/accept-plugin-management.mjs",
+    "test:plugin-lifecycle": "npm run build && node scripts/accept-plugin-lifecycle.mjs",
+    "test:plugin-stop": "npm run build && node scripts/accept-plugin-stop.mjs",
+    "test:settings": "npm run build && node scripts/accept-settings.mjs && node scripts/accept-credentials.mjs",
+    "test:plugin-managed-store": "npm run build && node scripts/accept-plugin-managed-store.mjs",
+    "test:plugin-managed-control": "npm run build && node scripts/accept-plugin-managed-control.mjs",
+    "test:managed-config": "npm run build && node scripts/accept-managed-config.mjs && node scripts/accept-managed-config-webui.mjs",
+    "test:managed-code-reload": "npm run build && node scripts/accept-managed-code-reload.mjs",
+    "test:webui-management": "npm run build && node scripts/accept-webui-management.mjs && node scripts/accept-managed-boot.mjs",
+    "build:webui-client": "node scripts/build-webui-client.mjs",
+    "test:webui-code-modules": "npm run build && node scripts/accept-webui-code-modules.mjs",
+    "test:webui-code-reload:browser": "npm run build && node scripts/accept-webui-code-reload-browser.mjs",
+    "test:webui-next": "npm run build && npm run test:webui-next:built",
+    "test:webui-next:built": "node scripts/accept-settings.mjs && node scripts/accept-credentials.mjs && node scripts/accept-plugin-managed-store.mjs && node scripts/accept-plugin-managed-control.mjs && node scripts/accept-managed-config.mjs && node scripts/accept-managed-config-webui.mjs && node scripts/accept-managed-code-reload.mjs && node scripts/accept-webui-management.mjs && node scripts/accept-managed-boot.mjs && node scripts/accept-managed-skills.mjs && node scripts/accept-webui-client-models.mjs && node scripts/accept-webui-code-modules.mjs && node scripts/accept-webui-session-models.mjs && node scripts/accept-webui-new-session.mjs && node scripts/accept-webui-directory-browser.mjs && node scripts/accept-webui-feature-models.mjs && node scripts/accept-webui-observation.mjs && node scripts/accept-plan-review.mjs",
+    "test:webui-next:browser": "npm run build && node scripts/accept-webui-next-browser.mjs",
+    "posttest": "npm run test:webui-next:built && node scripts/accept-model-session-reasoning.mjs && node scripts/accept-model-reasoning-client.mjs && node scripts/accept-model-reasoning-product.mjs",
     "test:app-plugin-config": "npm run build && node scripts/accept-app-plugin-config.mjs",
     "test:cordis-lifecycle": "npm run build && node scripts/accept-cordis-lifecycle.mjs && node scripts/accept-app-plugin-config.mjs && node scripts/accept-apps-webui.mjs",
     "test:cordis-tools": "npm run build && node scripts/accept-cordis-tools.mjs && node scripts/accept-apps-composition.mjs",
@@ -180,6 +695,8 @@
     "test:cordis-agent-loop": "npm run build && node scripts/accept-cordis-agent-loop.mjs && node scripts/accept-agent-loop.mjs && node scripts/accept-apps-composition.mjs",
     "test:cordis-runtime": "npm run build && node scripts/accept-cordis-runtime.mjs && node scripts/accept-runtime.mjs && node scripts/accept-apps-composition.mjs",
     "test:run-generation": "npm run build && node scripts/accept-run-generation.mjs && node scripts/accept-apps-cli.mjs && node scripts/accept-apps-webui.mjs",
+    "test:step-execution": "npm run build && node scripts/accept-step-execution.mjs && node scripts/accept-step-replacement.mjs",
+    "test:code-reload": "npm run build && node scripts/accept-hmr-patch.mjs && node scripts/accept-hmr-coordination.mjs && node scripts/accept-native-step-reload.mjs && node scripts/accept-plugin-module-reload.mjs",
     "test:cordis-agent": "npm run build && node scripts/accept-cordis-agent.mjs && node scripts/accept-agent.mjs && node scripts/accept-apps-composition.mjs",
     "test:cordis-isolation": "npm run build && node scripts/accept-cordis-isolation.mjs && node scripts/accept-cordis-boot.mjs",
     "webui": "npm run build && node dist/apps/webui/main.js",
@@ -190,15 +707,17 @@
     "test:models-runtime": "npm run build && node scripts/accept-model-runtime.mjs",
     "test:model-generation": "node scripts/accept-model-generation.mjs",
     "test:model-providers": "npm run build && node scripts/accept-model-providers.mjs",
+    "test:model-reasoning": "npm run build && node scripts/accept-model-session-reasoning.mjs && node scripts/accept-model-reasoning-client.mjs && node scripts/accept-model-reasoning-product.mjs",
+    "test:model-reasoning:browser": "npm run build && node scripts/accept-model-reasoning-browser.mjs",
     "test:model-usage": "npm run build && node scripts/accept-model-usage.mjs",
     "test:model-input-tokens": "npm run build && node scripts/accept-model-input-tokens.mjs",
     "test:model-composition": "npm run build && node scripts/accept-model-composition.mjs",
     "test:model-catalog": "npm run build && node scripts/accept-model-catalog.mjs",
-    "test:context": "npm run build && node scripts/accept-context.mjs",
+    "test:context": "npm run build && node scripts/accept-context.mjs && node scripts/accept-context-request-view.mjs && node scripts/accept-context-dynamic-providers.mjs",
     "test:context-history": "npm run build && node scripts/accept-context-history.mjs",
     "test:context-providers": "npm run build && node scripts/accept-context-providers.mjs",
     "test:context-tool-results": "npm run build && node scripts/accept-context-tool-results.mjs",
-    "test:tool-result-archive": "npm run build && node scripts/accept-tool-result-archive.mjs",
+    "test:tool-result-archive": "npm run build && node scripts/accept-tool-result-archive.mjs && node scripts/accept-tool-result-archive-blob.mjs",
     "test:context-budget": "npm run build && node scripts/accept-context-budget.mjs",
     "test:context-bundle": "npm run build && node scripts/accept-context-bundle.mjs",
     "test:compaction": "npm run build && node scripts/accept-compaction.mjs",
@@ -224,6 +743,10 @@
   "devDependencies": {
     "@types/diff": "^7.0.2",
     "@types/node": "^22.20.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.2",
+    "playwright": "1.63.0",
     "typescript": "^5.8.3"
   },
   "engines": {
@@ -239,6 +762,9 @@
     "@deepseek-ai/cordis-plugin-timer": "1.1.4",
     "@deepseek-ai/schemastery": "3.18.2",
     "diff": "^8.0.3",
-    "node-addon-require-builtin": "0.1.4"
+    "js-yaml": "4.3.2",
+    "node-addon-require-builtin": "0.1.4",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   }
 }

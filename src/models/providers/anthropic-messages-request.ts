@@ -71,7 +71,8 @@ export function mapAnthropicRequest(
       role: message.role,
       content: Object.freeze(message.content),
     })),
-    max_tokens: request.maxOutputTokens ?? input.model.spec.maxOutputTokens ?? 4096,
+    max_tokens: request.maxOutputTokens ?? input.model.spec.defaultMaxOutputTokens ??
+      Math.min(4096, input.model.spec.maxOutputTokens ?? 4096),
     stream: true,
     ...(system.length === 0 ? {} : { system: Object.freeze(system) }),
     ...(tools.length === 0 ? {} : { tools: Object.freeze(tools) }),

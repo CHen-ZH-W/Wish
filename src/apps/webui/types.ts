@@ -1,4 +1,5 @@
 import type { ModelRef } from "../../core/model/model.js";
+import type { ApprovalRuleScope } from "../../permissions/rules/types.js";
 import type { ToolCapabilityRequest } from
   "../../core/tools/authorization.js";
 import type {
@@ -28,6 +29,7 @@ export interface WishWebApproval {
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly resolvedAt?: string;
+  readonly retentionScope?: ApprovalRuleScope;
   readonly reason?: string;
 }
 

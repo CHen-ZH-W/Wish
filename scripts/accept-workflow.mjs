@@ -1,0 +1,73 @@
+import assert from "node:assert/strict";
+import { WorkflowRuntime } from "../dist/workflow/runtime.js";
+import { MemoryWorkflowStore } from "../dist/workflow/store.js";
+import { DomainWorkflowStore } from "../dist/workflow/store.js";
+import { FileKvStorageBackend } from "../dist/storage/providers/file/kv.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+const task = (id, dependencies = []) => ({ id, title: id, dependencies, execution: { role: "worker", readOnly: true, timeoutMs: 1000 } });
+const owner = { parentAgentId: "a", parentSessionId: "s", parentRunId: "r", workspaceRoot: "/tmp" };
+const request = { key: "first", kind: "task-graph", owner, tasks: [task("a"), task("b", ["a"])], permissionProfile: "read-only", availableTools: ["read"] };
+const store = new MemoryWorkflowStore();
+const runtime = new WorkflowRuntime(store);
+const run = await runtime.create(request);
+assert.equal((await runtime.create(request)).id, run.id);
+await assert.rejects(runtime.create({ ...request, budget: { maxTotalAttempts: 1 } }), /conflict/);
+await assert.rejects(runtime.beginAttempt({ runId: run.id, stepId: "b", strategy: "first" }), /dependencies/);
+const first = await runtime.beginAttempt({ runId: run.id, stepId: "a", strategy: "first" });
+const target = { runId: run.id, stepId: "a", attemptId: first.id };
+await runtime.markDispatched(target);
+await runtime.bindChild(target, "child-1");
+await assert.rejects(runtime.recoverInterrupted(), /startup-only/);
+const restored = new WorkflowRuntime(store);
+await restored.recoverInterrupted();
+assert.equal((await restored.get(run.id)).steps[0].attempts[0].disposition, "resumable");
+await assert.rejects(restored.beginAttempt({ runId: run.id, stepId: "a", strategy: "first" }), /same-Attempt/);
+const resumed = await restored.resumeAttempt(target);
+assert.equal(resumed.id, first.id);
+assert.equal(resumed.idempotencyKey, first.idempotencyKey);
+assert.equal(resumed.deadline, first.deadline);
+await restored.finishAttempt(target, "failed", "bad input");
+await assert.rejects(restored.beginAttempt({ runId: run.id, stepId: "a", strategy: "first" }), /Repeated error/);
+const retry = await restored.beginAttempt({ runId: run.id, stepId: "a", strategy: "changed input" });
+assert.equal(retry.ordinal, 2);
+await assert.rejects(restored.finishAttempt(target, "completed", "late"), /Stale/);
+await restored.finishAttempt({ ...target, attemptId: retry.id }, "completed", "done");
+assert.equal((await restored.get(run.id)).steps[1].status, "pending");
+const second = await restored.beginAttempt({ runId: run.id, stepId: "b", strategy: "first" });
+await restored.markDispatched({ ...target, stepId: "b", attemptId: second.id });
+const crashed = new WorkflowRuntime(store);
+await crashed.recoverInterrupted();
+const unresolved = { ...target, stepId: "b", attemptId: second.id };
+await assert.rejects(crashed.resumeAttempt(unresolved), /not resumable/);
+await assert.rejects(crashed.beginAttempt({ runId: run.id, stepId: "b", strategy: "retry" }), /reconciliation/);
+await crashed.reconcile(unresolved, "completed", "human", "Observed the output artifact");
+assert.equal((await crashed.get(run.id)).status, "completed");
+assert.equal((await crashed.get(run.id)).events.length, (await crashed.get(run.id)).revision);
+await assert.rejects(crashed.finishAttempt(unresolved, "failed", "late"), /Terminal/);
+assert.throws(() => { run.steps[0].task.execution.readOnly = false; }, TypeError);
+console.log("workflow lifecycle, budgets, same-attempt recovery and reconciliation passed");
+
+for (const budget of [{ maxTotalAttempts: 1 }, { maxAttemptsPerStep: 1 }, { maxCallsPerEdge: 1 }, { circuitThreshold: 1 }]) {
+  const limited = new WorkflowRuntime(new MemoryWorkflowStore());
+  const run = await limited.create({ ...request, budget });
+  const attempt = await limited.beginAttempt({ runId: run.id, stepId: "a", strategy: "first" });
+  await limited.finishAttempt({ runId: run.id, stepId: "a", attemptId: attempt.id }, "failed", "failure");
+  await assert.rejects(limited.beginAttempt({ runId: run.id, stepId: "a", strategy: "different" }), /budget|circuit/);
+}
+const directory = await mkdtemp(join(tmpdir(), "wish-workflow-store-"));
+const kv = new FileKvStorageBackend({ backendId: "fixture", rootDirectory: directory });
+const storage = { backend: () => ({ id: "fixture", capabilities: { writerConcurrency: "process-local", kv: { list: true } }, kv }) };
+try {
+  const durable = new WorkflowRuntime(new DomainWorkflowStore(storage, "fixture"));
+  const run = await durable.create(request);
+  const attempt = await durable.beginAttempt({ runId: run.id, stepId: "a", strategy: "first" });
+  await durable.close();
+  const restored = new WorkflowRuntime(new DomainWorkflowStore(storage, "fixture"));
+  await restored.recoverInterrupted();
+  assert.equal((await restored.get(run.id)).steps[0].attempts[0].id, attempt.id);
+  assert.equal((await restored.get(run.id)).steps[0].attempts[0].disposition, "resumable");
+  await restored.close();
+} finally { await kv.close(); await rm(directory, { recursive: true, force: true }); }

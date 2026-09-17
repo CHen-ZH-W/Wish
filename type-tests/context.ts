@@ -16,6 +16,7 @@ import type {
   ContextConfiguration,
   ContextHistorySource,
   ContextInput,
+  ContextRequestView,
   ContextToolResultArchiveReceipt,
   ModelContextWindowSource,
   ModelInputTokenCounter,
@@ -100,6 +101,8 @@ const contextInput = {
   model: { provider: "provider", model: "model" },
   workspace: {
     cwd: "/workspace",
+    fingerprint: "workspace:fixture",
+    revision: "workspace-revision:fixture",
     instructions: [
       { id: "workspace", authority: "developer", content: "instructions" },
     ],
@@ -207,6 +210,20 @@ const bundleRenderer: AgentLoopToolResultRenderer<{ readonly text: string }> =
     delegate: delegateRenderer,
     resolveSessionId: () => "session-1",
   });
+
+const requestView: ContextRequestView = {
+  currentMessage: { role: "user", content: "rendered" },
+  source: "follow_up", availableTools: ["read"],
+};
+const finalizedInput: ContextInput | undefined = stepContext.projectInput?.({
+  input: stepContext.input, request: requestView,
+});
+// @ts-expect-error Request visibility is immutable, not a mutable registry.
+requestView.availableTools.push("write");
+// @ts-expect-error Message role is not valid provenance.
+const invalidSource: ContextRequestView["source"] = "assistant";
+void finalizedInput;
+void invalidSource;
 
 const configuration = {
   reservedOutputTokens: 8_192,

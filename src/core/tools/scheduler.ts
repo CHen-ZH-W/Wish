@@ -18,6 +18,7 @@ export type {
 export {
   assertActiveToolAuthorizationGrant,
   normalizeToolCapabilityRequest,
+  toolCapabilityRequestDigest,
 } from "./authorization.js";
 export type {
   ToolAuthorizationDecision,

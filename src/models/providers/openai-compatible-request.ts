@@ -52,7 +52,7 @@ export function mapOpenAIRequest(
     };
   });
   const compatibility = input.model.request;
-  const maxOutputTokens = request.maxOutputTokens ?? input.model.spec.maxOutputTokens;
+  const maxOutputTokens = request.maxOutputTokens ?? input.model.spec.defaultMaxOutputTokens;
   const body: Record<string, unknown> = {
     ...compatibility.extraBody,
     model: request.model.model,
@@ -69,6 +69,19 @@ export function mapOpenAIRequest(
       ? { stream_options: { include_usage: true } }
       : {}),
   };
+  if (request.reasoningEffort !== undefined) {
+    const control = input.model.spec.reasoningControl;
+    if (control?.format !== "deepseek-chat" || !control.efforts.some(effort => effort === request.reasoningEffort)) {
+      throw new OpenAIRequestError("Requested reasoning effort is not supported by this model");
+    }
+    if (request.reasoningEffort === "none") {
+      body.thinking = { type: "disabled" };
+      delete body.reasoning_effort;
+    } else {
+      body.thinking = { type: "enabled" };
+      body.reasoning_effort = request.reasoningEffort;
+    }
+  }
   return Object.freeze({
     body: Object.freeze(body),
     authorityDegraded: hasDeveloper && roleMode === "system-fallback",

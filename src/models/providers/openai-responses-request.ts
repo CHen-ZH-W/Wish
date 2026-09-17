@@ -60,7 +60,7 @@ export function mapOpenAIResponsesRequest(
 
   const compatibility = input.model.request;
   const maxOutputTokens = request.maxOutputTokens ??
-    input.model.spec.maxOutputTokens;
+    input.model.spec.defaultMaxOutputTokens;
   const body: Record<string, unknown> = {
     ...(input.model.spec.reasoning
       ? { reasoning: { effort: "high", summary: "auto" } }
@@ -77,6 +77,13 @@ export function mapOpenAIResponsesRequest(
       ? {}
       : { [compatibility.maxTokensField]: maxOutputTokens }),
   };
+  if (request.reasoningEffort !== undefined) {
+    const control = input.model.spec.reasoningControl;
+    if (control?.format !== "openai-responses" || !control.efforts.some(effort => effort === request.reasoningEffort)) {
+      throw new OpenAIResponsesRequestError("Requested reasoning effort is not supported by this model");
+    }
+    body.reasoning = { effort: request.reasoningEffort, summary: "auto" };
+  }
   return Object.freeze({
     body: Object.freeze(body),
     authorityDegraded: hasDeveloper && roleMode === "system-fallback",

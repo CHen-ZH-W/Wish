@@ -260,9 +260,10 @@ export class ToolExecutor<Context = unknown> {
   }): Promise<ToolResult> {
     let phase: ToolExecutionPhase = "prepared";
     try {
-      const capabilities = this.options.registry.resolveCapabilities(
+      const capabilities = await this.options.registry.resolveCapabilities(
         input.call,
         input.context,
+        input.signal,
       );
       const authorizationInput: ToolAuthorizationInput<Context> = Object.freeze({
         call: input.call,
@@ -325,8 +326,6 @@ export class ToolExecutor<Context = unknown> {
         );
       }
 
-      const grantId = requireIdentifier(this.grantId(), "Tool Grant id");
-      const issuedAtEpochMs = this.clockEpochMilliseconds();
       const finalSnapshotDenial = this.snapshotDenial(input.call, input.snapshot);
       if (finalSnapshotDenial !== undefined) {
         await this.emitAuthorizationDenied(
@@ -345,6 +344,62 @@ export class ToolExecutor<Context = unknown> {
           phase,
         );
       }
+      if (this.options.authorization.commit !== undefined) {
+        const committed = validateAuthorizationValidation(
+          await this.options.authorization.commit(
+            Object.freeze({ ...authorizationInput, decision }),
+            input.signal,
+          ),
+        );
+        if (isAborted(input.signal)) {
+          return abortedResult(input.call, phase, input.signal?.reason);
+        }
+        if (committed.status === "denied") {
+          await this.emitAuthorizationDenied(
+            input,
+            committed.reason,
+            input.events,
+          );
+          return failedResult(
+            input.call,
+            toolError("permission_denied", committed.reason, false, phase),
+            phase,
+          );
+        }
+        if (committed.policyVersion !== validation.policyVersion) {
+          const reason =
+            `Tool "${input.call.name}" authorization commit became stale before dispatch`;
+          await this.emitAuthorizationDenied(input, reason, input.events);
+          return failedResult(
+            input.call,
+            toolError("permission_denied", reason, false, phase),
+            phase,
+          );
+        }
+      }
+      const postCommitSnapshotDenial = this.snapshotDenial(
+        input.call,
+        input.snapshot,
+      );
+      if (postCommitSnapshotDenial !== undefined) {
+        await this.emitAuthorizationDenied(
+          input,
+          postCommitSnapshotDenial,
+          input.events,
+        );
+        return failedResult(
+          input.call,
+          toolError(
+            "permission_denied",
+            postCommitSnapshotDenial,
+            false,
+            phase,
+          ),
+          phase,
+        );
+      }
+      const grantId = requireIdentifier(this.grantId(), "Tool Grant id");
+      const issuedAtEpochMs = this.clockEpochMilliseconds();
       const grant = issueToolAuthorizationGrant({
         grantId,
         call: input.call,

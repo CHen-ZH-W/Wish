@@ -35,6 +35,8 @@ test("the CLI and WebUI bins delegate process composition only to bootstrap", as
       /createWishApplication|createWishHostApplication|createWishCli|startWishWebUiServer/u,
     );
   }
+  assert.match(webUiMain, /management: managedWebUi\(/u);
+  assert.doesNotMatch(webUiMain, /WISH_WEBUI_NEXT/u);
   assert.doesNotMatch(
     bootstrapSource,
     /createWishApplication|createWishHostApplication|createWishCli|startWishWebUiServer/u,
@@ -46,6 +48,66 @@ test("the CLI and WebUI bins delegate process composition only to bootstrap", as
   assert.match(composition, /id: timer[\s\S]*name: 'cordis:timer'/u);
   assert.match(composition, /id: hmr[\s\S]*name: 'cordis:hmr'/u);
   assert.match(composition, /id: app[\s\S]*name: 'cordis:group'[\s\S]*group: true/u);
+  assert.match(
+    composition,
+    /id: workspace-local[\s\S]*name: 'cordis:workspace-local'/u,
+  );
+  assert.match(
+    composition,
+    /id: filesystem-local[\s\S]*name: 'cordis:filesystem-local'/u,
+  );
+  assert.match(
+    composition,
+    /id: filesystem-search-local[\s\S]*name: 'cordis:filesystem-search-local'/u,
+  );
+  assert.match(
+    composition,
+    /id: tool-output-artifacts[\s\S]*name: 'cordis:tool-output-artifacts-blob'/u,
+  );
+  assert.match(
+    composition,
+    /id: shell-linux-native[\s\S]*name: 'cordis:shell-linux-native'/u,
+  );
+  assert.match(
+    composition,
+    /id: tmux-local[\s\S]*name: 'cordis:tmux-local'/u,
+  );
+  assert.match(
+    composition,
+    /id: subagent-execution-tmux[\s\S]*name: 'cordis:subagent-execution-tmux'/u,
+  );
+  assert.match(
+    composition,
+    /id: subagents-runtime[\s\S]*name: 'cordis:subagents-runtime'/u,
+  );
+  assert.match(
+    composition,
+    /id: tool-subagents[\s\S]*name: 'cordis:subagent-tools'/u,
+  );
+  assert.match(composition, /id: plan-storage[\s\S]*name: 'cordis:plan-storage'/u);
+  assert.match(
+    composition,
+    /id: coordinator-storage[\s\S]*name: 'cordis:coordinator-storage'/u,
+  );
+  assert.match(composition, /id: tool-plan[\s\S]*name: 'cordis:plan-tools'/u);
+  assert.match(
+    composition,
+    /id: tool-coordinator[\s\S]*name: 'cordis:coordinator-tools'/u,
+  );
+  assert.match(composition, /WISH_TMUX_ENABLED === '0'/u);
+  assert.match(composition, /WISH_SUBAGENTS_ENABLED === '0'/u);
+  assert.match(composition, /WISH_SUBAGENT_TOOLS_ENABLED === '0'/u);
+  assert.match(composition, /WISH_PLAN_ENABLED === '0'/u);
+  assert.match(composition, /WISH_COORDINATOR_ENABLED === '0'/u);
+  assert.match(composition, /id: storage[\s\S]*name: 'cordis:storage'/u);
+  assert.match(
+    composition,
+    /id: storage-file[\s\S]*name: 'cordis:storage-file'/u,
+  );
+  assert.match(
+    composition,
+    /id: runtime-lifecycle-journal[\s\S]*name: 'cordis:runtime-lifecycle-journal'/u,
+  );
   assert.match(composition, /id: cli[\s\S]*name: 'cordis:cli'/u);
   assert.match(composition, /id: webui[\s\S]*name: 'cordis:webui'/u);
   assert.match(composition, /disabled: !!js launch\.surface !== 'cli'/u);
@@ -182,17 +244,24 @@ export function apply() {
 });
 
 test("the built CLI reaches its Loader-managed production surface", async () => {
-  const result = await execFileAsync(
-    process.execPath,
-    [join(repositoryRoot, "dist/apps/cli/main.js"), "--version"],
-    {
-      cwd: repositoryRoot,
-      env: cleanWishEnvironment(),
-      timeout: 10_000,
-    },
-  );
-  assert.equal(result.stdout, "wish 0.1.0\n");
-  assert.equal(result.stderr, "");
+  const directory = await mkdtemp(join(tmpdir(), "wish-cordis-g1-cli-"));
+  try {
+    const environment = cleanWishEnvironment();
+    environment.WISH_DATA_DIR = join(directory, "data");
+    const result = await execFileAsync(
+      process.execPath,
+      [join(repositoryRoot, "dist/apps/cli/main.js"), "--version"],
+      {
+        cwd: repositoryRoot,
+        env: environment,
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.stdout, "wish 0.1.0\n");
+    assert.equal(result.stderr, "");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the built WebUI is Loader-managed and Root disposal closes the process", async () => {
@@ -226,19 +295,37 @@ test("the built WebUI is Loader-managed and Root disposal closes the process", a
 
   try {
     await waitFor(
-      () => stderr.includes(`Wish WebUI API listening at http://127.0.0.1:${port}`),
+      () => stderr.includes(`Wish management listening at http://127.0.0.1:${port}`),
       () => `WebUI did not start through Cordis:\n${stderr}`,
     );
     const response = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /<title>Wish<\/title>/u);
+    assert.match(await response.text(), /id="wish-root"/u);
+    assert.match(response.headers.get("content-security-policy"), /default-src 'self'/u);
+    const base = `http://127.0.0.1:${port}`;
+    const bootstrapView = await (await fetch(`${base}/api/management/bootstrap`)).json();
+    assert.match(bootstrapView.token, /^[a-f0-9]{64}$/u);
+    await waitFor(async () => (await fetch(`${base}/api/health`)).status === 200,
+      () => `business routes did not activate:\n${stderr}`);
+    for (const path of ["/legacy", "/next", "/assets/app.js", "/assets/next.css"]) {
+      assert.equal((await fetch(base + path)).status, 404, path);
+    }
+    const script = await fetch(`${base}/assets/client.js`);
+    assert.equal(script.status, 200);
+    assert.match(script.headers.get("content-type"), /text\/javascript/u);
+    const css = await fetch(`${base}/assets/app.css`, { method: "HEAD" });
+    assert.equal(css.status, 200);
+    assert.match(css.headers.get("content-type"), /text\/css/u);
+    assert.equal((await fetch(`${base}/api/sessions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 403);
+    const created = await fetch(`${base}/api/sessions`, { method: "POST", headers: { "Content-Type": "application/json", "X-Wish-Management-Token": bootstrapView.token }, body: "{}" });
+    assert.equal(created.status, 201);
 
     assert.equal(child.kill("SIGTERM"), true);
     const [code, signal] = await withTimeout(exited, 10_000, "WebUI did not stop after SIGTERM");
     assert.equal(code, 143);
     assert.equal(signal, null);
     assert.equal(stdout, "");
-    assert.match(stderr, /Wish WebUI API stopping after SIGTERM/u);
+    await assert.rejects(fetch(`${base}/api/management/bootstrap`));
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await rm(directory, { recursive: true, force: true });
@@ -269,7 +356,7 @@ async function reservePort() {
 async function waitFor(predicate, message, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(message());

@@ -178,7 +178,12 @@ test("summarizes one complete oldEntries prefix and appends one checkpoint", asy
     stepId: "step-1",
     sessionId: "session-1",
     model: agentModel,
-    workspace: { cwd: "/workspace", instructions: [] },
+    workspace: {
+      cwd: "/workspace",
+      fingerprint: "workspace:fixture",
+      revision: "workspace-revision:fixture",
+      instructions: [],
+    },
     runtime: {
       capturedAt: "2026-09-03T00:00:00.000Z",
       stateVersion: 1,
@@ -627,7 +632,12 @@ test("recovers a real AgentLoop projection through one append-only checkpoint", 
             snapshot,
             sessionId: "session-1",
             model: agentModel,
-            workspace: { cwd: "/workspace", instructions: [] },
+            workspace: {
+              cwd: "/workspace",
+              fingerprint: "workspace:fixture",
+              revision: "workspace-revision:fixture",
+              instructions: [],
+            },
           }),
           tools: { context: {}, authorityVersion: "authority-1" },
         };

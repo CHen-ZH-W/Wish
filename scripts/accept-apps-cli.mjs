@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  CliToolApprovalPort,
   createWishCli,
   parseWishCliArguments,
   parseWishCliActiveInput,
@@ -13,9 +14,9 @@ import {
 import {
   ApplicationFacade,
 } from "../dist/apps/application.js";
-import { createWishAgent } from "../dist/core/agent/service.js";
-import { createAgentLoopPipeline } from "../dist/core/agent-loop/service.js";
-import { createWishRuntime } from "../dist/core/runtime/service.js";
+import { createWishAgent } from "../dist/composition/agent-service.js";
+import { createAgentLoopPipeline } from "../dist/composition/agent-loop-standalone.js";
+import { createWishRuntime } from "../dist/composition/runtime-service.js";
 import {
   loadWishHostConfiguration,
   WishHostConfigurationError,
@@ -30,6 +31,118 @@ import { TokenizerUsageEstimator } from "../dist/models/usage.js";
 import { createFileSessionResources } from "../dist/sessions/index.js";
 import { createContextResources } from "../dist/context/service.js";
 import { createCompactionResources } from "../dist/compaction/service.js";
+import { FileToolResultArchive } from
+  "../dist/tools/results/providers/file.js";
+import { LocalFilesystemBackend } from
+  "../dist/filesystem/providers/local.js";
+
+function workspaceSnapshot(root) {
+  return Object.freeze({
+    requestedRoot: root,
+    root,
+    fingerprint: `workspace:fixture:${root}`,
+    revision: `workspace-revision:fixture:${root}`,
+    instructions: Object.freeze([]),
+  });
+}
+
+function runtimeRecoverySnapshot(runId) {
+  const tool = Object.freeze({
+    runId,
+    userTurnId: `${runId}-turn`,
+    stepId: `${runId}-step`,
+    callId: `${runId}-call`,
+    toolName: "bash",
+    phase: "dispatched",
+    recoveryPolicy: "needs-reconciliation",
+    disposition: "needs-reconciliation",
+  });
+  const interrupted = Object.freeze({
+    runId,
+    agentId: "wish",
+    scope: "session-recovery",
+    userTurnIds: Object.freeze([tool.userTurnId]),
+    stepIds: Object.freeze([tool.stepId]),
+    tools: Object.freeze([tool]),
+    disposition: "needs-reconciliation",
+  });
+  const recorded = Object.freeze({
+    ...interrupted,
+    interruptedAt: "2099-01-01T00:00:00.000Z",
+    reason: "provider_startup",
+  });
+  const target = Object.freeze({
+    runId,
+    agentId: interrupted.agentId,
+    scope: interrupted.scope,
+    userTurnId: tool.userTurnId,
+    stepId: tool.stepId,
+    callId: tool.callId,
+    toolName: tool.toolName,
+    recoveryPolicy: tool.recoveryPolicy,
+    interruptedAt: recorded.interruptedAt,
+    interruptionReason: recorded.reason,
+  });
+  return Object.freeze({
+    schemaVersion: 1,
+    status: "ready",
+    recovery: Object.freeze({
+      schemaVersion: 1,
+      reason: "provider_startup",
+      recoveredAt: recorded.interruptedAt,
+      scannedThroughCursor: 5,
+      runs: Object.freeze([interrupted]),
+    }),
+    recordedInterruptedRuns: Object.freeze([recorded]),
+    pendingReconciliations: Object.freeze([target]),
+    reconciliationResolutions: Object.freeze([]),
+    reconciliationRequiredRuns: Object.freeze([recorded]),
+  });
+}
+
+function runtimeRecoveryPort(runId) {
+  const snapshot = runtimeRecoverySnapshot(runId);
+  return Object.freeze({
+    async snapshot() {
+      return snapshot;
+    },
+    async resolve() {
+      throw new Error("Unexpected reconciliation resolution");
+    },
+  });
+}
+
+function runtimeRecoveryHarness(runId) {
+  let current = runtimeRecoverySnapshot(runId);
+  const requests = [];
+  const port = Object.freeze({
+    async snapshot() {
+      return current;
+    },
+    async resolve(request) {
+      requests.push(request);
+      const target = current.pendingReconciliations[0];
+      assert.ok(target);
+      const resolution = Object.freeze({
+        schemaVersion: 1,
+        ...target,
+        resolutionId: request.resolutionId,
+        outcome: request.outcome,
+        actor: request.actor,
+        reason: request.reason,
+        resolvedAt: "2099-01-01T00:00:01.000Z",
+      });
+      current = Object.freeze({
+        ...current,
+        pendingReconciliations: Object.freeze([]),
+        reconciliationResolutions: Object.freeze([resolution]),
+        reconciliationRequiredRuns: Object.freeze([]),
+      });
+      return Object.freeze({ resolution, replayed: false });
+    },
+  });
+  return { port, requests };
+}
 
 function createStandaloneHostApplication(configuration, input) {
   const sessions = createFileSessionResources(configuration.dataDirectory);
@@ -42,6 +155,10 @@ function createStandaloneHostApplication(configuration, input) {
   const context = createContextResources({
       dataDirectory: configuration.dataDirectory,
       sessions,
+      archive: new FileToolResultArchive({
+        directory: join(configuration.dataDirectory, "tool-results"),
+        locatorRoot: configuration.dataDirectory,
+      }),
       agentInstructions: configuration.agentInstructions,
       models,
       configuration: {
@@ -62,10 +179,11 @@ function createStandaloneHostApplication(configuration, input) {
         agentId: configuration.agentId,
         models,
         workspace: {
-          resolve({ session }) {
-            return { cwd: session.scope, instructions: [] };
+          resolve({ root }) {
+            return workspaceSnapshot(root);
           },
         },
+        filesystem: new LocalFilesystemBackend(),
         context,
         compaction,
         ...(input.approval === undefined
@@ -316,6 +434,80 @@ test("parses explicit interactive and one-shot CLI modes", () => {
     () => parseWishCliArguments(["unexpected"]),
     WishCliUsageError,
   );
+  assert.deepEqual(parseWishCliArguments(["recovery", "list", "--data-dir", ".data"]), {
+    command: "recovery-list",
+    dataDirectory: ".data",
+  });
+  assert.deepEqual(
+    parseWishCliArguments([
+      "recovery", "resolve",
+      "--resolution-id", "resolution-1",
+      "--run-id", "run-1",
+      "--user-turn-id", "turn-1",
+      "--step-id", "step-1",
+      "--call-id", "call-1",
+      "--outcome", "confirmed-not-completed",
+      "--reason", "checked external state",
+    ]),
+    {
+      command: "recovery-resolve",
+      reconciliation: {
+        resolutionId: "resolution-1",
+        runId: "run-1",
+        userTurnId: "turn-1",
+        stepId: "step-1",
+        callId: "call-1",
+        outcome: "confirmed-not-completed",
+        actor: "wish-cli-operator",
+        reason: "checked external state",
+      },
+    },
+  );
+  assert.throws(
+    () => parseWishCliArguments(["recovery", "resolve", "--outcome", "unknown"]),
+    WishCliUsageError,
+  );
+});
+
+test("CLI lists and durably resolves Runtime reconciliation without starting a Run", async () => {
+  const listedHarness = runtimeRecoveryHarness("run-cli-recovery-list");
+  const listedTerminal = new FakeTerminal({ interactive: false });
+  const listedCli = createWishCli({
+    terminal: listedTerminal,
+    openApplication: async () => ({ runtimeRecovery: listedHarness.port }),
+  });
+  assert.equal(await listedCli.run(["recovery", "list"]), 0);
+  assert.equal(
+    JSON.parse(listedTerminal.output).pendingReconciliations[0].callId,
+    "run-cli-recovery-list-call",
+  );
+
+  const resolvedHarness = runtimeRecoveryHarness("run-cli-recovery-resolve");
+  const target = await resolvedHarness.port.snapshot().then((snapshot) =>
+    snapshot.pendingReconciliations[0]
+  );
+  const resolvedTerminal = new FakeTerminal({ interactive: false });
+  const resolvedCli = createWishCli({
+    terminal: resolvedTerminal,
+    openApplication: async () => ({ runtimeRecovery: resolvedHarness.port }),
+  });
+  assert.equal(await resolvedCli.run([
+    "recovery", "resolve",
+    "--resolution-id", "resolution-cli-1",
+    "--run-id", target.runId,
+    "--user-turn-id", target.userTurnId,
+    "--step-id", target.stepId,
+    "--call-id", target.callId,
+    "--outcome", "confirmed-completed",
+    "--actor", "operator@example.test",
+    "--reason", "external record exists",
+    "--evidence", "ticket-123",
+  ]), 0);
+  assert.equal(resolvedHarness.requests.length, 1);
+  assert.equal(resolvedHarness.requests[0].evidence, "ticket-123");
+  const result = JSON.parse(resolvedTerminal.output);
+  assert.equal(result.commit.resolution.outcome, "confirmed-completed");
+  assert.deepEqual(result.recovery.pendingReconciliations, []);
 });
 
 test("maps active input by state without guessing between control kinds", () => {
@@ -339,6 +531,22 @@ test("maps active input by state without guessing between control kinds", () => 
   assert.equal(parseWishCliActiveInput("/abort").control.type, "abort");
   assert.equal(parseWishCliActiveInput("/follow-up").type, "invalid");
   assert.equal(parseWishCliActiveInput("/unknown value").type, "invalid");
+});
+
+test("CLI approval maps explicit answers to once, run, session, and workspace", async () => {
+  for (const [answer, scope] of [
+    ["y", "once"],
+    ["r", "run"],
+    ["s", "session"],
+    ["w", "workspace"],
+  ]) {
+    const terminal = new FakeTerminal({ interactive: true, lines: [answer] });
+    const approval = new CliToolApprovalPort({ terminal });
+    const response = await approval.requestApproval(approvalInput("/workspace"));
+    assert.equal(response.status, "approved");
+    assert.equal(response.scope, scope);
+    assert.equal(response.metadata.persistence, scope);
+  }
 });
 
 test("loads shared host configuration without a second Models format", async () => {
@@ -412,7 +620,7 @@ test("host uses generated defaults or the conventional data-directory models fil
     });
     assert.deepEqual(generated.models.defaultModel, {
       provider: "deepseek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
     });
 
     const dataDirectory = join(root, ".wish");
@@ -563,6 +771,7 @@ test("one-shot piped input keeps answer on stdout and denies non-TTY tools", asy
     let approval;
     let approvalResponse;
     const application = {
+      runtimeRecovery: runtimeRecoveryPort("run-needs-review"),
       async createSession(input) {
         return session("session-pipe", input.workspaceRoot, input.title);
       },
@@ -598,10 +807,39 @@ test("one-shot piped input keeps answer on stdout and denies non-TTY tools", asy
     assert.equal(approvalResponse.status, "denied");
     assert.match(terminal.error, /approval requires an interactive terminal/u);
     assert.match(terminal.error, /Session: session-pipe/u);
+    assert.match(
+      terminal.error,
+      /sealed 1 interrupted Run; no Tool was replayed automatically/u,
+    );
+    assert.match(
+      terminal.error,
+      /reconciliation required for 1 Run: run-needs-review/u,
+    );
     assert.equal(terminal.prompts.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Cordis hosts can register CLI approval without threading it through Application", async () => {
+  const terminal = new FakeTerminal({ interactive: true });
+  let registeredApproval;
+  let applicationOpens = 0;
+  const cli = createWishCli({
+    terminal,
+    registerApproval(approval) {
+      registeredApproval = approval;
+    },
+    async openApplication(input) {
+      applicationOpens += 1;
+      assert.equal(input.approval, undefined);
+      throw new Error("Application must remain lazy for --version");
+    },
+  });
+
+  assert.equal(typeof registeredApproval.requestApproval, "function");
+  assert.equal(await cli.run(["--version"]), 0);
+  assert.equal(applicationOpens, 0);
 });
 
 test("real CLI composition persists Session history across one-shot invocations", async () => {
@@ -775,11 +1013,17 @@ test("active input controls Runtime while Tool approval owns stdin exclusively",
 
     const approvalPromise = approval.requestApproval(approvalInput(root));
     await waitFor(
-      () => terminal.prompts.includes("Allow this call once? [y/N] "),
+      () => terminal.prompts.includes(
+        "Allow? [y] once / [r] run / [s] session / [w] workspace / [N] deny: ",
+      ),
       "Tool approval did not preempt the control prompt",
     );
     terminal.pushLine("y");
-    assert.equal((await approvalPromise).status, "approved");
+    assert.deepEqual(await approvalPromise, {
+      status: "approved",
+      scope: "once",
+      metadata: { source: "wish-cli", persistence: "once" },
+    });
 
     await waitFor(
       () => terminal.prompts.filter((prompt) => prompt.startsWith("wish [running")).length >= 2,
@@ -894,6 +1138,10 @@ test("CLI controls drive the real Runtime Step and UserTurn queues", async () =>
         const context = createContextResources({
           dataDirectory,
           sessions,
+          archive: new FileToolResultArchive({
+            directory: join(dataDirectory, "tool-results"),
+            locatorRoot: dataDirectory,
+          }),
           agentInstructions: [],
           models: modelResources,
           configuration: { reservedOutputTokens: 1_024 },
@@ -912,10 +1160,11 @@ test("CLI controls drive the real Runtime Step and UserTurn queues", async () =>
               agentId: "wish",
               models: modelResources,
               workspace: {
-                resolve({ session }) {
-                  return { cwd: session.scope, instructions: [] };
+                resolve({ root }) {
+                  return workspaceSnapshot(root);
                 },
               },
+              filesystem: new LocalFilesystemBackend(),
               context,
               compaction,
               tools: { approval: input.approval },

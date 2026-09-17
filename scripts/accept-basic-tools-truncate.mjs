@@ -9,7 +9,7 @@ import {
   truncateHead,
   truncateLine,
   truncateTail,
-} from "../dist/tools/support/truncate.js";
+} from "../dist/tools/presentation/truncate.js";
 
 test("publishes the shared output limits", () => {
   assert.equal(DEFAULT_MAX_LINES, 2000);

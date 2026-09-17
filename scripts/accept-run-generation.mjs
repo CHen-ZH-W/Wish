@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -13,15 +13,31 @@ import {
   RunGenerationDrainTimeoutError,
   RunGenerationRetiredError,
 } from "../dist/core/runtime/generation.js";
-import Runtime from "../dist/core/runtime/service.js";
+import Runtime from "../dist/composition/runtime-service.js";
 import { bootstrap } from "../dist/boot/bootstrap.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+class StubRuntimeLifecycle extends Service {
+  version = "fixture-runtime-lifecycle-v1";
+
+  constructor(ctx) {
+    super(ctx, "runtimeLifecycle");
+  }
+
+  openRun() {}
+  finishRun() {}
+  openUserTurn() {}
+  finishUserTurn() {}
+  openStep() {}
+  finishStep() {}
+}
 
 test("retirement closes admission, aborts once, drains originals, and never replays", async () => {
   const completions = new Map();
   const starts = [];
   const controls = [];
+  let resourceReleases = 0;
   const runtime = {
     startRun(definition, input) {
       const completion = deferred();
@@ -50,6 +66,9 @@ test("retirement closes admission, aborts once, drains originals, and never repl
       source: "generation-test",
       reason,
     }),
+    release() {
+      resourceReleases += 1;
+    },
   });
   const definition = Object.freeze({ id: "agent-1" });
   const first = generation.startRun(definition, {
@@ -113,6 +132,7 @@ test("retirement closes admission, aborts once, drains originals, and never repl
   await tick();
   assert.equal(retired, false);
   assert.equal(generation.snapshot().activeRuns.length, 1);
+  assert.equal(resourceReleases, 0);
 
   completions.get("run-2").resolve({ status: "aborted" });
   await retirement;
@@ -120,6 +140,7 @@ test("retirement closes admission, aborts once, drains originals, and never repl
   assert.equal(generation.snapshot().activeRuns.length, 0);
   assert.equal(starts.length, 2, "retirement must not replay a Run");
   assert.equal(controls.length, 2, "each active Run receives one abort");
+  assert.equal(resourceReleases, 1);
 });
 
 test("a drain timeout fails visibly but remains pending until the original completion", async () => {
@@ -190,6 +211,7 @@ test("Cordis Runtime update drains the old generation before activating the new 
   const entered = deferred();
   let executions = 0;
   let cancellations = 0;
+  let sessionReleases = 0;
 
   class StubAgentLoop extends Service {
     constructor(ctx) {
@@ -197,8 +219,34 @@ test("Cordis Runtime update drains the old generation before activating the new 
     }
 
     open() {
+      let sessionReleased = false;
+      let contextReleased = false;
+      let resourcesReleased = false;
+      const sessions = Object.freeze({
+        manager: {},
+        get released() {
+          return sessionReleased;
+        },
+        release() {
+          if (sessionReleased) return false;
+          sessionReleased = true;
+          sessionReleases += 1;
+          return true;
+        },
+      });
+      const context = Object.freeze({
+        get released() {
+          return contextReleased;
+        },
+        release() {
+          if (contextReleased) return false;
+          contextReleased = true;
+          return true;
+        },
+      });
       return Object.freeze({
-        sessions: Object.freeze({ manager: {} }),
+        sessions,
+        context,
         models: Object.freeze({ configuredModel: {} }),
         stepPipeline: {
           async execute({ signal }) {
@@ -213,12 +261,26 @@ test("Cordis Runtime update drains the old generation before activating the new 
             return { status: "aborted", reason: "generation retired" };
           },
         },
+        get released() {
+          return resourcesReleased;
+        },
+        release() {
+          if (resourcesReleased) return false;
+          resourcesReleased = true;
+          context.release();
+          sessions.release();
+          return true;
+        },
       });
     }
   }
 
   const root = new Context();
   root.provide("launch", { fail() {} });
+  root.provide("sessions", { acquire() { return { manager: {}, release() {} }; } });
+  root.provide("models", { open() { return { configuredModel: {} }; } });
+  await root.plugin(StubRuntimeLifecycle);
+  await root.plugin(StubAgentLoop);
   const generations = [];
   let oldHandle;
   const consumer = root.plugin({
@@ -253,9 +315,7 @@ test("Cordis Runtime update drains the old generation before activating the new 
     maxSteps: 2,
     generationDrainTimeoutMs: 1_000,
   });
-  let agentLoopProvider;
   try {
-    agentLoopProvider = await root.plugin(StubAgentLoop);
     await consumer.await();
     await entered.promise;
     const oldGeneration = generations[0];
@@ -283,15 +343,18 @@ test("Cordis Runtime update drains the old generation before activating the new 
     assert.equal(generations[1].state, "accepting");
     assert.equal(executions, 1);
     assert.equal(cancellations, 1);
+    assert.equal(sessionReleases, 1);
   } finally {
     await root.fiber.dispose();
   }
   assert.equal(generations.at(-1)?.state, "retired");
   assert.equal(executions, 1, "Cordis update must not replay old work");
+  assert.equal(sessionReleases, 1, "only the executed Step opens and releases pipeline resources");
 });
 
 test("Loader stable-id update safely replaces a WebUI graph with an active model stream", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-run-generation-loader-"));
+  const configurationFile = join(directory, "cordis.yml");
   const provider = createServer((request, response) => {
     providerRequests += 1;
     request.resume();
@@ -316,12 +379,14 @@ test("Loader stable-id update safely replaces a WebUI graph with an active model
   let providerCloses = 0;
   let booted;
   try {
+    await copyFile(join(repositoryRoot, "config", "cordis.yml"), configurationFile);
     const providerAddress = await listen(provider);
     const webPort = await reservePort();
     booted = await bootstrap({
       surface: "webui",
       cwd: repositoryRoot,
       homeDirectory: directory,
+      configurationFile,
       environment: {
         WISH_DATA_DIR: join(directory, "state"),
         WISH_MODELS_JSON: JSON.stringify(loaderModelConfiguration(

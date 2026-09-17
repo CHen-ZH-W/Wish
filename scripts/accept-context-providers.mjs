@@ -18,6 +18,8 @@ function contextInput(overrides = {}) {
     model,
     workspace: {
       cwd: "/workspace/one",
+      fingerprint: "workspace:one",
+      revision: "workspace-revision:one",
       instructions: [
         {
           id: "workspace-rules",
@@ -90,6 +92,8 @@ test("rejects ambiguous instruction ids, authority, and content", () => {
   assert.throws(() => invalidAuthority.provide(contextInput({
     workspace: {
       cwd: "/workspace",
+      fingerprint: "workspace:invalid",
+      revision: "workspace-revision:invalid",
       instructions: [{ id: "bad", authority: "user", content: "bad" }],
     },
   })), /authority must be system or developer/u);
@@ -105,7 +109,12 @@ test("renders a fresh explicit State item for every Step", () => {
   const second = provider.provide(contextInput({
     runId: "run-2",
     stepId: "step-2",
-    workspace: { cwd: "/workspace/two", instructions: [] },
+    workspace: {
+      cwd: "/workspace/two",
+      fingerprint: "workspace:two",
+      revision: "workspace-revision:two",
+      instructions: [],
+    },
     runtime: {
       capturedAt: "2026-09-03T12:01:00.000Z",
       stateVersion: 3,
@@ -120,6 +129,11 @@ test("renders a fresh explicit State item for every Step", () => {
   assert.equal(first[0].placement, "dynamic_tail");
   assert.equal(first[0].message.role, "developer");
   assert.match(first[0].message.content, /"cwd": "\/workspace\/one"/u);
+  assert.match(first[0].message.content, /"fingerprint": "workspace:one"/u);
+  assert.match(
+    first[0].message.content,
+    /"revision": "workspace-revision:one"/u,
+  );
   assert.match(first[0].message.content, /"stateVersion": 2/u);
   assert.match(first[0].message.content, /"id": "step-1"/u);
   assert.match(second[0].message.content, /"cwd": "\/workspace\/two"/u);

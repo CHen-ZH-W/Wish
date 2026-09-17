@@ -11,7 +11,7 @@ import {
   ToolRegistry,
 } from "../dist/core/tools/scheduler.js";
 import { loadModelsConfiguration } from "../dist/models/config.js";
-import { ModelAdapterRegistry } from "../dist/models/registry.js";
+import { createDefaultModelAdapterRegistry, ModelAdapterRegistry } from "../dist/models/registry.js";
 import { createConfiguredModelStack } from "../dist/models/runtime.js";
 import { TokenizerUsageEstimator } from "../dist/models/usage.js";
 
@@ -38,6 +38,15 @@ async function collect(iterable) {
   const values = [];
   for await (const value of iterable) values.push(value);
   return values;
+}
+
+function sse(chunks) {
+  return new Response(chunks.map((chunk) =>
+    `data: ${typeof chunk === "string" ? chunk : JSON.stringify(chunk)}\n\n`
+  ).join(""), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
 }
 
 function configuration({ fallback = true, maxRetries = 1 } = {}) {
@@ -220,6 +229,83 @@ test("Agent completes the fixed Core and Models composition through retry, fallb
   );
   assert.equal(modelEvents.filter((event) => event.payload.type === "done").length, 2);
   assert.equal(modelEvents.every((event) => Object.isFrozen(event.payload)), true);
+});
+
+test("DeepSeek thinking Tool call replays complete reasoning and streamed usage in the next Step", async () => {
+  const configuration = loadModelsConfiguration({ environment: {} });
+  const requests = [];
+  const fullReasoning = "Need " + "arithmetic.";
+  const stack = createConfiguredModelStack({
+    configuration,
+    registry: createDefaultModelAdapterRegistry(),
+    usageEstimator: new TokenizerUsageEstimator(),
+    environment: { DEEPSEEK_API_KEY: "deepseek-test-key" },
+    async fetch(url, init) {
+      assert.equal(url, "https://api.deepseek.com/chat/completions");
+      assert.equal(init.headers.authorization, "Bearer deepseek-test-key");
+      const body = JSON.parse(init.body);
+      requests.push(body);
+      assert.equal(body.model, "deepseek-flash");
+      assert.deepEqual(body.thinking, { type: "enabled" });
+      assert.deepEqual(body.stream_options, { include_usage: true });
+      assert.equal(body.tools[0].function.name, "sum");
+      if (requests.length === 1) {
+        assert.deepEqual(body.messages.map((message) => message.role), ["user"]);
+        return sse([
+          { choices: [{ index: 0, delta: { reasoning_content: "Need " }, finish_reason: null }], usage: null },
+          { choices: [{ index: 0, delta: { reasoning_content: "arithmetic." }, finish_reason: null }], usage: null },
+          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "sum", arguments: '{"a":2,"b":3}' } }] }, finish_reason: "tool_calls" }] },
+          { choices: [], usage: { prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 4 }, completion_tokens: 6, total_tokens: 26 } },
+          "[DONE]",
+        ]);
+      }
+      if (requests.length !== 2 ||
+        body.messages.length !== 3 ||
+        body.messages[1].reasoning_content !== fullReasoning ||
+        body.messages[1].tool_calls?.[0]?.id !== "call-1" ||
+        body.messages[2].tool_call_id !== "call-1" ||
+        JSON.parse(body.messages[2].content).output?.value !== 5) {
+        return Response.json({ error: { message: "Missing reasoning_content or Tool reply" } }, { status: 400 });
+      }
+      return sse([
+        { choices: [{ index: 0, delta: { content: "5" }, finish_reason: "stop" }], usage: null },
+        { choices: [], usage: { prompt_tokens: 14, prompt_tokens_details: { cached_tokens: 2 }, completion_tokens: 1, total_tokens: 15 } },
+        "[DONE]",
+      ]);
+    },
+  });
+  const tools = createTools();
+  const runtime = new Runtime({
+    ...deterministicServices(),
+    maxSteps: 4,
+    stepPipeline: createLoop(stack.model, tools, {
+      resolve() {
+        return {
+          model: stack.configuredModel.getDefaultModel(),
+          context: { providers: [], input: {} },
+          tools: { context: {}, authorityVersion: "authority-1" },
+        };
+      },
+    }),
+  });
+  const agent = new Agent({ id: "agent" }, runtime);
+  const completion = await agent.startRun({
+    scope: "deepseek-thinking-tool",
+    payload: { text: "What is 2+3?" },
+  }).completion;
+
+  assert.equal(completion.status, "completed");
+  assert.equal(completion.result.output.text, "5");
+  assert.equal(requests.length, 2, "the Tool result must trigger exactly one new model request");
+  assert.equal(requests[1].messages[1].reasoning_content, fullReasoning);
+  assert.deepEqual(tools.executions, [{ a: 2, b: 3 }]);
+  assert.deepEqual(completion.result.usage, {
+    inputTokens: 34,
+    cachedInputTokens: 6,
+    outputTokens: 7,
+    totalTokens: 41,
+    source: "provider",
+  });
 });
 
 test("abort and Provider failure cross the complete composition as Runtime terminals", async () => {

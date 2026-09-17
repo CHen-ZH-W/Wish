@@ -9,10 +9,10 @@ import {
   type WishWebApproval,
   type WishWebUiConfiguration,
 } from "../src/apps/webui/index.js";
-import type { BasicToolContext } from "../src/tools/index.js";
+import type { WishToolExecutionContext } from "../src/composition/tool-context.js";
 
 declare const application: WishApplication;
-declare const approvalInput: ToolAuthorizationInput<BasicToolContext>;
+declare const approvalInput: ToolAuthorizationInput<WishToolExecutionContext>;
 
 const approvals = new WebToolApprovalBroker();
 const approvalResult = approvals.requestApproval(approvalInput);

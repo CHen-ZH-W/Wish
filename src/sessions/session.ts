@@ -19,6 +19,8 @@ import {
   type AppendSessionMessagesInput,
   type AppendSessionMessagesResult,
   type ArchiveSessionInput,
+  type RestoreSessionInput,
+  type DeleteSessionInput,
   type CreateSessionInput,
   type GetSessionInput,
   type ListSessionsInput,
@@ -78,6 +80,25 @@ export class SessionManager {
     const session = snapshotSession(await this.store.archive(normalized));
     assertSessionIdentity(session, normalized.sessionId);
     return session;
+  }
+
+  async restore(input: RestoreSessionInput): Promise<Session> {
+    const normalized = normalizeGetSessionInput(input);
+    const session = snapshotSession(await this.store.restore(normalized));
+    assertSessionIdentity(session, normalized.sessionId);
+    return session;
+  }
+
+  delete(input: DeleteSessionInput): Promise<void> {
+    return this.store.delete(normalizeGetSessionInput(input));
+  }
+
+  async wasDeleted(input: GetSessionInput): Promise<boolean> {
+    const deleted = await this.store.wasDeleted(normalizeGetSessionInput(input));
+    if (typeof deleted !== "boolean") {
+      throw new Error("SessionStore.wasDeleted must return a boolean");
+    }
+    return deleted;
   }
 
   async readHistory(

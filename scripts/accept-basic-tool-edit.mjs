@@ -6,10 +6,21 @@ import test from "node:test";
 
 import { ToolExecutor } from "../dist/core/tools/executor.js";
 import { ToolRegistry } from "../dist/core/tools/registry.js";
-import { createEditTool } from "../dist/tools/basic/edit.js";
+import { createEditTool as createEditToolDefinition } from
+  "../dist/filesystem/consumers/model-tools/edit.js";
+import { LocalFilesystemBackend } from
+  "../dist/filesystem/providers/local.js";
+import { basicToolContext } from "./support/basic-tool-context.mjs";
 
 const scope = Object.freeze({ runId: "run", userTurnId: "turn", stepId: "step" });
 let callOrdinal = 0;
+
+function createEditTool(options = {}) {
+  return createEditToolDefinition({
+    filesystem: new LocalFilesystemBackend(),
+    ...options,
+  });
+}
 
 function deferred() {
   let resolve = () => {};
@@ -43,7 +54,7 @@ async function executeEdit(definition, input, options = {}) {
   });
   return await executor.execute({
     call: parsed.call,
-    context: { cwd: options.cwd ?? "/workspace" },
+    context: basicToolContext(options.cwd ?? "/workspace"),
     scope,
     snapshot,
     ...(options.signal === undefined ? {} : { signal: options.signal }),

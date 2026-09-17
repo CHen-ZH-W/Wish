@@ -336,6 +336,7 @@ export function allocateMessageRecords(input: {
     userTurnId: draft.userTurnId,
     stepId: draft.stepId,
     origin: draft.origin,
+    ...(draft.inputSource === undefined ? {} : { inputSource: draft.inputSource }),
     createdAt: requireTimestamp(
       input.allocation.createdAt(),
       "Session record createdAt",
@@ -456,6 +457,14 @@ function snapshotMessageDraft(
   const message = snapshotModelMessage(draft.message);
   const origin = requireOrigin(draft.origin);
   validateOriginRole(origin, message, sessionId);
+  if (draft.inputSource !== undefined) {
+    if (
+      message.role !== "user" ||
+      !["user", "steering", "follow_up", "unknown"].includes(draft.inputSource)
+    ) {
+      throw invalid("Session input source must describe a user-role input", sessionId);
+    }
+  }
   const archive = draft.toolResultArchive === undefined
     ? undefined
     : snapshotArchive(draft.toolResultArchive);
@@ -479,6 +488,7 @@ function snapshotMessageDraft(
     ),
     stepId: requireIdentifier(draft.stepId, "Session message stepId"),
     origin,
+    ...(draft.inputSource === undefined ? {} : { inputSource: draft.inputSource }),
     message,
     ...(archive === undefined ? {} : { toolResultArchive: archive }),
   });
@@ -971,6 +981,7 @@ function sameMessageDraft(
     userTurnId: record.userTurnId,
     stepId: record.stepId,
     origin: record.origin,
+    inputSource: record.inputSource ?? "unknown",
     message: record.message,
     ...(record.toolResultArchive === undefined
       ? {}
@@ -980,6 +991,7 @@ function sameMessageDraft(
     userTurnId: draft.userTurnId,
     stepId: draft.stepId,
     origin: draft.origin,
+    inputSource: draft.inputSource ?? "unknown",
     message: draft.message,
     ...(draft.toolResultArchive === undefined
       ? {}

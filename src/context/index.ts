@@ -50,6 +50,7 @@ export type {
   ContextHistorySource,
   ContextHistorySummaryRecord,
   ContextInput,
+  ContextRequestView,
   ContextInstruction,
   ModelContextWindowSource,
   ContextProviderId,

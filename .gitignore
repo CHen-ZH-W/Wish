@@ -1,3 +1,33 @@
+# Build output and dependencies
 dist/
 node_modules/
+native/bin/
 
+# Local runtime data and configuration
+/.wish/
+/models.json
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Local project notes and tooling
+/DESIGN.md
+/PRODUCT.md
+/.agents/
+/.impeccable/
+/.vscode/
+/.codex/
+AGENTS.local.md
+
+# Test and compiler output
+/coverage/
+/playwright-report/
+/test-results/
+*.tsbuildinfo
+
+# Local logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

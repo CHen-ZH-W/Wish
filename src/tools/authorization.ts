@@ -4,24 +4,15 @@ import type {
   ToolAuthorizationService,
   ToolAuthorizationValidation,
 } from "../core/tools/authorization.js";
+import type {
+  ToolApprovalPort,
+  ToolApprovalResponse,
+} from "../approval/types.js";
 
-export type ToolApprovalResponse =
-  | {
-      readonly status: "approved";
-      readonly metadata?: Readonly<Record<string, unknown>>;
-    }
-  | {
-      readonly status: "denied";
-      readonly reason: string;
-    };
-
-/** UI-neutral approval Port implemented by CLI, WebUI, or another App host. */
-export interface ToolApprovalPort<Context = unknown> {
-  requestApproval(
-    input: ToolAuthorizationInput<Context>,
-    signal?: AbortSignal,
-  ): Promise<ToolApprovalResponse> | ToolApprovalResponse;
-}
+export type {
+  ToolApprovalPort,
+  ToolApprovalResponse,
+} from "../approval/types.js";
 
 export interface InteractiveToolAuthorizationOptions<Context = unknown> {
   readonly approval: ToolApprovalPort<Context>;

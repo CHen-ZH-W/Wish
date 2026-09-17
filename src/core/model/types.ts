@@ -56,6 +56,8 @@ export interface ModelRequest {
   readonly model: ModelRef;
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ModelToolDefinition[];
+  /** Model-owned, validated selection fixed when a Run starts. */
+  readonly reasoningEffort?: string;
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
   readonly metadata?: ModelMetadata;

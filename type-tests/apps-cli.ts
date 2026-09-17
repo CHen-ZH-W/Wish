@@ -3,7 +3,7 @@ import {
   loadWishHostConfiguration,
   type WishHostConfiguration,
 } from "../src/apps/config.js";
-import type { ApplicationOpenInput } from "../src/apps/service.js";
+import type { WishCliApplicationOpenInput } from "../src/apps/cli/cli.js";
 import {
   CliToolApprovalPort,
   createWishCli,
@@ -19,8 +19,8 @@ import {
   ApplicationFacade,
   type ModelDependencies,
 } from "../src/apps/application.js";
-import type { AgentDependencies } from "../src/core/agent/service.js";
-import { createFileSessionResources } from "../src/sessions/service.js";
+import type { AgentDependencies } from "../src/composition/agent-service.js";
+import { createFileSessionResources } from "../src/sessions/standalone.js";
 
 declare const terminal: WishCliTerminal;
 declare const environment: ModelEnvironment;
@@ -49,7 +49,7 @@ const cli: WishCli = createWishCli({
   },
 });
 const approval = new CliToolApprovalPort({ terminal });
-const surfaceInput: ApplicationOpenInput = { approval };
+const surfaceInput: WishCliApplicationOpenInput = { approval };
 const application: WishApplication = new ApplicationFacade({
   sessions: createFileSessionResources(configuration.dataDirectory),
   models,

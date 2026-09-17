@@ -8,7 +8,7 @@ import {
   expandPath,
   resolveReadPath,
   resolveToCwd,
-} from "../dist/tools/support/path.js";
+} from "../dist/filesystem/consumers/model-tools/path.js";
 
 test("expands home and normalizes Unicode spaces without stripping @", () => {
   assert.equal(expandPath("~"), homedir());

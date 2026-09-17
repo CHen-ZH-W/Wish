@@ -18,7 +18,12 @@ import {
   ModelRequestTokenCounter,
   type ModelRequestTokenizer,
 } from "../src/models/input-tokens.js";
-import { FileCatalogStore } from "../src/storage/models/file-catalog-store.js";
+import { FileCatalogStore } from "../src/models/persistence/file-store.js";
+import {
+  DomainModelCatalogStore,
+  modelCatalogDomain,
+} from "../src/models/persistence/domain-store.js";
+import type { StorageBackendResolver } from "../src/storage/index.js";
 import { TokenizerUsageEstimator } from "../src/models/usage.js";
 import type { ModelDependencies } from "../src/models/runtime.js";
 import type {
@@ -96,6 +101,11 @@ const catalog = new ModelCatalog({
   configuration,
   store: new FileCatalogStore({ path: ".wish/models-catalog.json" }),
 });
+declare const storage: StorageBackendResolver;
+const domainCatalog = new DomainModelCatalogStore({
+  storage,
+  backendId: "file",
+});
 
 void resolved;
 void configuredModel;
@@ -104,3 +114,5 @@ void contextTokenCounter;
 void configuredRequestTokenCounter;
 void resources;
 void catalog.list();
+void domainCatalog.load();
+void modelCatalogDomain;

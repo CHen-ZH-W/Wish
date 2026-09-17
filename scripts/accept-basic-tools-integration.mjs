@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { Agent } from "wish/core/agent";
@@ -12,7 +10,7 @@ import {
   BASIC_TOOL_NAMES,
   createBasicToolResultRenderer,
   registerBasicTools,
-} from "wish/tools";
+} from "wish/composition/coding-tools";
 
 function deterministicRuntimeServices() {
   const counters = { run: 0, turn: 0, control: 0, event: 0, time: 0 };
@@ -31,32 +29,6 @@ async function collect(iterable) {
   const values = [];
   for await (const value of iterable) values.push(value);
   return values;
-}
-
-function grepMatch(path, lineNumber, text) {
-  return JSON.stringify({
-    type: "match",
-    data: {
-      path: { text: path },
-      lines: { text: `${text}\n` },
-      line_number: lineNumber,
-    },
-  });
-}
-
-function completedGrepProcess(events) {
-  const child = new EventEmitter();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  child.stdin = new PassThrough();
-  child.kill = () => true;
-  queueMicrotask(() => {
-    for (const event of events) child.stdout.write(`${event}\n`);
-    child.stdout.end();
-    child.stderr.end();
-    child.emit("close", 0, null);
-  });
-  return child;
 }
 
 test("five Basic Tools complete Registry-to-AgentLoop integration", async () => {
@@ -110,26 +82,21 @@ test("five Basic Tools complete Registry-to-AgentLoop integration", async () => 
       },
     },
     grep: {
-      resolver: {
-        async resolve() {
-          operationCalls.push(["grep.resolve"]);
-          return "/fixtures/rg";
-        },
-      },
-      operations: {
-        async isDirectory(path) {
-          operationCalls.push(["grep.isDirectory", path]);
-          return true;
-        },
-        async readFile(path) {
-          operationCalls.push(["grep.readFile", path]);
-          return "needle\n";
-        },
-        spawnRipgrep(executable, arguments_) {
-          operationCalls.push(["grep.spawn", executable, arguments_]);
-          return completedGrepProcess([
-            grepMatch("/workspace/src/file.ts", 1, "needle"),
-          ]);
+      search: {
+        async search(request) {
+          operationCalls.push(["grep.search", request.path, request.pattern]);
+          return Object.freeze({
+            root: request.path,
+            rootKind: "directory",
+            matches: Object.freeze([Object.freeze({
+              path: "/workspace/src/file.ts",
+              lineNumber: 1,
+              lineText: "needle",
+              before: Object.freeze([]),
+              after: Object.freeze([]),
+            })]),
+            limitReached: false,
+          });
         },
       },
     },
@@ -343,7 +310,19 @@ test("five Basic Tools complete Registry-to-AgentLoop integration", async () => 
     },
     {
       callId: "bash-1",
-      capabilities: { requirements: [{ capability: "process.exec" }] },
+      capabilities: {
+        requirements: [
+          {
+            capability: "process.exec",
+            commands: ["printf done"],
+            cwd: "/workspace",
+            timeoutSeconds: 2,
+          },
+          { capability: "filesystem.read", paths: ["."] },
+          { capability: "filesystem.write", paths: ["."] },
+        ],
+        effects: { destructive: false, openWorld: false },
+      },
     },
   ]);
   assert.equal(writtenContent, "written");

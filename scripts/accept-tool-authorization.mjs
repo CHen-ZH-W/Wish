@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ToolExecutor, ToolRegistry } from "../dist/core/tools/scheduler.js";
+import {
+  ToolExecutor,
+  ToolRegistry,
+  normalizeToolCapabilityRequest,
+  toolCapabilityRequestDigest,
+} from "../dist/core/tools/scheduler.js";
 import {
   InteractiveToolAuthorizationService,
   createDenyAllToolAuthorizationService,
@@ -192,4 +197,41 @@ test("aborted approval never becomes an authorization decision", async () => {
       availableTools: ["read"],
     },
   }, controller.signal), reason);
+});
+
+test("Web capability identity is provider/origin scoped and canonical", () => {
+  const first = {
+    requirements: [
+      {
+        capability: "web.fetch",
+        providers: ["http-public"],
+        origins: ["https://example.com"],
+      },
+      { capability: "web.search", providers: ["deepseek"] },
+    ],
+    effects: { openWorld: true },
+  };
+  const reordered = {
+    requirements: [...first.requirements].reverse(),
+    effects: { openWorld: true },
+  };
+  assert.equal(
+    toolCapabilityRequestDigest(first),
+    toolCapabilityRequestDigest(reordered),
+  );
+  assert.equal(Object.isFrozen(normalizeToolCapabilityRequest(first)), true);
+  assert.throws(() => normalizeToolCapabilityRequest({
+    requirements: [{
+      capability: "web.fetch",
+      providers: ["http-public"],
+      origins: ["https://example.com/path"],
+    }],
+  }), /exact URL origin/u);
+  assert.throws(() => normalizeToolCapabilityRequest({
+    requirements: [{
+      capability: "web.fetch",
+      providers: ["http-public"],
+      origins: ["file:///tmp/example"],
+    }],
+  }), /HTTP or HTTPS/u);
 });

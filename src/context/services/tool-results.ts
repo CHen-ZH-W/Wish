@@ -12,13 +12,15 @@ import type {
 } from "../../core/model/model.js";
 import type { StepSnapshot } from "../../core/runtime/runtime.js";
 import type { ToolCall, ToolResult } from "../../core/tools/scheduler.js";
+import type {
+  ToolResultArchivePort,
+  ToolResultArchiveReference,
+} from "../../tools/results/types.js";
 import {
   DEFAULT_CONTEXT_TOOL_RESULT_ADMISSION,
   type ContextSessionId,
   type ContextToolResultAdmissionConfiguration,
   type ContextToolResultArchiveReceipt,
-  type ToolResultArchivePort,
-  type ToolResultArchiveReference,
 } from "../types.js";
 
 export const CONTEXT_TOOL_RESULT_ARCHIVE_RECEIPT_FIELD =

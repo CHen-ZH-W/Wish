@@ -95,6 +95,7 @@ function mapHistory(
         kind: "message" as const,
         sequence: record.sequence,
         userTurnId: record.userTurnId,
+        ...(record.inputSource === undefined ? {} : { inputSource: record.inputSource }),
         message: copyMessage(record.message),
         ...(record.toolResultArchive === undefined
           ? {}

@@ -32,7 +32,7 @@ import {
 import {
   FileSessionStore,
   sessionStorageKey,
-} from "../dist/storage/sessions/file-session-store.js";
+} from "../dist/sessions/providers/file/store.js";
 import {
   withContextToolResultArchiveReceipt,
 } from "../dist/context/index.js";
@@ -90,6 +90,46 @@ test("manages Session identity and keeps metadata outside history revision", asy
     sessions.get({ sessionId: "missing" }),
     SessionNotFoundError,
   );
+});
+
+for (const kind of ["memory", "file"]) test(`${kind} Session restore and delete preserve other data and reserve deleted identities`, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-session-actions-"));
+  const store = kind === "memory" ? deterministicStore() : new FileSessionStore({ rootDirectory: directory });
+  try {
+    const manager = await createSession(store);
+    assert.equal(await manager.wasDeleted({ sessionId: "session-1" }), false);
+    assert.equal(await manager.wasDeleted({ sessionId: "never-created" }), false);
+    await manager.create({ sessionId: "keep", agentId: "agent-1", scope: directory });
+    await manager.appendMessages({ sessionId: "session-1", messages: [messageDraft()] });
+    const history = await manager.readHistory({ sessionId: "session-1" });
+    await manager.archive({ sessionId: "session-1" });
+    assert.equal((await manager.list({ status: "active" })).length, 1);
+    assert.equal((await manager.list({ status: "archived" })).length, 1);
+    await manager.restore({ sessionId: "session-1" });
+    assert.equal((await manager.get({ sessionId: "session-1" })).status, "active");
+    assert.deepEqual(await manager.readHistory({ sessionId: "session-1" }), history);
+    // A list already in flight must tolerate a concurrently removed directory.
+    await Promise.all([manager.list(), manager.delete({ sessionId: "session-1" }), manager.list()]);
+    assert.equal(await manager.wasDeleted({ sessionId: "session-1" }), true);
+    assert.equal(await manager.wasDeleted({ sessionId: "keep" }), false);
+    await assert.rejects(manager.get({ sessionId: "session-1" }), { code: "session_not_found" });
+    await assert.rejects(manager.readHistory({ sessionId: "session-1" }), { code: "session_not_found" });
+    await assert.rejects(manager.restore({ sessionId: "session-1" }), { code: "session_not_found" });
+    await assert.rejects(manager.create({ sessionId: "session-1", agentId: "agent-1", scope: directory }), { code: "session_already_exists" });
+    await manager.delete({ sessionId: "session-1" });
+    assert.deepEqual((await manager.list()).map(item => item.sessionId), ["keep"]);
+    if (kind === "file") {
+      const marker = join(directory, `.deleted-session-${sessionStorageKey("session-1")}`);
+      assert.deepEqual(await readdir(marker), []);
+      await store.close();
+      const reopened = new FileSessionStore({ rootDirectory: directory });
+      try {
+        assert.equal(await reopened.get({ sessionId: "session-1" }), undefined);
+        assert.equal(await reopened.wasDeleted({ sessionId: "session-1" }), true);
+        await assert.rejects(reopened.create({ sessionId: "session-1", agentId: "agent-1", scope: directory }), { code: "session_already_exists" });
+      } finally { await reopened.close(); }
+    }
+  } finally { await store.close?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("round-trips exact messages, reasoning, Tool Calls and archive receipts", async () => {
@@ -711,7 +751,12 @@ test("composes Sessions -> Context -> Compaction -> AgentLoop without current-us
             snapshot,
             sessionId: snapshot.run.scope,
             model: agentModel,
-            workspace: { cwd: "/workspace", instructions: [] },
+            workspace: {
+              cwd: "/workspace",
+              fingerprint: "workspace:fixture",
+              revision: "workspace-revision:fixture",
+              instructions: [],
+            },
           }),
           tools: { context: {}, authorityVersion: "authority-1" },
         };

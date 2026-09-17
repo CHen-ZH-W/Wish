@@ -7,9 +7,9 @@ import {
 import {
   createWishRuntime,
   type RuntimeDependencies,
-} from "../src/core/runtime/service.js";
+} from "../src/composition/runtime-service.js";
 import type { WishAgentProtocol } from "../src/apps/types.js";
-import type { AgentLoopDependencies } from "../src/core/agent-loop/service.js";
+import type { AgentLoopDependencies } from "../src/composition/agent-loop-service.js";
 
 declare const runtime: AgentRuntimeService<WishAgentProtocol>;
 declare const agentLoop: AgentLoopDependencies;

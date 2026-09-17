@@ -1,40 +1,34 @@
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Context, FiberState } from "@deepseek-ai/cordis";
-import Group from "@deepseek-ai/cordis-plugin-group";
-import Hmr from "@deepseek-ai/cordis-plugin-hmr";
-import Include from "@deepseek-ai/cordis-plugin-include";
+import type {} from "@deepseek-ai/cordis-plugin-hmr";
 import Loader, {
   type Entry,
   type EntryOptions,
 } from "@deepseek-ai/cordis-plugin-loader";
-import Timer from "@deepseek-ai/cordis-plugin-timer";
 
 import type { ModelEnvironment } from "../models/types.js";
-import Agents from "../core/agent/service.js";
-import AgentLoop from "../core/agent-loop/service.js";
 import {
   createLaunch,
-  type ConfigurationSource,
   type Launch,
   type ProcessSignal,
   type Surface,
 } from "./launch.js";
-import * as Cli from "../apps/cli/plugin.js";
-import Application from "../apps/service.js";
-import * as WebUi from "../apps/webui/plugin.js";
-import Compaction from "../compaction/service.js";
-import ContextEngine from "../context/service.js";
-import * as ModelPlugins from "../models/plugins.js";
-import Models from "../models/service.js";
-import Runtime from "../core/runtime/service.js";
-import Sessions from "../sessions/service.js";
-import * as BasicToolPlugins from "../tools/plugins.js";
-import Tools from "../tools/service.js";
+import { resolveWishConfiguration } from "./configuration.js";
+import { installWishPluginCatalog } from "./plugin-catalog.js";
+import { installPluginInspection } from "./plugin-control/inspection.js";
+import type { PluginInspection } from "./plugin-control/types.js";
+import { installPluginLifecycle } from "./plugin-control/lifecycle.js";
+import { installPluginStopControl } from "./plugin-control/stop.js";
+import type { PluginLifecycleInspection, PluginStopControl } from "./plugin-control/management-types.js";
+import { ManagedPluginStore } from "./plugin-control/managed-store.js";
+import { ManagedPluginControl } from "./plugin-control/managed-control.js";
+import { ManagedProfileSource, managedProfilePlugin } from "./plugin-control/managed-profile.js";
+import { startManagedConfigurationWatch } from "./plugin-control/config-watch.js";
+import { installCodeReload, type CodeReloadInspection } from "./plugin-control/code-reload.js";
 
-const DEFAULT_CONFIGURATION_URL = new URL("../config/cordis.yml", import.meta.url);
 const ROOT_INCLUDE_ID = "include";
 
 export interface BootstrapOptions {
@@ -45,6 +39,12 @@ export interface BootstrapOptions {
   readonly environment?: ModelEnvironment;
   /** Overrides CORDIS_CONFIG and the built-in profile. */
   readonly configurationFile?: string | URL;
+  /** Explicit managed composition; ordinary CLI and unmanaged embeddings keep Include behavior. */
+  readonly management?: {
+    readonly directory: string;
+    /** Root-owned control plane must be started independently of the business tree. */
+    start(root: Context, control: ManagedPluginControl, lifecycle: PluginLifecycleInspection): Promise<() => Promise<void>>;
+  };
 }
 
 export interface BootstrappedProcess {
@@ -53,6 +53,13 @@ export interface BootstrappedProcess {
   /** Selected surface's scoped view of the Loader-managed application graph. */
   readonly surfaceContext: Context;
   readonly completion: Promise<number>;
+  /** Root-owned observations, available even when an application dependency unloads. */
+  readonly plugins: PluginInspection;
+  readonly pluginLifecycle: PluginLifecycleInspection;
+  /** Fails closed until a managed configuration/recovery adapter is installed at composition. */
+  readonly pluginStops: PluginStopControl;
+  readonly codeReload: CodeReloadInspection;
+  readonly pluginManagement?: ManagedPluginControl;
   dispose(): Promise<void>;
 }
 
@@ -73,7 +80,7 @@ export async function bootstrap(
   requireSurface(options.surface);
   const cwd = resolve(options.cwd ?? process.cwd());
   const environment = options.environment ?? process.env;
-  const configuration = resolveConfiguration(
+  const configuration = resolveWishConfiguration(
     options.configurationFile,
     environment,
     cwd,
@@ -95,22 +102,46 @@ export async function bootstrap(
     installProcessSignals(root, launch);
     installConfigDiagnostics(root);
     await root.plugin(Loader);
-    installBuiltins(root);
+    installWishPluginCatalog(root);
+    const plugins = installPluginInspection(root);
+    const codeReload = installCodeReload(root, plugins);
+    const pluginLifecycle = installPluginLifecycle(root, plugins);
+    let management: ManagedPluginControl | undefined;
+    let pluginStops: PluginStopControl;
+    if (options.management) {
+      const store = await ManagedPluginStore.open(resolve(options.management.directory, "plugins.json"));
+      management = new ManagedPluginControl(root, plugins, store); pluginStops = management.stops;
+      management.attachCodeReload(codeReload);
+      root.codeReload.attachTransaction({ run: (signal, batch) => management!.runCodeReload(signal, batch) });
+      root.effect(() => () => management!.close(), "managed plugin persistence");
+      const stop = await options.management.start(root, management, pluginLifecycle);
+      root.effect(() => stop, "independent management surface");
+      const source = new ManagedProfileSource(fileURLToPath(configuration.url), ROOT_INCLUDE_ID, store.snapshot());
+      root.loader.builtins["wish-managed-profile"] = managedProfilePlugin(source, profile => management!.attach(profile));
+    } else pluginStops = installPluginStopControl(root, plugins);
 
     const rootInclude: EntryOptions = {
       id: ROOT_INCLUDE_ID,
-      name: "cordis:include",
+      name: management ? "cordis:wish-managed-profile" : "cordis:include",
       config: { path: configuration.url.href },
     };
     await root.loader.create(rootInclude);
     await root.loader.await();
-    const surfaceContext = assertEntriesActivated(root, options.surface);
+    const surfaceContext = management
+      ? [...root.loader.entries()].find(entry => entry.id === `${ROOT_INCLUDE_ID}:${options.surface}`)?.ctx ?? root
+      : assertEntriesActivated(root, options.surface);
+    if (management) await startManagedConfigurationWatch(root, management, fileURLToPath(configuration.url));
 
     let disposal: Promise<void> | undefined;
     return Object.freeze({
       context: root,
       surfaceContext,
       completion: launch.completion,
+      plugins,
+      pluginLifecycle,
+      pluginStops,
+      codeReload,
+      ...(management ? { pluginManagement: management } : {}),
       dispose(): Promise<void> {
         launch.complete(typeof process.exitCode === "number" ? process.exitCode : 0);
         return disposal ??= root.fiber.dispose();
@@ -132,33 +163,6 @@ function installConfigDiagnostics(root: Context): void {
       `Cordis config reload failed at ${filename}: ${error.message}\n`,
     );
   }, { global: true });
-}
-
-function installBuiltins(root: Context): void {
-  root.loader.builtins.include = Include;
-  root.loader.builtins.group = Group;
-  root.loader.builtins.timer = Timer;
-  root.loader.builtins.hmr = Hmr;
-  root.loader.builtins.sessions = Sessions;
-  root.loader.builtins.models = Models;
-  root.loader.builtins["model-openai-chat-completions"] =
-    ModelPlugins.OpenAIChatCompletions;
-  root.loader.builtins["model-openai-responses"] = ModelPlugins.OpenAIResponses;
-  root.loader.builtins["model-anthropic-messages"] = ModelPlugins.AnthropicMessages;
-  root.loader.builtins["context-engine"] = ContextEngine;
-  root.loader.builtins.compaction = Compaction;
-  root.loader.builtins.tools = Tools;
-  root.loader.builtins.read = BasicToolPlugins.Read;
-  root.loader.builtins.write = BasicToolPlugins.Write;
-  root.loader.builtins.edit = BasicToolPlugins.Edit;
-  root.loader.builtins.grep = BasicToolPlugins.Grep;
-  root.loader.builtins.bash = BasicToolPlugins.Bash;
-  root.loader.builtins["agent-loop"] = AgentLoop;
-  root.loader.builtins.runtime = Runtime;
-  root.loader.builtins.agents = Agents;
-  root.loader.builtins.application = Application;
-  root.loader.builtins.cli = Cli;
-  root.loader.builtins.webui = WebUi;
 }
 
 function installProcessSignals(root: Context, launch: Launch): void {
@@ -222,47 +226,6 @@ function describeInactiveEntry(entry: Entry): string {
     (service) => fiber.ctx.get(service) === undefined,
   );
   return `${entry.id}: pending (waiting for ${missing.join(", ") || "unknown service"})`;
-}
-
-interface ResolvedConfiguration {
-  readonly url: URL;
-  readonly source: ConfigurationSource;
-}
-
-function resolveConfiguration(
-  input: string | URL | undefined,
-  environment: ModelEnvironment,
-  cwd: string,
-): ResolvedConfiguration {
-  let source: ConfigurationSource = "option";
-  if (input === undefined) {
-    const configured = environment.CORDIS_CONFIG;
-    if (configured === undefined) {
-      return Object.freeze({
-        url: new URL(DEFAULT_CONFIGURATION_URL.href),
-        source: "built-in",
-      });
-    }
-    input = requireConfigurationPath(configured, "CORDIS_CONFIG");
-    source = "environment";
-  }
-
-  const url = input instanceof URL
-    ? new URL(input.href)
-    : pathToFileURL(isAbsolute(input)
-      ? requireConfigurationPath(input, "Cordis configuration")
-      : resolve(cwd, requireConfigurationPath(input, "Cordis configuration")));
-  if (url.protocol !== "file:") {
-    throw new TypeError("Cordis configuration must be a local file");
-  }
-  return Object.freeze({ url, source });
-}
-
-function requireConfigurationPath(value: string, label: string): string {
-  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
-    throw new TypeError(`${label} must be a non-empty trimmed path`);
-  }
-  return value;
 }
 
 function snapshotArguments(input: readonly string[]): readonly string[] {

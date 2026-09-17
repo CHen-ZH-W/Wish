@@ -180,6 +180,20 @@ export interface StepPipeline<Configuration, Payload, StepMemory, Result> {
   ): Promise<StepPipelineResult<StepMemory, Result>>;
 }
 
+/** Execution resources pinned from before Step capture through durable Step finish. */
+export interface StepPipelineLease<Configuration, Payload, StepMemory, Result> {
+  readonly pipeline: StepPipeline<Configuration, Payload, StepMemory, Result>;
+  /** Synchronous, idempotent release; no background work may outlive this lease. */
+  release(): void;
+}
+
+/** Optional dynamic composition seam. The source never owns Run state or queues. */
+export interface StepPipelineSource<Configuration, Payload, StepMemory, Result> {
+  acquire(input: { readonly signal: AbortSignal }):
+    | StepPipelineLease<Configuration, Payload, StepMemory, Result>
+    | Promise<StepPipelineLease<Configuration, Payload, StepMemory, Result>>;
+}
+
 export interface StepSnapshotProvider<Configuration, Payload, Result> {
   capture(input: {
     readonly definition: AgentDefinition<Configuration>;
@@ -209,7 +223,8 @@ export interface RuntimeIdGenerator {
 }
 
 export interface RuntimeOptions<Configuration, Payload, StepMemory, Result> {
-  readonly stepPipeline: StepPipeline<Configuration, Payload, StepMemory, Result>;
+  readonly stepPipeline: StepPipeline<Configuration, Payload, StepMemory, Result>
+    | StepPipelineSource<Configuration, Payload, StepMemory, Result>;
   readonly snapshotProvider?: StepSnapshotProvider<Configuration, Payload, Result>;
   readonly userTurnPipeline?: UserTurnResultPipeline<Configuration, Payload, Result>;
   readonly lifecycle?: RuntimeLifecycleService<Payload, Result>;
@@ -391,6 +406,7 @@ export class Runtime<
         userTurnId: initialUserTurnId,
         ordinal: 1,
         input: input.payload,
+        ...(input.inputSource === undefined ? {} : { inputSource: input.inputSource }),
         at: this.timestamp(),
       });
     } catch (error: unknown) {
@@ -619,6 +635,7 @@ export class Runtime<
             userTurnId,
             ordinal: record.state.userTurns.length + 1,
             input: next.payload,
+            inputSource: "follow_up",
             at: this.timestamp(),
           });
           await this.openCurrentUserTurn(record);
@@ -650,214 +667,231 @@ export class Runtime<
       if (record.cancellation.cancelled) {
         return { status: "aborted", cancellation: this.requireCancellation(record) };
       }
-      const stepId = `${turn.id}:${ordinal}`;
-      this.recordTransition(record, {
-        type: "step.started",
-        userTurnId: turn.id,
-        stepId,
-        ordinal,
-        at: this.timestamp(),
-      });
-      const steering = record.stepInbox.drain(turn.id, stepId);
-      if (steering.length > 0) {
-        this.recordTransition(record, {
-          type: "control.steering_delivered",
-          controlIds: steering.map((message) => message.id),
-          stepId,
-          at: this.timestamp(),
-        });
-      }
-
-      const step = currentStep(record.state);
-      if (step === undefined) {
-        return {
-          status: "failed",
-          error: runtimeFailure("missing_step", "Runtime did not start a Step", false),
-        };
-      }
-
-      let snapshot: StepSnapshot<Payload>;
+      const source = this.options.stepPipeline;
+      let lease: StepPipelineLease<Configuration, Payload, StepMemory, Result> | undefined;
       try {
-        const activeTurn = currentUserTurn(record.state);
-        if (activeTurn === undefined) throw new Error("Active UserTurn disappeared");
-        const environment = await this.captureEnvironment(
-          record,
-          snapshotUserTurn(activeTurn),
+        if ("acquire" in source) lease = await source.acquire({ signal: record.cancellation.signal });
+      } catch (error: unknown) {
+        return record.cancellation.cancelled
+          ? { status: "aborted", cancellation: this.requireCancellation(record) }
+          : { status: "failed", error: unknownRuntimeFailure(error) };
+      }
+      try {
+        // Waiting for an implementation must not consume steering or start a phantom Step.
+        if (record.cancellation.cancelled) {
+          return { status: "aborted", cancellation: this.requireCancellation(record) };
+        }
+        const stepId = `${turn.id}:${ordinal}`;
+        this.recordTransition(record, {
+          type: "step.started",
+          userTurnId: turn.id,
           stepId,
           ordinal,
-        );
-        if (record.cancellation.cancelled) {
-          const cancellation = this.requireCancellation(record);
+          at: this.timestamp(),
+        });
+        const steering = record.stepInbox.drain(turn.id, stepId);
+        if (steering.length > 0) {
           this.recordTransition(record, {
-            type: "step.aborted",
-            userTurnId: turn.id,
+            type: "control.steering_delivered",
+            controlIds: steering.map((message) => message.id),
             stepId,
-            reason: cancellation.reason,
             at: this.timestamp(),
           });
-          return { status: "aborted", cancellation };
         }
-        snapshot = captureStepSnapshot({
-          state: record.state,
-          step,
-          steering,
-          environment,
-          capturedAt: this.timestamp(),
-        });
-        record.activeStepSnapshot = snapshot;
-        await this.lifecycle.openStep(snapshot);
-      } catch (error: unknown) {
-        if (record.cancellation.cancelled) {
-          const cancellation = this.requireCancellation(record);
+
+        const step = currentStep(record.state);
+        if (step === undefined) {
+          return {
+            status: "failed",
+            error: runtimeFailure("missing_step", "Runtime did not start a Step", false),
+          };
+        }
+
+        let snapshot: StepSnapshot<Payload>;
+        try {
+          const activeTurn = currentUserTurn(record.state);
+          if (activeTurn === undefined) throw new Error("Active UserTurn disappeared");
+          const environment = await this.captureEnvironment(
+            record,
+            snapshotUserTurn(activeTurn),
+            stepId,
+            ordinal,
+          );
+          if (record.cancellation.cancelled) {
+            const cancellation = this.requireCancellation(record);
+            this.recordTransition(record, {
+              type: "step.aborted",
+              userTurnId: turn.id,
+              stepId,
+              reason: cancellation.reason,
+              at: this.timestamp(),
+            });
+            return { status: "aborted", cancellation };
+          }
+          snapshot = captureStepSnapshot({
+            state: record.state,
+            step,
+            steering,
+            environment,
+            capturedAt: this.timestamp(),
+          });
+          record.activeStepSnapshot = snapshot;
+          await this.lifecycle.openStep(snapshot);
+        } catch (error: unknown) {
+          if (record.cancellation.cancelled) {
+            const cancellation = this.requireCancellation(record);
+            this.recordTransition(record, {
+              type: "step.aborted",
+              userTurnId: turn.id,
+              stepId,
+              reason: cancellation.reason,
+              at: this.timestamp(),
+            });
+            record.activeStepSnapshot = undefined;
+            return { status: "aborted", cancellation };
+          }
+          const failure = unknownRuntimeFailure(error);
           this.recordTransition(record, {
-            type: "step.aborted",
+            type: "step.failed",
             userTurnId: turn.id,
             stepId,
-            reason: cancellation.reason,
+            error: failure,
             at: this.timestamp(),
           });
           record.activeStepSnapshot = undefined;
+          return { status: "failed", error: failure };
+        }
+
+        if (record.cancellation.cancelled) {
+          const cancellation = this.requireCancellation(record);
+          const finishFailure = await this.finishStep(
+            record,
+            snapshot,
+            "aborted",
+            cancellation.reason,
+          );
+          return finishFailure === undefined
+            ? { status: "aborted", cancellation }
+            : { status: "failed", error: finishFailure };
+        }
+
+        let outcome: StepPipelineResult<StepMemory, Result>;
+        record.stepOutputOpen = true;
+        try {
+          outcome = validateStepPipelineResult(
+            await (lease?.pipeline ?? source as StepPipeline<Configuration, Payload, StepMemory, Result>).execute({
+              definition: record.definition,
+              snapshot,
+              memory: record.stepMemory,
+              signal: record.cancellation.signal,
+              output: this.createStepOutputPublisher(record, snapshot),
+            }),
+          );
+        } catch (error: unknown) {
+          outcome = record.cancellation.cancelled
+            ? { status: "aborted", reason: "run_cancelled" }
+            : {
+                status: "failed",
+                error: error instanceof InvalidStepPipelineResultError
+                  ? runtimeFailure(
+                      "invalid_step_pipeline_result",
+                      error.message,
+                      false,
+                    )
+                  : unknownRuntimeFailure(error),
+              };
+        } finally {
+          record.stepOutputOpen = false;
+        }
+
+        if (record.cancellation.cancelled || outcome.status === "aborted") {
+          const cancellation = record.cancellation.cancelled
+            ? this.requireCancellation(record)
+            : this.requestRuntimeAbort(
+                record,
+                outcome.status === "aborted"
+                  ? outcome.reason ?? "step_aborted"
+                  : "step_aborted",
+              );
+          const finishFailure = await this.finishStep(
+            record,
+            snapshot,
+            "aborted",
+            cancellation.reason,
+          );
+          if (finishFailure !== undefined) {
+            return { status: "failed", error: finishFailure };
+          }
           return { status: "aborted", cancellation };
         }
-        const failure = unknownRuntimeFailure(error);
-        this.recordTransition(record, {
-          type: "step.failed",
-          userTurnId: turn.id,
-          stepId,
-          error: failure,
-          at: this.timestamp(),
-        });
-        record.activeStepSnapshot = undefined;
-        return { status: "failed", error: failure };
-      }
 
-      if (record.cancellation.cancelled) {
-        const cancellation = this.requireCancellation(record);
-        const finishFailure = await this.finishStep(
-          record,
-          snapshot,
-          "aborted",
-          cancellation.reason,
-        );
-        return finishFailure === undefined
-          ? { status: "aborted", cancellation }
-          : { status: "failed", error: finishFailure };
-      }
-
-      let outcome: StepPipelineResult<StepMemory, Result>;
-      record.stepOutputOpen = true;
-      try {
-        outcome = validateStepPipelineResult(
-          await this.options.stepPipeline.execute({
-            definition: record.definition,
+        if (outcome.status === "failed") {
+          const finishFailure = await this.finishStep(
+            record,
             snapshot,
-            memory: record.stepMemory,
-            signal: record.cancellation.signal,
-            output: this.createStepOutputPublisher(record, snapshot),
-          }),
-        );
-      } catch (error: unknown) {
-        outcome = record.cancellation.cancelled
-          ? { status: "aborted", reason: "run_cancelled" }
-          : {
-              status: "failed",
-              error: error instanceof InvalidStepPipelineResultError
-                ? runtimeFailure(
-                    "invalid_step_pipeline_result",
-                    error.message,
-                    false,
-                  )
-                : unknownRuntimeFailure(error),
-            };
-      } finally {
-        record.stepOutputOpen = false;
-      }
+            "failed",
+            outcome.error.message,
+            outcome.error,
+          );
+          return {
+            status: "failed",
+            error: finishFailure ?? outcome.error,
+          };
+        }
 
-      if (record.cancellation.cancelled || outcome.status === "aborted") {
-        const cancellation = record.cancellation.cancelled
-          ? this.requireCancellation(record)
-          : this.requestRuntimeAbort(
-              record,
-              outcome.status === "aborted"
-                ? outcome.reason ?? "step_aborted"
-                : "step_aborted",
-            );
+        if (outcome.status === "continue" || outcome.memory !== undefined) {
+          record.stepMemory = outcome.memory;
+        }
+        const decision = decideAfterStep({
+          outcome: outcome.status,
+          ...(outcome.status === "continue"
+            ? { continuationReason: outcome.reason }
+            : {}),
+          pendingSteering: record.stepInbox.hasPending(turn.id),
+          hasRemainingStepBudget: ordinal < this.maxSteps,
+          maxSteps: this.maxSteps,
+        });
+        const stepReason = decision.type === "continue"
+          ? decision.reason
+          : outcome.status === "completed"
+            ? "pipeline_completed"
+            : "step_completed";
         const finishFailure = await this.finishStep(
           record,
           snapshot,
-          "aborted",
-          cancellation.reason,
+          "completed",
+          stepReason,
         );
         if (finishFailure !== undefined) {
           return { status: "failed", error: finishFailure };
         }
-        return { status: "aborted", cancellation };
-      }
-
-      if (outcome.status === "failed") {
-        const finishFailure = await this.finishStep(
-          record,
-          snapshot,
-          "failed",
-          outcome.error.message,
-          outcome.error,
-        );
-        return {
-          status: "failed",
-          error: finishFailure ?? outcome.error,
-        };
-      }
-
-      if (outcome.status === "continue" || outcome.memory !== undefined) {
-        record.stepMemory = outcome.memory;
-      }
-      const decision = decideAfterStep({
-        outcome: outcome.status,
-        ...(outcome.status === "continue"
-          ? { continuationReason: outcome.reason }
-          : {}),
-        pendingSteering: record.stepInbox.hasPending(turn.id),
-        hasRemainingStepBudget: ordinal < this.maxSteps,
-        maxSteps: this.maxSteps,
-      });
-      const stepReason = decision.type === "continue"
-        ? decision.reason
-        : outcome.status === "completed"
-          ? "pipeline_completed"
-          : "step_completed";
-      const finishFailure = await this.finishStep(
-        record,
-        snapshot,
-        "completed",
-        stepReason,
-      );
-      if (finishFailure !== undefined) {
-        return { status: "failed", error: finishFailure };
-      }
-      if (decision.type === "continue") continue;
-      if (decision.type === "fail") {
-        if (decision.error.code === "max_steps_exceeded") {
-          record.stepInbox.closeUserTurn(turn.id, "step_budget_exhausted");
+        if (decision.type === "continue") continue;
+        if (decision.type === "fail") {
+          if (decision.error.code === "max_steps_exceeded") {
+            record.stepInbox.closeUserTurn(turn.id, "step_budget_exhausted");
+          }
+          return { status: "failed", error: decision.error };
         }
-        return { status: "failed", error: decision.error };
+        if (decision.type === "abort") {
+          return {
+            status: "aborted",
+            cancellation: this.requestRuntimeAbort(record, "step_aborted"),
+          };
+        }
+        if (outcome.status !== "completed") {
+          return {
+            status: "failed",
+            error: runtimeFailure(
+              "invalid_step_outcome",
+              "A completed UserTurn requires a completed Step result",
+              false,
+            ),
+          };
+        }
+        return { status: "completed", result: outcome.result };
+      } finally {
+        lease?.release();
       }
-      if (decision.type === "abort") {
-        return {
-          status: "aborted",
-          cancellation: this.requestRuntimeAbort(record, "step_aborted"),
-        };
-      }
-      if (outcome.status !== "completed") {
-        return {
-          status: "failed",
-          error: runtimeFailure(
-            "invalid_step_outcome",
-            "A completed UserTurn requires a completed Step result",
-            false,
-          ),
-        };
-      }
-      return { status: "completed", result: outcome.result };
     }
 
     return {

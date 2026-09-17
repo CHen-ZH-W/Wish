@@ -6,14 +6,25 @@ import test from "node:test";
 
 import { ToolExecutor } from "../dist/core/tools/executor.js";
 import { ToolRegistry } from "../dist/core/tools/registry.js";
-import { createReadTool } from "../dist/tools/basic/read.js";
+import { createReadTool as createReadToolDefinition } from
+  "../dist/filesystem/consumers/model-tools/read.js";
+import { LocalFilesystemBackend } from
+  "../dist/filesystem/providers/local.js";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
-} from "../dist/tools/support/truncate.js";
+} from "../dist/tools/presentation/truncate.js";
+import { basicToolContext } from "./support/basic-tool-context.mjs";
 
 const scope = Object.freeze({ runId: "run", userTurnId: "turn", stepId: "step" });
 let callOrdinal = 0;
+
+function createReadTool(options = {}) {
+  return createReadToolDefinition({
+    filesystem: new LocalFilesystemBackend(),
+    ...options,
+  });
+}
 
 function deferred() {
   let resolve = () => {};
@@ -47,12 +58,9 @@ async function executeRead(definition, input, options = {}) {
   });
   return await executor.execute({
     call: parsed.call,
-    context: {
-      cwd: options.cwd ?? "/workspace",
-      ...(options.modelSupportsImages === undefined
-        ? {}
-        : { modelSupportsImages: options.modelSupportsImages }),
-    },
+    context: basicToolContext(options.cwd ?? "/workspace", {
+      modelSupportsImages: options.modelSupportsImages,
+    }),
     scope,
     snapshot,
     ...(options.signal === undefined ? {} : { signal: options.signal }),

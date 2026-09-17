@@ -3,11 +3,14 @@ import { resolve } from "node:path";
 
 import type { Session } from "../../sessions/types.js";
 import type { RunGenerationRetireOptions } from "../../core/runtime/generation.js";
+import type { ToolApprovalPort } from "../../tools/index.js";
+import type { WishToolExecutionContext } from "../../composition/tool-context.js";
 import type { ApplicationOpenInput } from "../service.js";
 import type {
   WishApplication,
   WishRunCompletion,
 } from "../types.js";
+import { FileSubagentExchange, type SubagentResult } from "../../subagents/index.js";
 import {
   parseWishCliArguments,
   WISH_CLI_HELP,
@@ -15,6 +18,7 @@ import {
   type WishCliArguments,
 } from "./args.js";
 import { CliToolApprovalPort } from "./approval.js";
+import { reviewCommand } from "./session-features.js";
 import {
   formatWishCliControlReceipt,
   parseWishCliActiveInput,
@@ -29,14 +33,23 @@ export const WISH_CLI_INTERRUPT_TIMEOUT_MS = 5_000;
 export type WishCliInterruptSignal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
 export type WishCliApplicationOpener = (
-  input: ApplicationOpenInput,
+  input: WishCliApplicationOpenInput,
 ) => Promise<WishApplication>;
+
+/** Standalone compatibility input; Cordis product hosts omit approval. */
+export interface WishCliApplicationOpenInput extends ApplicationOpenInput {
+  readonly approval?: ToolApprovalPort<WishToolExecutionContext>;
+}
 
 export interface WishCliDependencies {
   readonly terminal: WishCliTerminal;
   readonly cwd?: () => string;
   /** Application capability supplied by the process plugin or an embedder. */
   readonly openApplication: WishCliApplicationOpener;
+  /** Product Cordis graphs register the CLI answerer with Approval Hub. */
+  readonly registerApproval?: (
+    approval: ToolApprovalPort<WishToolExecutionContext>,
+  ) => void;
   readonly forceExit?: (code: number) => void;
   readonly interruptTimeoutMs?: number;
 }
@@ -60,6 +73,7 @@ class DefaultWishCli implements WishCli {
   private readonly forceExit: (code: number) => void;
   private readonly interruptTimeoutMs: number;
   private readonly input: CliInputCoordinator;
+  private readonly approvalRegistered: boolean;
   private application: WishApplication | undefined;
   private activeRunId: string | undefined;
   private interruptPending = false;
@@ -81,6 +95,8 @@ class DefaultWishCli implements WishCli {
       this.terminal,
       new CliToolApprovalPort({ terminal: this.terminal }),
     );
+    this.approvalRegistered = dependencies.registerApproval !== undefined;
+    dependencies.registerApproval?.(this.input.approval);
     this.terminal.setInterruptHandler?.(() => this.interrupt("SIGINT"));
   }
 
@@ -96,9 +112,9 @@ class DefaultWishCli implements WishCli {
       await this.terminal.writeOutput(`wish ${WISH_CLI_VERSION}\n`);
       return 0;
     }
-    if (args.command === "interactive" && !this.terminal.interactive) {
+    if ((args.command === "interactive" || args.command === "child") && !this.terminal.interactive) {
       throw new WishCliUsageError(
-        "Interactive mode requires a TTY; use \"wish run\" for piped input",
+        `${args.command === "child" ? "Subagent child mode" : "Interactive mode"} requires a TTY; use \"wish run\" for piped input`,
       );
     }
 
@@ -115,13 +131,20 @@ class DefaultWishCli implements WishCli {
               args.modelsConfigurationPath,
             ),
           }),
-      approval: this.input.approval,
+      ...(this.approvalRegistered ? {} : { approval: this.input.approval }),
     });
+    if (
+      args.command === "recovery-list" ||
+      args.command === "recovery-resolve"
+    ) {
+      return this.manageRuntimeRecovery(this.application, args);
+    }
+    await this.describeRuntimeRecovery(this.application);
     if (this.terminateRequested) return this.terminationCode;
 
-    return args.command === "run"
-      ? this.runOnce(args, launchDirectory)
-      : this.runInteractive(args, launchDirectory);
+    if (args.command === "run") return this.runOnce(args, launchDirectory);
+    if (args.command === "child") return this.runChild(args, launchDirectory);
+    return this.runInteractive(args, launchDirectory);
   }
 
   interrupt(signal: WishCliInterruptSignal): void {
@@ -176,6 +199,53 @@ class DefaultWishCli implements WishCli {
       Promise.resolve();
   }
 
+  private async describeRuntimeRecovery(
+    application: WishApplication,
+  ): Promise<void> {
+    if (application.runtimeRecovery === undefined) return;
+    const startup = await application.runtimeRecovery.snapshot();
+    const recovered = startup.recovery.runs.length;
+    if (recovered > 0) {
+      await this.terminal.writeError(
+        `[recovery] sealed ${recovered} interrupted Run${recovered === 1 ? "" : "s"}; no Tool was replayed automatically\n`,
+      );
+    }
+    const reconciliation = startup.reconciliationRequiredRuns;
+    if (reconciliation.length === 0) return;
+    const runIds = reconciliation.map((run) => run.runId).join(", ");
+    await this.terminal.writeError(
+      `[recovery] reconciliation required for ${reconciliation.length} Run${reconciliation.length === 1 ? "" : "s"}: ${runIds}\n`,
+    );
+  }
+
+  private async manageRuntimeRecovery(
+    application: WishApplication,
+    args: WishCliArguments,
+  ): Promise<number> {
+    const recovery = application.runtimeRecovery;
+    if (recovery === undefined) {
+      throw new WishCliUsageError("Runtime recovery management is unavailable");
+    }
+    if (args.command === "recovery-list") {
+      await this.terminal.writeOutput(
+        `${JSON.stringify(await recovery.snapshot(), null, 2)}\n`,
+      );
+      return 0;
+    }
+    if (
+      args.command !== "recovery-resolve" ||
+      args.reconciliation === undefined
+    ) {
+      throw new WishCliUsageError("Recovery resolution arguments are missing");
+    }
+    const commit = await recovery.resolve(args.reconciliation);
+    const snapshot = await recovery.snapshot();
+    await this.terminal.writeOutput(
+      `${JSON.stringify({ commit, recovery: snapshot }, null, 2)}\n`,
+    );
+    return 0;
+  }
+
   private async runOnce(
     args: WishCliArguments,
     launchDirectory: string,
@@ -184,8 +254,45 @@ class DefaultWishCli implements WishCli {
     if (this.terminateRequested) return this.terminationCode;
     const session = await this.resolveSession(args, launchDirectory, prompt);
     await this.describeSession(session);
-    const exitCode = await this.runMessage(session, prompt, args);
-    return this.terminateRequested ? this.terminationCode : exitCode;
+    const result = await this.runMessage(session, prompt, args);
+    return this.terminateRequested ? this.terminationCode : result.exitCode;
+  }
+
+  private async runChild(
+    args: WishCliArguments,
+    launchDirectory: string,
+  ): Promise<number> {
+    const childId = requireDefined(args.childId, "Subagent child id");
+    const childSessionId = requireDefined(args.childSessionId, "Subagent Session id");
+    const childRunId = requireDefined(args.childRunId, "Subagent Run id");
+    const dataDirectory = resolve(
+      launchDirectory,
+      requireDefined(args.dataDirectory, "Subagent data directory"),
+    );
+    const exchange = new FileSubagentExchange(resolve(
+      launchDirectory,
+      requireDefined(args.exchangeDataDirectory, "Subagent exchange data directory"),
+    ));
+    const prompt = await exchange.consumeTask(
+      requireDefined(args.promptFile, "Subagent prompt file"),
+    );
+    const workspaceRoot = await requireWorkspaceDirectory(
+      requireDefined(args.workspaceRoot, "Subagent workspace"),
+    );
+    const session = await this.requireApplication().createSession({
+      sessionId: childSessionId,
+      workspaceRoot,
+      title: titleFromPrompt(prompt),
+    });
+    await this.describeSession(session);
+    const outcome = await this.runMessage(session, prompt, args, childRunId);
+    await exchange.writeResult(subagentResult(
+      childId,
+      childSessionId,
+      childRunId,
+      outcome.completion,
+    ));
+    return this.terminateRequested ? this.terminationCode : outcome.exitCode;
   }
 
   private async runInteractive(
@@ -217,6 +324,7 @@ class DefaultWishCli implements WishCli {
       if (text === "/help") {
         await this.terminal.writeError(
           "/help shows this message; /exit and /quit close the idle CLI.\n" +
+          "/review inspects saved plans, task graphs and workflow reconciliation controls.\n" +
           "During a Run, ordinary input and /steer add the next Step; " +
           "/follow-up queues a UserTurn; /abort cancels the Run.\n",
         );
@@ -229,7 +337,11 @@ class DefaultWishCli implements WishCli {
         });
         await this.describeSession(session);
       }
-      await this.runMessage(session, text, args);
+      try {
+        const review = await reviewCommand(this.requireApplication().sessionFeatures, session.sessionId, text, this.terminal);
+        if (review.handled && review.message === undefined) continue;
+        await this.runMessage(session, review.message ?? text, args);
+      } catch (error) { await this.terminal.writeError(`${error instanceof Error ? error.message : String(error)}\n`); }
     }
     return this.terminateRequested ? this.terminationCode : 0;
   }
@@ -238,15 +350,18 @@ class DefaultWishCli implements WishCli {
     session: Session,
     text: string,
     args: WishCliArguments,
-  ): Promise<number> {
+    runId?: string,
+  ): Promise<{ readonly exitCode: number; readonly completion: WishRunCompletion }> {
     const application = this.requireApplication();
     const handle = await application.startRun({
       sessionId: session.sessionId,
+      inputSource: args.command === "child" ? "unknown" : "user",
       payload: {
         text,
         ...(args.model === undefined ? {} : { model: args.model }),
       },
       metadata: Object.freeze({ source: "wish-cli" }),
+      ...(runId === undefined ? {} : { runId }),
     });
     this.activeRunId = handle.runId;
     const renderer = new WishCliEventRenderer(this.terminal);
@@ -260,7 +375,7 @@ class DefaultWishCli implements WishCli {
         completionPromise,
         renderer.render(application.observeRun(handle.runId)),
         this.terminal.interactive
-          ? this.readActiveRunControls(handle.runId, controlStop.signal)
+          ? this.readActiveRunControls(handle.runId, session.sessionId, controlStop.signal)
           : Promise.resolve(),
       ]);
     } catch (error: unknown) {
@@ -282,21 +397,22 @@ class DefaultWishCli implements WishCli {
       this.clearForceTimer();
     }
 
-    if (completion.status === "completed") return 0;
+    if (completion.status === "completed") return Object.freeze({ exitCode: 0, completion });
     if (completion.status === "failed") {
       await this.terminal.writeError(
         `[run] failed (${completion.error.code}): ${completion.error.message}\n`,
       );
-      return 1;
+      return Object.freeze({ exitCode: 1, completion });
     }
     await this.terminal.writeError(
       `[run] aborted: ${completion.cancellation.reason}\n`,
     );
-    return 130;
+    return Object.freeze({ exitCode: 130, completion });
   }
 
   private async readActiveRunControls(
     runId: string,
+    sessionId: string,
     stopSignal: AbortSignal,
   ): Promise<void> {
     const application = this.requireApplication();
@@ -307,7 +423,13 @@ class DefaultWishCli implements WishCli {
       );
       if (input.type === "stopped" || input.type === "eof") return;
       if (input.type === "approval") continue;
-      const parsed = parseWishCliActiveInput(input.line);
+      let line = input.line;
+      try {
+        const review = await reviewCommand(application.sessionFeatures, sessionId, line, this.terminal);
+        if (review.handled && review.message === undefined) continue;
+        line = review.message ?? line;
+      } catch (error) { await this.terminal.writeError(`${error instanceof Error ? error.message : String(error)}\n`); continue; }
+      const parsed = parseWishCliActiveInput(line);
       if (parsed.type === "empty") continue;
       if (parsed.type === "help") {
         await this.terminal.writeError(
@@ -321,6 +443,8 @@ class DefaultWishCli implements WishCli {
         continue;
       }
       try {
+        if (parsed.control.type !== "abort") await application.sessionFeatures?.beforeInput(sessionId,
+          parsed.control.type === "follow_up" ? parsed.control.payload.text : parsed.control.text);
         const receipt = application.controlRun(runId, parsed.control);
         await this.terminal.writeError(formatWishCliControlReceipt(receipt));
         if (
@@ -389,6 +513,46 @@ class DefaultWishCli implements WishCli {
     clearTimeout(this.forceTimer);
     this.forceTimer = undefined;
   }
+}
+
+function subagentResult(
+  id: string,
+  childSessionId: string,
+  childRunId: string,
+  completion: WishRunCompletion,
+): SubagentResult {
+  const completedAt = new Date().toISOString();
+  if (completion.status === "completed") {
+    return Object.freeze({
+      schemaVersion: 1 as const,
+      id,
+      childSessionId,
+      childRunId,
+      status: "completed" as const,
+      text: completion.result.output.text,
+      completedAt,
+    });
+  }
+  if (completion.status === "failed") {
+    return Object.freeze({
+      schemaVersion: 1 as const,
+      id,
+      childSessionId,
+      childRunId,
+      status: "failed" as const,
+      error: `${completion.error.code}: ${completion.error.message}`,
+      completedAt,
+    });
+  }
+  return Object.freeze({
+    schemaVersion: 1 as const,
+    id,
+    childSessionId,
+    childRunId,
+    status: "aborted" as const,
+    error: completion.cancellation.reason,
+    completedAt,
+  });
 }
 
 async function requireWorkspaceDirectory(path: string): Promise<string> {

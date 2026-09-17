@@ -20,7 +20,7 @@ AgentLoop 单 Step：
 - `types.ts`：跨 Step memory、最终结果、输入渲染、Step 环境和 Tool Result
   渲染接口。
 - `agent-loop.ts`：默认 `StepPipeline`，按固定顺序驱动一次完整 Step。
-- `service.ts`：Cordis `agentLoop` Service，拥有生产环境的依赖解析、构造和生命周期。
+- `../../composition/agent-loop-service.ts`：Cordis `agentLoop` Service，拥有生产环境的依赖解析、构造和生命周期。
 
 ## 固定主干
 
@@ -28,11 +28,15 @@ AgentLoop 单 Step：
 
 1. 首个 Step 将 UserTurn payload 渲染为明确的 `user` 消息；后续 Step 恢复
    Core-owned transcript，并按 Runtime 投递顺序追加 steer。
-2. 从不可变 `StepSnapshot` 解析本 Step 的 Context、Tool authority 和请求参数。
+2. 以 Session scope 调用 Workspace Service 一次，取得不可变 `WorkspaceSnapshot`；再调用
+   Permissions Service 一次，把 Agent 配置、运行身份和 Workspace 固定成
+   `PermissionSnapshot`。同一 Step 的 Context 与全部 Tool Call 共用这些快照以及当前
+   Application generation 的 Filesystem 与 Shell Provider。
 3. 首个 Step 固定主模型；同一 UserTurn 后续 Step 不接受外部默认模型漂移。
 4. 在模型调用前捕获 Registry version、authority version 和 available Tools
    的不可变执行快照。
-5. 用该快照的精确 Tool descriptors 构造请求，再执行完整 Context projection。
+5. 用该快照的精确 Tool descriptors 构造请求。若 Context 环境提供 `projectInput`，
+   传入已渲染的当前输入、实际可见工具名称和宿主来源，再执行完整 Context projection。
 6. Context 若返回 `rejected/over_budget` 终态，在调用模型或 Tool 前 fail closed。
 7. Model stream 开始前创建 Step-local Tool Scheduler；完整 Tool Call 一到达就
    解析并提交，不等待整段模型输出结束。
@@ -51,6 +55,11 @@ AgentLoop 单 Step：
 即使本 Step 已得到普通模型答案，Runtime 在执行期间收到 steer 时仍可强制开启
 下一 Step。`completed` 结果因此也携带更新后的 memory，保证下一 Step 能看到刚才
 的 assistant 输出和新 steer。
+
+`AgentLoopMemory.currentInputSource` 随当前输入跨 Step 保留；steer 更新当前索引和来源。
+初始来源来自 Runtime 的 `UserTurn.inputSource`，自动 follow-up 由 Runtime 标记为
+`follow_up`。缺失来源的旧 memory 仍为 `unknown`，不会根据 payload、user role 或历史
+文本补认人类身份。该信息仅用于只读请求视图，不是工具执行授权。
 
 ## 明确的外部缺口
 
@@ -73,7 +82,8 @@ Tool、审批界面、Sandbox、Workflow、Memory、Skill 和传输层仍位于 
 - Runtime transition、Model stream 和 Tool lifecycle 共用一个 Run 内单调递增
   的 `OutputEvent.sequence`。
 - 输出发布是诊断通道，失败不会改变模型或 Tool 的执行决策。
-- 权威 Tool lifecycle 仍由 `ToolExecutionLifecycle` 负责，不由输出事件替代。
+- 权威 Tool lifecycle 仍由 `ToolExecutionLifecycle` 负责，不由输出事件替代；生产
+  `AgentLoop` 从 `runtimeLifecycle` 注入同一个 Journal authority。
 - 模型 `error` 保留稳定错误码和 retryable；缺少终态、终态前缺少 `start`、
   content 后 retry、重复 Tool Call ID 等协议错误会明确失败。
 - AgentLoop 不重试模型，也不重放已 dispatch 的 Tool；模型韧性由 `Model`
@@ -83,7 +93,8 @@ Tool、审批界面、Sandbox、Workflow、Memory、Skill 和传输层仍位于 
 
 ```text
 Cordis agentLoop Service
-  ├─ 消费 Sessions / Models / ContextEngine / Compaction / Tools
+  ├─ 消费 Sessions / Workspace / Permissions / Models / ContextEngine / Compaction / Tools / RuntimeLifecycle
+  ├─ Tool Consumer 插件各自消费 Filesystem / FilesystemSearch / Shell / Artifact Provider
   └─ 组装 Runtime(stepPipeline = AgentLoop)
 
 Agent facade → Runtime → StepPipeline contract
@@ -93,19 +104,36 @@ AgentLoop → Context + Model + Tools + Runtime DTO + Events channel
 Context / Model / Tools / Runtime 不依赖 AgentLoop
 ```
 
-`agent-loop.ts` 和 `types.ts` 是不依赖 Cordis 的算法与契约；`service.ts` 与它们归属
-同一个 Core 能力模块，但只负责运行时依赖图。这样不会再产生一个平行的
-`src/agent-loop/` 模块身份。
+`agent-loop.ts` 和 `types.ts` 是不依赖 Cordis 的算法与契约；产品运行时依赖图位于
+`src/composition/agent-loop-service.ts`。Core 不导入 Apps、Provider 或具体 Tool Consumer。
 
 ## Cordis 生命周期与配置
 
-`AgentLoop` Service 注入 `sessions`、`models`、`contextEngine`、`compaction` 和
-`tools`。任一依赖缺失时 provider 保持 PENDING；依赖 generation 更新或消失时，
-Cordis 会释放 `agentLoop → runEngine → agents → application → surface` 的下游
-generation，恢复后重新激活。
+`AgentLoop` Service 注入 `sessions`、`workspace`、`permissions`、
+`models`、`contextEngine`、`compaction`、`tools` 和 `runtimeLifecycle`。任一依赖缺失时
+provider 保持 PENDING；依赖 generation 更新或消失时，AgentLoop 撤销，恢复后重新激活。
+Runtime 不再硬依赖 AgentLoop，单独的执行实现换代不销毁 Run；但是缺少 AgentLoop 时
+不能启动新 Run 或新 Step，现有 Application surface 不代表执行能力仍然可用。
 
-生产 Registry 来自 `ctx.tools.registry`。单个 Tool 插件注册、卸载或恢复会改变后续
-Step 读取的 Registry 快照。缺少审批 Port 时显式使用 deny-all，保持 fail closed。
+AgentLoop 每次 `open()` acquire 一个 `SessionResourcesHandle`，并接收
+ContextEngine 创建的 `ContextBundleHandle`。两者聚合进同一个幂等的
+`AgentLoopResources.release()`；任一后续构造步骤失败都会立即释放已经取得的资源。
+生产路径由每个 Step 的 lease 持有这个聚合资源，等待该 Step 的持久化收尾后才释放，
+确保 Session Provider 不会在 transcript commit 时关闭 Store，也确保 Storage Provider 不会在
+archive-first 仍执行时关闭 Blob/KV Backend。
+Runtime 另持有 generation 级 Session lease。显式 standalone 调用者仍负责释放自己打开的资源。
+
+生产 Registry 来自 `ctx.tools.registry`，授权来自 `ctx.permissions`。单个 Tool 插件注册、
+卸载或恢复会改变后续 Step 读取的 Registry 快照。需要人工审批但 Approval Hub 没有
+answerer 时明确拒绝。显式 standalone 组合仍可传入旧的 approval Port；完全未提供授权
+能力时使用 deny-all。
+
+代码替换必须在 composition 的 `execution.replace()` barrier 内等待所有共享 Registry
+的 Step 结束后进行；不删除全局 Registry 版本检查，也不让旧 lease 绕过 Tool 停用或权限
+撤销。原生 HMR 通过 Boot 的卸载前协调接口进入 barrier，当前只接纳明确声明支持的
+Step-local 所有者（AgentLoop 与 Read Consumer）；状态所有者和未知依赖影响在卸载前拒绝。
+managed WebUI 启用代码监听时还须取得管理事务许可；新 Step 只能在替换验证和回执落盘后开始。
+权限撤销和用户停用仍走原有管理与授权路径，不借代码重载保留旧授权。
 
 Loader stable id 是 `agent-loop`。Config 当前只拥有 `maxParallelCalls`，无效首次加载
 或更新由 Schemastery 拒绝，Loader 保留 last-known-good generation。

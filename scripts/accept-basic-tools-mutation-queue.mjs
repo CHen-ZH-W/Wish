@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { withFileMutationQueue } from "../dist/tools/support/mutation-queue.js";
+import { withFileMutationQueue } from "../dist/filesystem/consumers/model-tools/mutation-queue.js";
 
 function deferred() {
   let resolve = () => {};

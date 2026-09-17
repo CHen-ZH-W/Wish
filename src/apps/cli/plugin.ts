@@ -7,7 +7,7 @@ import {
 } from "./index.js";
 
 export const name = "cli-surface";
-export const inject = ["launch", "application"];
+export const inject = ["launch", "approval", "application"];
 
 /** Run the CLI through the injected Application service. */
 export function apply(ctx: Context): void {
@@ -20,6 +20,12 @@ export function apply(ctx: Context): void {
     terminal,
     cwd: () => ctx.launch.cwd,
     openApplication: (input) => ctx.application.open(input),
+    registerApproval: (approval) => {
+      ctx.approval.register(approval, {
+        id: "cli-surface",
+        replace: true,
+      });
+    },
     forceExit: (code) => ctx.launch.complete(code),
   });
   let finished = false;

@@ -10,7 +10,7 @@ import {
   type StepState,
   type UserTurnState,
 } from "./state.js";
-import type { UserTurnId } from "../agent/types.js";
+import type { RunInputSource, UserTurnId } from "../agent/types.js";
 
 export type RuntimeTransition<Payload = unknown, Result = unknown> =
   | { readonly type: "run.started"; readonly at: string }
@@ -19,6 +19,7 @@ export type RuntimeTransition<Payload = unknown, Result = unknown> =
       readonly userTurnId: UserTurnId;
       readonly ordinal: number;
       readonly input: Payload;
+      readonly inputSource?: RunInputSource;
       readonly at: string;
     }
   | {
@@ -168,6 +169,9 @@ export function applyRuntimeTransition<Payload, Result>(
         ordinal: transition.ordinal,
         status: "running",
         input: transition.input,
+        ...(transition.inputSource === undefined
+          ? {}
+          : { inputSource: transition.inputSource }),
         startedAt: transition.at,
         steps: Object.freeze([] as StepState[]),
       });
@@ -409,6 +413,14 @@ export function freezeRuntimeTransition<Payload, Result>(
     });
   }
   if (transition.type === "user_turn.started") {
+    if (
+      transition.inputSource !== undefined &&
+      transition.inputSource !== "user" &&
+      transition.inputSource !== "follow_up" &&
+      transition.inputSource !== "unknown"
+    ) {
+      throw new Error("Unknown Runtime input source");
+    }
     return Object.freeze({
       ...transition,
       input: cloneAndFreezePlainValue(transition.input) as Payload,

@@ -62,14 +62,27 @@ export interface ModelInputCapabilities {
   readonly image: boolean;
 }
 
+export type ModelReasoningEffort = "none" | "low" | "high" | "max";
+
+/** Only an explicitly advertised protocol mapping may expose a picker. */
+export interface ModelReasoningControl {
+  readonly format: "deepseek-chat" | "openai-responses";
+  readonly efforts: readonly ModelReasoningEffort[];
+  readonly defaultEffort: ModelReasoningEffort;
+}
+
 export interface ModelSpec {
   readonly id: string;
   readonly name?: string;
   readonly status: ModelAvailability;
   readonly contextWindowTokens?: number;
+  /** Supported output ceiling; never sent as the request default. */
   readonly maxOutputTokens?: number;
+  /** Model-specific default request limit; absent means use the Provider default. */
+  readonly defaultMaxOutputTokens?: number;
   readonly input: ModelInputCapabilities;
   readonly reasoning: boolean;
+  readonly reasoningControl?: ModelReasoningControl;
   readonly toolCalling: boolean;
   readonly developerRole: boolean;
   readonly price?: ModelPrice;

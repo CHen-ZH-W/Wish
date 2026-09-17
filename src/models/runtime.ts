@@ -35,6 +35,7 @@ import type {
   ProviderHeaderValue,
   ResolvedModel,
 } from "./types.js";
+import type { SessionReasoningPort } from "./session-reasoning.js";
 
 export interface ConfiguredModelOptions {
   readonly configuration: ModelsConfiguration;
@@ -42,6 +43,20 @@ export interface ConfiguredModelOptions {
   readonly fetch?: ModelFetch;
   /** A function permits credential rotation without rebuilding public configuration. */
   readonly environment?: ModelEnvironment | (() => ModelEnvironment);
+  /** Host-only credential resolver. Values never enter public Models configuration. */
+  readonly credential?: (reference: string) => string | undefined;
+  /** A late-bound default is sampled only when a caller asks to start a new Run. */
+  readonly defaultModel?: () => ModelRef | string;
+  /** Late-bound user capacity override, sampled whenever context budgeting asks. */
+  readonly contextWindowTokens?: (
+    reference: ModelRef,
+    configured: number | undefined,
+  ) => number | undefined;
+  /** Late-bound user request limit, independent of the model's supported ceiling. */
+  readonly maxOutputTokens?: (
+    reference: ModelRef,
+    configuredDefault: number | undefined,
+  ) => number | undefined;
 }
 
 export interface ConfiguredModelStackOptions extends ConfiguredModelOptions {
@@ -54,7 +69,7 @@ export interface ConfiguredModelStackOptions extends ConfiguredModelOptions {
 
 export type ConfiguredModelRequestTokenCounterOptions = Pick<
   ConfiguredModelOptions,
-  "configuration" | "fetch" | "environment"
+  "configuration" | "fetch" | "environment" | "credential"
 >;
 
 export interface ConfiguredModelStack {
@@ -66,13 +81,15 @@ export interface ConfiguredModelStack {
 /** Complete Models graph consumed by an Application composition. */
 export interface ConfiguredModelResources extends ConfiguredModelStack {
   readonly requestCounter: ModelRequestTokenCounter;
+  /** Optional for standalone embeddings without a durable Session selection owner. */
+  readonly sessionReasoning?: SessionReasoningPort;
 }
 
 /** Narrow request/runtime view consumed outside the Models owner. */
 export type ModelDependencies = Pick<
   ConfiguredModelResources,
   "configuredModel" | "model" | "requestCounter"
->;
+> & Pick<ConfiguredModelResources, "sessionReasoning">;
 
 /** Build the fixed Models decorator order consumed by Core AgentLoop. */
 export function createConfiguredModelStack(
@@ -118,7 +135,7 @@ export function createConfiguredModelRequestTokenCounter(
         resolved.ref,
         createAnthropicMessagesRequestTokenizer({
           model: resolved,
-          headers: () => resolveInvocationHeaders(resolved, environment()),
+          headers: () => resolveInvocationHeaders(resolved, environment(), options.credential),
           fetch,
         }),
       );
@@ -173,9 +190,25 @@ export class ConfiguredModel implements Model {
       return;
     }
 
+    const maxOutputTokens = request.maxOutputTokens ?? this.options.maxOutputTokens?.(
+      freezeModelRef(resolved.ref),
+      resolved.spec.defaultMaxOutputTokens,
+    ) ?? resolved.spec.defaultMaxOutputTokens;
+    if (maxOutputTokens !== undefined && (
+      !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 ||
+      (resolved.spec.maxOutputTokens !== undefined && maxOutputTokens > resolved.spec.maxOutputTokens)
+    )) {
+      yield errorEvent({
+        code: "invalid_request",
+        message: "Requested maxOutputTokens must be a positive integer within the model's supported output limit",
+        retryable: false,
+      });
+      return;
+    }
+
     let headers: Readonly<Record<string, string>>;
     try {
-      headers = resolveInvocationHeaders(resolved, this.environment());
+      headers = resolveInvocationHeaders(resolved, this.environment(), this.options.credential);
     } catch (error: unknown) {
       yield errorEvent({
         code: "missing_api_key",
@@ -205,7 +238,7 @@ export class ConfiguredModel implements Model {
 
     try {
       for await (const event of adapter.stream(
-        { ...request, model: resolved.ref },
+        { ...request, model: resolved.ref, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }) },
         signal,
       )) {
         yield event;
@@ -222,6 +255,12 @@ export class ConfiguredModel implements Model {
   }
 
   getDefaultModel(): ModelRef {
+    if (this.options.defaultModel !== undefined) {
+      return freezeModelRef(resolveConfiguredModel(
+        this.options.configuration,
+        this.options.defaultModel(),
+      ).ref);
+    }
     return freezeModelRef(this.defaultModel);
   }
 
@@ -246,7 +285,9 @@ export class ConfiguredModel implements Model {
   }
 
   getContextWindowTokens(reference: ModelRef | string): number | undefined {
-    return this.getModelSpec(reference).contextWindowTokens;
+    const resolved = this.resolve(reference);
+    return this.options.contextWindowTokens?.(freezeModelRef(resolved.ref), resolved.spec.contextWindowTokens)
+      ?? resolved.spec.contextWindowTokens;
   }
 
   getPrice(reference: ModelRef | string): ModelPrice | undefined {
@@ -273,6 +314,7 @@ function resolveModelEnvironment(
 function resolveInvocationHeaders(
   model: ResolvedModel,
   environment: ModelEnvironment,
+  credential: ConfiguredModelOptions["credential"],
 ): Readonly<Record<string, string>> {
   const entries: Array<[string, string]> = [];
   for (const [name, value] of Object.entries(model.headers)) {
@@ -281,7 +323,7 @@ function resolveInvocationHeaders(
     entries.push([name, resolved]);
   }
   const headers: Record<string, string> = Object.fromEntries(entries);
-  applyAuthentication(headers, model.auth, environment);
+  applyAuthentication(headers, model.auth, environment, credential);
   return Object.freeze(headers);
 }
 
@@ -297,15 +339,33 @@ function applyAuthentication(
   headers: Record<string, string>,
   auth: ProviderAuth,
   environment: ModelEnvironment,
+  credential: ConfiguredModelOptions["credential"],
 ): void {
   if (auth.type === "none") return;
-  const credential = requiredEnvironment(environment, auth.apiKeyEnv);
-  safeHeaderValue(credential, auth.apiKeyEnv);
+  const value = requiredCredential(environment, credential, auth.apiKeyEnv);
+  safeHeaderValue(value, auth.apiKeyEnv);
   if (auth.type === "bearer") {
-    headers.authorization = `Bearer ${credential}`;
+    headers.authorization = `Bearer ${value}`;
     return;
   }
-  headers[auth.headerName ?? "x-api-key"] = credential;
+  headers[auth.headerName ?? "x-api-key"] = value;
+}
+
+function requiredCredential(
+  environment: ModelEnvironment,
+  resolve: ConfiguredModelOptions["credential"],
+  name: string,
+): string {
+  const inherited = environment[name];
+  const value = typeof inherited === "string" && inherited.length > 0
+    ? inherited
+    : resolve?.(name);
+  if (typeof value !== "string" || value.length === 0) {
+    throw new CredentialResolutionError(
+      `Missing required Model credential from environment variable ${name}`,
+    );
+  }
+  return value;
 }
 
 function requiredEnvironment(

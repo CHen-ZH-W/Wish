@@ -4,8 +4,11 @@ import { join, resolve } from "node:path";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
-import { FileSessionStore } from "../storage/sessions/file-session-store.js";
 import { SessionHistoryAdapter } from "./adapters/history.js";
+import {
+  type SessionPersistenceHandle,
+  SessionPersistenceClosedError,
+} from "./persistence.js";
 import { SessionManager } from "./session.js";
 
 /** Loader-owned persistence settings for the Sessions capability. */
@@ -22,47 +25,123 @@ export interface SessionResources {
   readonly history: SessionHistoryAdapter;
 }
 
-/** Explicit standalone composition helper; product processes use the service. */
-export function createFileSessionResources(
-  dataDirectory: string,
-): SessionResources {
-  const manager = new SessionManager(new FileSessionStore({
-    rootDirectory: join(dataDirectory, "sessions"),
-  }));
-  return Object.freeze({
-    manager,
-    history: new SessionHistoryAdapter({ sessions: manager }),
-  });
+/** One Application generation's ownership of a shared Session graph. */
+export interface SessionResourcesHandle extends SessionResources {
+  readonly released: boolean;
+  release(): boolean;
+}
+
+interface SessionResourceEntry {
+  readonly public: SessionResources;
+  readonly persistence: SessionPersistenceHandle;
 }
 
 /** Cordis owner of the Session facade and its shared Context/Compaction views. */
 export class Sessions extends Service {
-  static readonly inject = ["launch"];
+  static readonly inject = ["launch", "sessionPersistence"];
   static readonly Config = Config;
 
   readonly dataDirectory: string;
   readonly manager: SessionManager;
   readonly history: SessionHistoryAdapter;
-  private readonly resources = new Map<string, SessionResources>();
+  private readonly resources = new Map<string, SessionResourceEntry>();
+  private leases = 0;
+  private state: "open" | "retiring" | "closed" = "open";
+  private releaseDrain: (() => void) | undefined;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, "sessions");
     this.dataDirectory = resolveDataDirectory(ctx, config.dataDirectory);
-    const primary = createFileSessionResources(this.dataDirectory);
+    const primary = this.createResources(this.dataDirectory);
     this.resources.set(this.dataDirectory, primary);
-    this.manager = primary.manager;
-    this.history = primary.history;
+    this.manager = primary.public.manager;
+    this.history = primary.public.history;
+    ctx.effect(() => async () => {
+      this.state = "retiring";
+      if (this.leases > 0) {
+        await new Promise<void>((resolve) => {
+          this.releaseDrain = resolve;
+          if (this.leases === 0) resolve();
+        });
+      }
+      this.releaseDrain = undefined;
+      try {
+        await closeSessionResources(this.resources.values());
+      } finally {
+        this.resources.clear();
+        this.state = "closed";
+      }
+    }, "sessions.close");
   }
 
-  /** Resolve one Session graph without moving construction back into Apps. */
+  /** Resolve a non-owning view within the current service generation. */
   open(dataDirectory: string = this.dataDirectory): SessionResources {
+    this.assertOpen();
     const normalized = resolveDataDirectory(this.ctx, dataDirectory);
-    let resources = this.resources.get(normalized);
-    if (resources === undefined) {
-      resources = createFileSessionResources(normalized);
-      this.resources.set(normalized, resources);
+    let entry = this.resources.get(normalized);
+    if (entry === undefined) {
+      entry = this.createResources(normalized);
+      this.resources.set(normalized, entry);
     }
-    return resources;
+    return entry.public;
+  }
+
+  /** Pin a Session graph until its Application generation has drained. */
+  acquire(dataDirectory: string = this.dataDirectory): SessionResourcesHandle {
+    const resources = this.open(dataDirectory);
+    this.leases += 1;
+    let released = false;
+    const handle: SessionResourcesHandle = {
+      manager: resources.manager,
+      history: resources.history,
+      get released(): boolean {
+        return released;
+      },
+      release: (): boolean => {
+        if (released) return false;
+        released = true;
+        this.leases -= 1;
+        if (this.leases === 0) this.releaseDrain?.();
+        return true;
+      },
+    };
+    return Object.freeze(handle);
+  }
+
+  private createResources(dataDirectory: string): SessionResourceEntry {
+    const persistence = this.ctx.sessionPersistence.open({ dataDirectory });
+    const manager = new SessionManager(persistence.store);
+    return Object.freeze({
+      persistence,
+      public: Object.freeze({
+        manager,
+        history: new SessionHistoryAdapter({ sessions: manager }),
+      }),
+    });
+  }
+
+  private assertOpen(): void {
+    if (this.state === "open") return;
+    throw new SessionPersistenceClosedError(
+      `Sessions service is ${this.state}`,
+    );
+  }
+}
+
+async function closeSessionResources(
+  entries: Iterable<SessionResourceEntry>,
+): Promise<void> {
+  const settled = await Promise.allSettled(
+    [...entries].map((entry) => entry.persistence.close()),
+  );
+  const failures = settled.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : []
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      "One or more Session persistence handles failed to close",
+    );
   }
 }
 

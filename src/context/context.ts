@@ -1,5 +1,6 @@
 import type {
   AgentLoopContextEnvironment,
+  AgentLoopRequestView,
   AgentLoopToolResultRenderer,
 } from "../core/agent-loop/agent-loop.js";
 import {
@@ -8,9 +9,11 @@ import {
 } from "../core/context/projector.js";
 import type { ModelRef } from "../core/model/model.js";
 import type { StepSnapshot } from "../core/runtime/runtime.js";
+import type { ToolResultArchivePort } from "../tools/results/types.js";
 import { HistoryContextProvider } from "./providers/history.js";
 import { InstructionsContextProvider } from "./providers/instructions.js";
 import { StateContextProvider } from "./providers/state.js";
+import { ObservedContextProjector, type ContextObservationListener } from "./observation.js";
 import { ModelContextBudgetEvaluator } from "./services/budget.js";
 import { LatestCheckpointHistoryPolicy } from "./services/history-policy.js";
 import {
@@ -30,7 +33,6 @@ import {
   type ContextWorkspaceFacts,
   type ModelContextWindowSource,
   type ModelInputTokenCounter,
-  type ToolResultArchivePort,
 } from "./types.js";
 
 export const DEFAULT_CONTEXT_PROVIDER_ORDER = Object.freeze([
@@ -47,6 +49,7 @@ export interface ContextBundleConfigurationInput {
 }
 
 export interface ContextBundleOptions {
+  readonly observe?: ContextObservationListener;
   readonly history: ContextHistorySource;
   readonly agentInstructions: readonly ContextInstruction[];
   readonly archive: ToolResultArchivePort;
@@ -55,6 +58,8 @@ export interface ContextBundleOptions {
   readonly configuration: ContextBundleConfigurationInput;
   /** Future Context sources register through the existing Core Provider Port. */
   readonly additionalProviders?: readonly ContextProvider<ContextInput>[];
+  /** Host-owned live registry, snapshotted once when preparing each Step. */
+  readonly additionalProviderSource?: () => readonly ContextProvider<ContextInput>[];
 }
 
 export interface ContextStepInput<Payload = unknown> {
@@ -103,7 +108,7 @@ export function createContextBundle(options: ContextBundleOptions): ContextBundl
     counter: options.counter,
     reservedOutputTokens: options.configuration.reservedOutputTokens,
   });
-  const registeredProviders: readonly ContextProvider<ContextInput>[] = [
+  const fixedProviders: readonly ContextProvider<ContextInput>[] = [
     new InstructionsContextProvider({
       agentInstructions: options.agentInstructions,
     }),
@@ -111,32 +116,47 @@ export function createContextBundle(options: ContextBundleOptions): ContextBundl
     new StateContextProvider(),
     ...snapshotAdditionalProviders(options.additionalProviders),
   ];
-  const providers = orderProviders(
-    registeredProviders,
-    options.configuration.providerOrder,
-  );
-  const configuration: ContextConfiguration = Object.freeze({
-    reservedOutputTokens: budget.reservedOutputTokens,
-    toolResultAdmission: toolResults.configuration,
-    providerOrder: Object.freeze(providers.map((provider) => provider.id)),
-  });
-  const projector = new ContextProjector({
+  const currentProviders = () => orderProviders([
+    ...fixedProviders,
+    ...snapshotAdditionalProviders(options.additionalProviderSource?.()),
+  ], options.configuration.providerOrder);
+  // Keep eager validation for standalone composition and the initial Host graph.
+  currentProviders();
+  const stepProviders = new WeakMap<object, readonly ContextProvider<ContextInput>[]>();
+  const projector = new ObservedContextProjector({
     historyPolicy,
     toolResults,
     budget,
-  });
+  }, options.observe);
 
   const bundle: ContextBundle = {
-    configuration,
+    get configuration(): ContextConfiguration {
+      return Object.freeze({
+        reservedOutputTokens: budget.reservedOutputTokens,
+        toolResultAdmission: toolResults.configuration,
+        providerOrder: Object.freeze(currentProviders().map(provider => provider.id)),
+      });
+    },
     projector,
-    providers,
+    get providers() { return currentProviders(); },
     historyPolicy,
     toolResults,
     budget,
     forStep<Payload>(input: ContextStepInput<Payload>) {
+      let providers = stepProviders.get(input.snapshot);
+      if (!providers) {
+        providers = currentProviders();
+        stepProviders.set(input.snapshot, providers);
+      }
       return Object.freeze({
         providers,
         input: createContextInput(input),
+        projectInput({ input: base, request }: {
+          readonly input: ContextInput;
+          readonly request: AgentLoopRequestView;
+        }): ContextInput {
+          return Object.freeze({ ...base, request });
+        },
       });
     },
     createToolResultRenderer<Payload>(
@@ -290,7 +310,40 @@ function snapshotWorkspace(workspace: ContextWorkspaceFacts): ContextWorkspaceFa
   });
   return Object.freeze({
     cwd: requireIdentifier(workspace.cwd, "Context cwd"),
+    fingerprint: requireIdentifier(
+      workspace.fingerprint,
+      "Context workspace fingerprint",
+    ),
+    revision: requireIdentifier(
+      workspace.revision,
+      "Context workspace revision",
+    ),
     instructions: Object.freeze(instructions),
+    ...(workspace.repository === undefined
+      ? {}
+      : { repository: snapshotWorkspaceRepository(workspace.repository) }),
+  });
+}
+
+function snapshotWorkspaceRepository(
+  repository: NonNullable<ContextWorkspaceFacts["repository"]>,
+): NonNullable<ContextWorkspaceFacts["repository"]> {
+  if (repository === null || typeof repository !== "object") {
+    throw new Error("Context workspace repository must be an object");
+  }
+  if (repository.kind !== "git") {
+    throw new Error("Context workspace repository kind must be git");
+  }
+  return Object.freeze({
+    kind: "git" as const,
+    root: requireIdentifier(
+      repository.root,
+      "Context workspace repository root",
+    ),
+    identity: requireIdentifier(
+      repository.identity,
+      "Context workspace repository identity",
+    ),
   });
 }
 

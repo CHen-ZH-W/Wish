@@ -5,9 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { ApplicationFacade } from "../dist/apps/application.js";
-import { createWishAgent } from "../dist/core/agent/service.js";
-import { createAgentLoopPipeline } from "../dist/core/agent-loop/service.js";
-import { createWishRuntime } from "../dist/core/runtime/service.js";
+import { createWishAgent } from "../dist/composition/agent-service.js";
+import { createAgentLoopPipeline } from "../dist/composition/agent-loop-standalone.js";
+import { createWishRuntime } from "../dist/composition/runtime-service.js";
 import { loadModelsConfiguration } from "../dist/models/config.js";
 import {
   createDefaultModelAdapterRegistry,
@@ -17,6 +17,8 @@ import { createConfiguredModelResources } from "../dist/models/runtime.js";
 import { TokenizerUsageEstimator } from "../dist/models/usage.js";
 import { createContextResources } from "../dist/context/service.js";
 import { createCompactionResources } from "../dist/compaction/service.js";
+import { FileToolResultArchive } from
+  "../dist/tools/results/providers/file.js";
 import { ToolRegistry } from "../dist/core/tools/scheduler.js";
 import {
   createFileSessionResources,
@@ -25,8 +27,12 @@ import {
 } from "../dist/sessions/index.js";
 import {
   registerBasicTools,
-} from "../dist/tools/index.js";
-import { createBashTool } from "../dist/tools/basic/bash.js";
+} from "../dist/composition/coding-tools.js";
+import { createBashTool } from "../dist/shell/consumers/model-tool.js";
+import { LocalFilesystemBackend } from
+  "../dist/filesystem/providers/local.js";
+import { LocalFilesystemSearchBackend } from
+  "../dist/filesystem/search/providers/local.js";
 
 function fixtureConfiguration(options = {}) {
   const models = [{
@@ -74,6 +80,10 @@ function agentLoopResources(options) {
   const context = createContextResources({
     dataDirectory: options.dataDirectory,
     sessions: options.sessions,
+    archive: new FileToolResultArchive({
+      directory: join(options.dataDirectory, "tool-results"),
+      locatorRoot: options.dataDirectory,
+    }),
     agentInstructions: options.agentInstructions,
     models: options.models,
     configuration: {
@@ -93,6 +103,10 @@ function agentLoopResources(options) {
       agentId: options.agentId,
       models: options.models,
       workspace: options.workspace,
+      filesystem: options.filesystem ?? new LocalFilesystemBackend(),
+      ...(options.permissions === undefined
+        ? {}
+        : { permissions: options.permissions }),
       context,
       compaction,
       ...(options.tools === undefined ? {} : { tools: options.tools }),
@@ -118,6 +132,16 @@ function deterministicRuntime() {
     now: () =>
       `2099-01-01T00:00:${String(++counters.time).padStart(2, "0")}Z`,
   };
+}
+
+function workspaceSnapshot(root, instructions = []) {
+  return Object.freeze({
+    requestedRoot: root,
+    root,
+    fingerprint: `workspace:fixture:${root}`,
+    revision: `workspace-revision:fixture:${root}`,
+    instructions: Object.freeze(instructions),
+  });
 }
 
 async function collect(iterable) {
@@ -159,9 +183,16 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
       },
     }));
     const approvals = [];
-    const resolvedSessions = [];
+    const resolvedWorkspaces = [];
     const toolRegistry = new ToolRegistry();
-    const registrations = registerBasicTools(toolRegistry);
+    const filesystem = new LocalFilesystemBackend();
+    const filesystemSearch = new LocalFilesystemSearchBackend(filesystem);
+    const registrations = registerBasicTools(toolRegistry, {
+      read: { filesystem },
+      write: { filesystem },
+      edit: { filesystem },
+      grep: { search: filesystemSearch },
+    });
     const dataDirectory = join(root, "data");
     const sessions = createFileSessionResources(dataDirectory);
     const models = modelResources(fixtureConfiguration(), {
@@ -174,16 +205,18 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
       content: "Be exact.",
     }];
     const workspace = {
-      resolve({ session }) {
-        resolvedSessions.push(session.sessionId);
-        return {
-          cwd: session.scope,
-          instructions: [{
+      resolve({ root }) {
+        const snapshot = workspaceSnapshot(root, [
+          Object.freeze({
             id: "workspace",
             authority: "developer",
+            source: `${root}/AGENTS.md`,
             content: "Stay in the workspace.",
-          }],
-        };
+            digest: "sha256:fixture",
+          }),
+        ]);
+        resolvedWorkspaces.push(snapshot);
+        return snapshot;
       },
     };
     const runtime = runtimeResources({
@@ -192,6 +225,8 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
       agentId: "wish-agent",
       models,
       workspace,
+      filesystem,
+      filesystemSearch,
       agentInstructions,
       reservedOutputTokens: 512,
       keepRecentTokens: 512,
@@ -257,7 +292,12 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
 
     assert.equal(approvals.length, 1);
     assert.equal(approvals[0].call.name, "read");
-    assert.deepEqual(resolvedSessions, ["session-1", "session-1", "session-1"]);
+    assert.deepEqual(
+      resolvedWorkspaces.map((snapshot) => snapshot.root),
+      [root, root, root],
+    );
+    assert.deepEqual(approvals[0].context.workspace, resolvedWorkspaces[1]);
+    assert.equal(Object.isFrozen(approvals[0].context.workspace), true);
     assert.equal(
       events.some((event) =>
         event.type === "tool.lifecycle" &&
@@ -442,9 +482,42 @@ test("recovers one Context overflow by appending a Session checkpoint", async ()
     const dataDirectory = join(root, "data");
     const sessions = createFileSessionResources(dataDirectory);
     const models = modelResources(anthropicConfiguration(), { fetch });
+    let workspaceResolutions = 0;
+    const resolvedWorkspaces = [];
     const workspace = {
-      resolve({ session }) {
-        return { cwd: session.scope, instructions: [] };
+      resolve({ root }) {
+        workspaceResolutions += 1;
+        const resolved = workspaceSnapshot(root);
+        resolvedWorkspaces.push(resolved);
+        return resolved;
+      },
+    };
+    const permissionRequests = [];
+    const permissions = {
+      resolve(request) {
+        permissionRequests.push(request);
+        return Object.freeze({
+          schemaVersion: 1,
+          subject: Object.freeze({ ...request.subject }),
+          profile: request.agent?.profile ?? "approval-required",
+          availableTools: Object.freeze([...request.registeredTools]),
+          ceiling: Object.freeze({
+            allowedCapabilities: Object.freeze(["filesystem.read"]),
+          }),
+          workspace: Object.freeze({
+            fingerprint: request.workspace.fingerprint,
+            revision: request.workspace.revision,
+          }),
+          policyVersion: "acceptance-permissions-v1",
+          authorityVersion:
+            `acceptance:${request.subject.runId}:${request.subject.stepId}:${request.workspace.revision}`,
+        });
+      },
+      authorize() {
+        throw new Error("No Tool authorization expected");
+      },
+      revalidate() {
+        throw new Error("No Tool revalidation expected");
       },
     };
     const runtime = runtimeResources({
@@ -453,6 +526,7 @@ test("recovers one Context overflow by appending a Session checkpoint", async ()
       agentId: "wish-agent",
       models,
       workspace,
+      permissions,
       agentInstructions: [],
       reservedOutputTokens: 10,
       keepRecentTokens: 10,
@@ -462,7 +536,10 @@ test("recovers one Context overflow by appending a Session checkpoint", async ()
       sessions,
       agent: createWishAgent({
         id: "wish-agent",
-        configuration: { agentInstructions: [] },
+        configuration: {
+          agentInstructions: [],
+          permissions: { profile: "read-only" },
+        },
       }, runtime),
       models,
     });
@@ -484,6 +561,18 @@ test("recovers one Context overflow by appending a Session checkpoint", async ()
     assert.equal(completion.status, "completed");
     assert.equal(completion.result.output.text, "answer after compaction");
     assert.equal(fullRequestCounts, 3);
+    assert.equal(workspaceResolutions, 2);
+    assert.equal(permissionRequests.length, 2);
+    assert.deepEqual(
+      permissionRequests.map((request) => request.agent?.profile),
+      ["read-only", "read-only"],
+    );
+    assert.deepEqual(permissionRequests[0].workspace, resolvedWorkspaces[0]);
+    assert.deepEqual(permissionRequests[1].workspace, resolvedWorkspaces[1]);
+    assert.notEqual(
+      permissionRequests[0].subject.runId,
+      permissionRequests[1].subject.runId,
+    );
 
     const history = await application.readSessionHistory({
       sessionId: "session-compact",

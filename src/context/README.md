@@ -57,6 +57,21 @@ src/context/
 
 ## History 投影
 
+`ContextBundle.forStep()` 提供可选的 `projectInput`，由 AgentLoop 在实际输入渲染和
+最终 Tool snapshot 完成后调用。Provider 可以读取 `ContextInput.request` 中冻结的
+`currentMessage`、`availableTools` 和 `source`，不需要重新渲染输入或猜测工具是否可用。
+旧的静态 Context 输入仍然有效；`request` 缺失、旧记录未提供来源时都不能推断为人类输入。
+`source` 的 `steering`／`follow_up` 表示宿主投递渠道，不构成授权，也不能从 user role
+或正文中的“用户说”推导人类显式意图。请求视图本身不被自动插入 messages。
+
+`ContextEngine.registerProvider()` 的动态源通过通用 `additionalProviderSource`
+进入已打开的 Context graph。每个 Step 在 `forStep()` 时固定 Provider 列表，同一个
+StepSnapshot 对象的重投影复用这份列表；后续 Step 才看到新增、替换或删除的源。
+注销先取消在途投影并等待源读取结束，再允许依赖服务关闭；旧 Step 引用已注销源时
+fail closed，不调用已关闭能力。Provider 必须遵守 AbortSignal。Standalone 的固定
+`additionalProviders` 不受影响；显式 `providerOrder` 仍必须完整覆盖当前集合，不能
+用静态顺序配置静默忽略新增源。
+
 `HistoryContextProvider` 从 `ContextHistorySource` 读取完整规范事实，按 Session
 `sequence` 检查重复、排序并生成稳定 item ID。它只复制 `role`、`content`、
 `contentParts`、`reasoningContent`、`toolCalls` 和 `toolCallId`；时间、存储版本、事件
@@ -108,7 +123,7 @@ Provider 不扫描文件，也不读取 Session、Memory 或 Skill。显式数�
 `StateContextProvider` 每次 `provide` 都重新读取当前输入，输出一条
 `developer/state/dynamic_tail` item，内容只包含：
 
-- cwd 与快照时间；
+- cwd、workspace fingerprint/revision、可选 repository identity 与快照时间；
 - Run ID 和 state version；
 - UserTurn ID/ordinal；
 - Step ID/ordinal。
@@ -161,12 +176,11 @@ Provider 协议字段。
 规则保证 Context 不会把“Core 调用了 `archive()` gate”误当成“完整 executor 结果
 已经被持久化”。
 
-当前本地组合可使用
-`storage/tool-results/file-tool-result-archive.ts`。它在 renderer 裁剪前深复制完整
-`ToolResult`，以 Session、调用身份和结果 SHA-256 生成稳定路径，使用 `0600` 临时文件、
-`fsync` 和原子 rename 提交。相同调用与相同结果幂等返回同一 receipt；已有文件损坏或
-身份不一致时 fail closed。Archive 不追加 Session transcript；组合层仍需把返回的
-receipt 与 Tool Message 一起交给 Sessions。
+产品组合注入 `ToolResultArchiveService`，默认 Provider 使用 Storage Blob 保存完整
+`ToolResult`，并以 KV identity index 保证调用级幂等和冲突检测。新 locator 是版本化的
+opaque 引用，不是本地路径；旧文件 locator 仍可读取。`FileToolResultArchive` 仅保留给
+standalone 和兼容测试。Archive 不追加 Session transcript；组合层仍需把返回的 receipt
+与 Tool Message 一起交给 Sessions。
 
 ## 请求前预算
 
@@ -211,6 +225,10 @@ Core 当前保留 `ready + unknown`，由外部产品策略决定是否允许调
 `additionalProviders` 注册；默认追加在内置 Provider 后，也可以通过完整、无重复的
 `providerOrder` 显式排序。Provider 注册顺序可观察，但消息最终位置仍由 Core 的
 `placement` 规则决定。
+
+产品业务模块通过 `ContextEngine.registerProvider()` 使用同一 Port 动态注册，注册项绑定
+插件 Fiber；卸载后，已打开 ContextBundle 的后续 Step 也不再包含其 Provider。
+单个 Step 固定来源集合；已注销源不能由旧 Step 继续调用，重投影也不能悄悄换成新源。
 
 组合层对每个 Step 从外部解析 Session ID、精确模型和 workspace facts，再让 bundle
 从不可变 `StepSnapshot` 复制 Runtime 身份与版本：
@@ -258,16 +276,18 @@ AgentLoop、不调用模型、不写 Session，也不生成摘要。
 ## Cordis 集成
 
 `src/context/service.ts` 提供名为 `contextEngine` 的 service，避免和 Cordis 自身的
-`Context` 类型混淆。它注入 `sessions` 与 `models`，拥有
-`FileToolResultArchive → ContextBundle` 的生产构造；`reservedOutputTokens` 由自己的
+`Context` 类型混淆。它注入 `sessions`、`models` 与 `toolResultArchive`，使用 Archive
+Provider 创建 `ContextBundle`；`reservedOutputTokens` 由自己的
 Schemastery Config 管理。AgentLoop service 消费 `contextEngine.open()` 返回的
-`ContextBundle`；Application Service 与 facade 不看见它，也不创建 archive、Provider graph
-或 budget evaluator。
+`ContextBundleHandle`；该 handle 拥有 Archive Provider 返回的 Storage lease，且释放操作
+幂等。Application Service 与 facade 不看见它，也不创建 archive、Provider graph 或 budget
+evaluator。
 
 `createContextResources()` 是显式 standalone 组合 helper，供模块验收或非产品嵌入使用；
 `wish` / `wish-webui` 的启动路径只使用 Cordis service。service generation 更新、禁用或
-消失会让依赖它的 agentLoop/runEngine/agents/application/surface fiber 回到 PENDING，恢复后
-创建新一代组合。
+消失会让直接依赖它的 AgentLoop 和 Application/surface fiber 回到 PENDING，恢复后
+创建新一代组合。Runtime 不硬依赖 ContextEngine 或 AgentLoop；但 Application 关闭仍可能
+退休它持有的 Run generation，不把此类状态所有者更新当作已验证的普通执行实现替换。
 
 ```bash
 npm run test:cordis-context
@@ -278,13 +298,15 @@ npm run test:cordis-context
 `context.ts`、`types.ts`、`providers/` 与 `services/` 可以依赖 Core 的 Model、Runtime
 和 Tool DTO，并为 Core Context 的窄 Port 提供实现；它们不能依赖具体 Session Store、
 文件系统、数据库、Memory、Skill、Workflow、Sandbox 或 Provider 协议实现。只有
-Cordis 边界 `service.ts` 负责把 Sessions view 和文件 Archive adapter 接到这些纯 Port。
+Cordis 边界 `service.ts` 负责把 Sessions view 和 Tool Result Archive handle 接到这些纯 Port。
+纯 `createContextResources()` helper 继续接受非 owning Port；产品图的 handle 则由 AgentLoop
+generation 聚合，并在 Run drain 后释放。
 
 事实来源保持单向：
 
 ```text
 Cordis ContextEngine service
-              │ injects Sessions / Models and binds Storage
+              │ injects Sessions / Models / ToolResultArchive
               v
       pure Context ports/services
               │ supplies Core ports/items
@@ -294,7 +316,7 @@ Cordis ContextEngine service
 
 `ContextWorkspaceFacts` 和 `ContextRuntimeFacts` 使用显式字段，不提供可无限扩张的
 `Record<string, unknown>` 隐藏扩展口。每个 Step 由组合层重新构造输入快照，Context
-不缓存旧的 cwd、时间或 Runtime 状态。
+不缓存旧的 cwd、workspace revision、时间或 Runtime 状态。
 
 ## 模块边界
 

@@ -2,6 +2,7 @@ import type {
   AgentId,
   AgentMetadata,
   AgentRunId,
+  RunInputSource,
   UserTurnId,
 } from "../agent/types.js";
 import type { RuntimeControlMessage } from "./control.js";
@@ -57,6 +58,7 @@ export interface StepSnapshot<Payload = unknown> {
     readonly userTurnId: UserTurnId;
     readonly ordinal: number;
     readonly input: Payload;
+    readonly inputSource?: RunInputSource;
   };
   readonly step: {
     readonly stepId: AgentStepId;
@@ -154,6 +156,7 @@ export function captureStepSnapshot<Payload, Result>(input: {
       userTurnId: turn.id,
       ordinal: turn.ordinal,
       input: turn.input,
+      ...(turn.inputSource === undefined ? {} : { inputSource: turn.inputSource }),
     }),
     step: Object.freeze({
       stepId: input.step.id,

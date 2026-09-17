@@ -9,6 +9,20 @@ async function collect(iterable) {
   return events;
 }
 
+test("a live observer does not lose wakeup when the producer advances while yield is paused", async () => {
+  const stream = new RuntimeEventStream("run-live", 10), abort = new AbortController();
+  const deadline = setTimeout(() => abort.abort(), 1000);
+  const publish = id => stream.publish({ eventId: id, occurredAt: "2026-09-14T00:00:00Z", transition: { type: id } });
+  try {
+    const first = publish("first"), iterator = stream.observe({ signal: abort.signal })[Symbol.asyncIterator]();
+    assert.equal((await iterator.next()).value, first);
+    const second = publish("second");
+    assert.deepEqual(await iterator.next(), { value: second, done: false });
+    assert.equal(abort.signal.aborted, false);
+    await iterator.return();
+  } finally { clearTimeout(deadline); stream.close(); }
+});
+
 test("Model events own an immutable payload snapshot", async () => {
   const stream = new RuntimeEventStream("run-1", 10);
   const source = {

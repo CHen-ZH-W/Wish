@@ -56,7 +56,9 @@ begin
 9. Tool event 时间、Grant 的 `issuedAt/expiresAt` 和激活期间的过期校验共用同一
    `ToolClock`；测试或宿主可以注入时钟，但不能让签发和消费使用不同时间源。
 10. `ToolExecutionLifecycle` 是权威 Port；prepare、markDispatched 或 finish
-   失败会阻止或失败调用。具体持久化实现位于 Core 外。
+   失败会阻止或失败调用。生产实现由 Runtime-owned
+   `core/runtime/durability` authority 提供，因此 Tool 的副作用边界与父 Run 使用
+   同一 Journal；Tools Core 不依赖该具体实现。
 11. `ToolEventPublisher` 是诊断 Event Port，发布失败不改变执行结果。
 12. Scheduler 默认最多并行 8 个 parallel 调用；sequential 调用是前后严格屏障。
 13. abort 后不再实际 dispatch 尚未开始的 Tool，但每个已提交调用仍返回结果。
@@ -69,7 +71,7 @@ begin
 - 具体 Tool schema、parser、能力解析和 execute 实现；
 - 审批规则、用户交互和规则持久化；
 - Sandbox 后端及其真实资源强制；
-- Tool 生命周期和结果归档的文件、数据库或远端实现；
+- Tool lifecycle authority 的 Journal Provider，以及结果归档的文件、数据库或远端实现；
 - Tool Result 裁剪、模型消息渲染和用户界面展示；
 - Workflow、Memory、Skill 或其他业务 Tool 集合。
 

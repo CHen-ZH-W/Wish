@@ -60,6 +60,8 @@ test("builds the default Provider order and snapshots immutable Step input", () 
   const sourceModel = { provider: "provider", model: "primary" };
   const sourceWorkspace = {
     cwd: "/workspace",
+    fingerprint: "workspace:fixture",
+    revision: "workspace-revision:fixture",
     instructions: [
       { id: "repo", authority: "developer", content: "Follow repository rules." },
     ],
@@ -93,6 +95,8 @@ test("builds the default Provider order and snapshots immutable Step input", () 
     model: modelRef,
     workspace: {
       cwd: "/workspace",
+      fingerprint: "workspace:fixture",
+      revision: "workspace-revision:fixture",
       instructions: [
         { id: "repo", authority: "developer", content: "Follow repository rules." },
       ],
@@ -164,7 +168,12 @@ test("validates complete Provider registration order without hiding extensions",
     snapshot: { ...snapshot(), schemaVersion: 2 },
     sessionId: "session-1",
     model: modelRef,
-    workspace: { cwd: "/workspace", instructions: [] },
+    workspace: {
+      cwd: "/workspace",
+      fingerprint: "workspace:fixture",
+      revision: "workspace-revision:fixture",
+      instructions: [],
+    },
   }), /Unknown Context Step snapshot schemaVersion/u);
 });
 
@@ -308,6 +317,8 @@ test("plugs directly into AgentLoop with archive-first Tool Result admission", a
             model: modelRef,
             workspace: {
               cwd: "/workspace",
+              fingerprint: "workspace:fixture",
+              revision: "workspace-revision:fixture",
               instructions: [{
                 id: "repo",
                 authority: "developer",

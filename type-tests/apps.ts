@@ -4,20 +4,23 @@ import {
   type WishApplicationOptions,
 } from "../src/apps/application.js";
 import type {
-  ContextWorkspaceFacts,
-} from "../src/context/types.js";
-import type {
   WishAgentProtocol,
   WishApplication,
   WishOutputEvent,
   WishRunHandle,
-  WishWorkspaceResolver,
 } from "../src/apps/types.js";
+import type {
+  WorkspaceResolver,
+  WorkspaceSnapshot,
+} from "../src/workspace/index.js";
 
-const workspace: WishWorkspaceResolver = {
-  resolve({ session }): ContextWorkspaceFacts {
+const workspace: WorkspaceResolver = {
+  async resolve({ root }): Promise<WorkspaceSnapshot> {
     return {
-      cwd: session.scope,
+      requestedRoot: root,
+      root,
+      fingerprint: "workspace:fixture",
+      revision: "workspace-revision:fixture",
       instructions: [],
     };
   },

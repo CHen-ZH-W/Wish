@@ -7,6 +7,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { resolve } from "node:path";
+import { HostDirectoryBrowseError, type HostDirectoryBrowser } from "../../workspace/directory-picker/types.js";
 
 import { EventCursorExpiredError } from "../../core/events/event.js";
 import type { ModelRef } from "../../core/model/model.js";
@@ -14,7 +15,17 @@ import {
   RunGenerationRetiredError,
   type RunGenerationDrainTimeoutError,
 } from "../../core/runtime/generation.js";
+import {
+  RuntimeReconciliationConflictError,
+  RuntimeReconciliationNotFoundError,
+} from "../../core/runtime/durability/errors.js";
+import type {
+  RuntimeReconciliationOutcome,
+} from "../../core/runtime/durability/types.js";
 import { ModelsConfigurationError } from "../../models/config.js";
+import { ModelReasoningSelectionError } from "../../models/session-reasoning.js";
+import { StorageConflictError } from "../../storage/errors.js";
+import type { ApprovalRuleStore } from "../../permissions/rules/types.js";
 import {
   SessionAlreadyExistsError,
   SessionArchivedError,
@@ -28,6 +39,7 @@ import type {
   WishApplication,
   WishOutputEvent,
   WishRunControl,
+  WishRuntimeRecovery,
 } from "../types.js";
 import type { WebToolApprovalBroker } from "./approval.js";
 import type {
@@ -49,8 +61,9 @@ const WEB_ASSETS = new Map<string, {
   ["/", { file: "index.html", contentType: "text/html; charset=utf-8" }],
   ["/index.html", { file: "index.html", contentType: "text/html; charset=utf-8" }],
   ["/assets/app.css", { file: "app.css", contentType: "text/css; charset=utf-8" }],
-  ["/assets/app.js", { file: "app.js", contentType: "text/javascript; charset=utf-8" }],
   ["/favicon.svg", { file: "favicon.svg", contentType: "image/svg+xml" }],
+  ["/assets/client.js", { file: "client.js", contentType: "text/javascript; charset=utf-8" }],
+  ["/assets/ui-modules.json", { file: "ui-modules.json", contentType: "application/json; charset=utf-8" }],
 ]);
 
 const WEB_ASSET_ROOT = new URL("./public/", import.meta.url);
@@ -69,8 +82,12 @@ const WEB_CONTENT_SECURITY_POLICY = [
 export interface WishWebUiServerOptions {
   readonly application: WishApplication;
   readonly approvals: WebToolApprovalBroker;
+  /** Optional for standalone tests; product Cordis graphs always provide it. */
+  readonly approvalRules?: ApprovalRuleStore;
   /** New Sessions use this root unless the request explicitly supplies one. */
   readonly workspaceRoot: string;
+  /** Directory picking is an injected Host capability, not a Session or Workspace snapshot method. */
+  readonly directoryBrowser?: HostDirectoryBrowser;
   readonly host?: string;
   /** Port 0 is accepted for an ephemeral test/integration listener. */
   readonly port?: number;
@@ -91,10 +108,31 @@ export interface StartedWishWebUiServer {
   close(): Promise<void>;
 }
 
+export interface WishWebUiHandler {
+  handle(request: IncomingMessage, response: ServerResponse): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** Static resources belong to the process surface, not to an Application generation. */
+export async function serveWishWebUiAsset(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const path = new URL(request.url ?? "/", "http://wish.local").pathname;
+  const asset = WEB_ASSETS.get(path) ?? (/^\/assets\/(core|modules|chunks)\/[A-Za-z0-9_-]+-[A-Z0-9]{8}\.js$/.test(path)
+    ? { file: path.slice("/assets/".length), contentType: "text/javascript; charset=utf-8" } : undefined);
+  if ((request.method === "GET" || request.method === "HEAD") && asset) {
+    try { await sendWebAsset(response, asset, request.method === "HEAD"); }
+    catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") sendJson(response, 404, { error: { code: "asset_not_found" } });
+      else throw error;
+    }
+  } else sendJson(response, 404, { error: { code: "asset_not_found" } });
+}
+
 interface WebServerState {
   readonly application: WishApplication;
   readonly approvals: WebToolApprovalBroker;
+  readonly approvalRules?: ApprovalRuleStore;
   readonly workspaceRoot: string;
+  readonly directoryBrowser?: HostDirectoryBrowser;
   readonly heartbeatIntervalMs: number;
   readonly maxJsonBodyBytes: number;
   readonly maxRetainedRuns: number;
@@ -122,17 +160,19 @@ class WishWebApiError extends Error {
 }
 
 /** Start the transport adapter only; all Agent behavior stays in WishApplication. */
-export async function startWishWebUiServer(
+export async function createWishWebUiHandler(
   options: WishWebUiServerOptions,
-): Promise<StartedWishWebUiServer> {
+): Promise<WishWebUiHandler> {
   requireServerOptions(options);
-  const host = requireText(options.host ?? DEFAULT_HOST, "WebUI host");
-  const port = portNumber(options.port ?? DEFAULT_PORT, true);
   const workspaceRoot = await requireDirectory(options.workspaceRoot);
   const state: WebServerState = {
     application: options.application,
     approvals: options.approvals,
+    ...(options.approvalRules === undefined
+      ? {}
+      : { approvalRules: options.approvalRules }),
     workspaceRoot,
+    ...(options.directoryBrowser === undefined ? {} : { directoryBrowser: options.directoryBrowser }),
     heartbeatIntervalMs: positiveInteger(
       options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       "WebUI heartbeat interval",
@@ -153,12 +193,22 @@ export async function startWishWebUiServer(
     onRunGenerationDrainTimeout: options.onRunGenerationDrainTimeout ??
       (() => {}),
   };
-  const server = createServer((request, response) => {
-    void routeRequest(state, request, response).catch((error: unknown) => {
-      options.onError?.(error);
-      sendError(response, error);
-    });
+  let closing: Promise<void> | undefined;
+  return Object.freeze({
+    async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+      try { await routeRequest(state, request, response); }
+      catch (error) { options.onError?.(error); sendError(response, error); }
+    },
+    close(): Promise<void> { return closing ??= closeState(state); },
   });
+}
+
+/** API-only listener for embedding/tests. Product WebUI uses the independent Root host. */
+export async function startWishWebUiServer(options: WishWebUiServerOptions): Promise<StartedWishWebUiServer> {
+  const host = requireText(options.host ?? DEFAULT_HOST, "WebUI host");
+  const port = portNumber(options.port ?? DEFAULT_PORT, true);
+  const handler = await createWishWebUiHandler(options);
+  const server = createServer((request, response) => { void handler.handle(request, response); });
 
   await new Promise<void>((accept, reject) => {
     const error = (cause: Error) => reject(cause);
@@ -180,7 +230,12 @@ export async function startWishWebUiServer(
     server,
     url,
     close(): Promise<void> {
-      closing ??= closeServer(server, state);
+      closing ??= (async () => {
+        const retiring = handler.close();
+        await Promise.all([retiring, new Promise<void>((accept, reject) => {
+          server.close(error => error ? reject(error) : accept());
+        })]);
+      })();
       return closing;
     },
   });
@@ -200,16 +255,59 @@ async function routeRequest(
   state.shutdown.signal.addEventListener("abort", shutdown, { once: true });
   try {
     requireServing(state);
-    const asset = WEB_ASSETS.get(url.pathname);
-    if ((method === "GET" || method === "HEAD") && asset !== undefined) {
-      await sendWebAsset(response, asset, method === "HEAD");
-      return;
-    }
-
     if (method === "GET" && url.pathname === "/api/health") {
+      const runtimeRecovery = await state.application.runtimeRecovery?.snapshot(
+        operation.signal,
+      );
       sendJson(response, 200, {
         status: "ok",
         agentId: state.application.agentId,
+        ...(runtimeRecovery === undefined ? {} : { runtimeRecovery }),
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/runtime-recovery") {
+      const runtimeRecovery = requireRuntimeRecovery(state);
+      sendJson(response, 200, {
+        recovery: await runtimeRecovery.snapshot(operation.signal),
+      });
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      url.pathname === "/api/runtime-recovery/reconciliations"
+    ) {
+      const runtimeRecovery = requireRuntimeRecovery(state);
+      const body = await readJsonObject(request, state.maxJsonBodyBytes);
+      requireOnlyKeys(body, [
+        "resolutionId",
+        "runId",
+        "userTurnId",
+        "stepId",
+        "callId",
+        "outcome",
+        "actor",
+        "reason",
+        "evidence",
+      ]);
+      const evidence = optionalBoundedString(body, "evidence", 65_536, true);
+      const commit = await runtimeRecovery.resolve({
+        resolutionId: boundedStringField(body, "resolutionId", 256),
+        runId: stringField(body, "runId"),
+        userTurnId: stringField(body, "userTurnId"),
+        stepId: stringField(body, "stepId"),
+        callId: stringField(body, "callId"),
+        outcome: reconciliationOutcome(body.outcome),
+        actor: boundedStringField(body, "actor", 256),
+        reason: boundedStringField(body, "reason", 4_096),
+        ...(evidence === undefined ? {} : { evidence }),
+        signal: operation.signal,
+      });
+      sendJson(response, 200, {
+        commit,
+        recovery: await runtimeRecovery.snapshot(operation.signal),
       });
       return;
     }
@@ -220,7 +318,23 @@ async function routeRequest(
         ...(status === undefined ? {} : { status }),
         signal: operation.signal,
       });
-      sendJson(response, 200, { sessions });
+      sendJson(response, 200, { sessions, workspaceRoot: state.workspaceRoot });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/workspace/directories") {
+      if (!state.directoryBrowser) throw apiError(503, "directory_browser_unavailable", "Host directory browsing is unavailable");
+      const body = await readJsonObject(request, state.maxJsonBodyBytes);
+      requireOnlyKeys(body, ["path"]);
+      const path = optionalString(body, "path");
+      try {
+        sendJson(response, 200, { listing: await state.directoryBrowser.list(path, operation.signal) });
+      } catch (error) {
+        if (error instanceof HostDirectoryBrowseError) {
+          throw apiError(400, error.code, error.message);
+        }
+        throw error;
+      }
       return;
     }
 
@@ -254,6 +368,44 @@ async function routeRequest(
       return;
     }
 
+    if (method === "GET" && url.pathname === "/api/model-reasoning/default") {
+      const selection = state.application.sessionReasoning;
+      if (selection === undefined) throw apiError(503, "model_reasoning_unavailable", "Session reasoning selection is unavailable");
+      sendJson(response, 200, { selection: selection.inspectDefault() });
+      return;
+    }
+
+    const sessionReasoning = matchRoute(url.pathname, /^\/api\/sessions\/([^/]+)\/model-reasoning$/u);
+    if (sessionReasoning !== undefined && (method === "GET" || method === "POST")) {
+      const session = await state.application.getSession({ sessionId: sessionReasoning, signal: operation.signal });
+      const selection = state.application.sessionReasoning;
+      if (selection === undefined) throw apiError(503, "model_reasoning_unavailable", "Session reasoning selection is unavailable");
+      const model = selection.defaultModel();
+      if (method === "GET") {
+        sendJson(response, 200, { selection: await selection.inspect(sessionReasoning, model, operation.signal) });
+        return;
+      }
+      if (session.status !== "active") throw apiError(409, "session_archived", "Archived Session is read-only");
+      const body = await readJsonObject(request, state.maxJsonBodyBytes);
+      requireOnlyKeys(body, ["model", "effort"]);
+      const submitted = optionalModelProperty(body, "model").model;
+      if (submitted === undefined || submitted.provider !== model.provider || submitted.model !== model.model) {
+        throw apiError(409, "model_selection_changed", "Default model changed; reload the reasoning choices");
+      }
+      const effort = body.effort;
+      if (effort !== null && effort !== "none" && effort !== "low" && effort !== "high" && effort !== "max") {
+        throw apiError(400, "invalid_reasoning_effort", "Reasoning effort must be none, low, high, max, or null");
+      }
+      try {
+        sendJson(response, 200, { selection: await selection.select(sessionReasoning, model, effort, operation.signal) });
+      } catch (error) {
+        if (error instanceof StorageConflictError) throw apiError(409, "model_selection_conflict", "Reasoning choice changed concurrently; reload and try again");
+        if (error instanceof ModelReasoningSelectionError) throw apiError(409, "model_reasoning_unsupported", "Selected model does not support this reasoning effort");
+        throw error;
+      }
+      return;
+    }
+
     const sessionArchive = matchRoute(
       url.pathname,
       /^\/api\/sessions\/([^/]+)\/archive$/u,
@@ -266,6 +418,32 @@ async function routeRequest(
         signal: operation.signal,
       });
       sendJson(response, 200, { session });
+      return;
+    }
+
+    const sessionRestore = matchRoute(url.pathname, /^\/api\/sessions\/([^/]+)\/restore$/u);
+    if (method === "POST" && sessionRestore !== undefined) {
+      requireOnlyKeys(await readJsonObject(request, state.maxJsonBodyBytes), []);
+      sendJson(response, 200, { session: await state.application.restoreSession({ sessionId: sessionRestore, signal: operation.signal }) });
+      return;
+    }
+
+    const featureRoute = /^\/api\/sessions\/([^/]+)\/features(?:\/([^/]+))?$/u.exec(url.pathname);
+    if (featureRoute && (method === "GET" || method === "POST")) {
+      const sessionId = decodeURIComponent(featureRoute[1]!);
+      const session = await state.application.getSession({ sessionId, signal: operation.signal });
+      const features = state.application.sessionFeatures;
+      if (method === "GET") { sendJson(response, 200, { features: await features?.inspect(sessionId) ?? [] }); return; }
+      if (session.status !== "active") throw apiError(409, "session_archived", "Archived Session is read-only");
+      if (!features || !featureRoute[2]) throw apiError(404, "feature_not_found", "Session feature unavailable");
+      const body = await readJsonObject(request, state.maxJsonBodyBytes);
+      requireOnlyKeys(body, ["action", "token", "feedback"]);
+      if (!body.token || typeof body.token !== "object" || Array.isArray(body.token)) throw apiError(400, "invalid_token", "Review token required");
+      try {
+        await features.act(sessionId, decodeURIComponent(featureRoute[2]), stringField(body, "action", false),
+          body.token as Record<string, unknown>, body.feedback === undefined ? undefined : stringField(body, "feedback", false));
+      } catch (error) { throw apiError(409, "feature_conflict", error instanceof Error ? error.message : String(error)); }
+      sendJson(response, 200, { features: await features.inspect(sessionId) });
       return;
     }
 
@@ -291,6 +469,7 @@ async function routeRequest(
       requireServing(state);
       const handle = await state.application.startRun({
         sessionId: sessionRuns,
+        inputSource: "user",
         payload: {
           text: stringField(body, "text", false),
           ...optionalModelProperty(body, "model"),
@@ -338,15 +517,23 @@ async function routeRequest(
       sendJson(response, 200, { session });
       return;
     }
+    if (method === "DELETE" && sessionMatch !== undefined) {
+      requireOnlyKeys(await readJsonObject(request, state.maxJsonBodyBytes), []);
+      await state.application.deleteSession({ sessionId: sessionMatch, signal: operation.signal });
+      sendJson(response, 200, { sessionId: sessionMatch, deleted: true });
+      return;
+    }
     if (method === "PATCH" && sessionMatch !== undefined) {
       const body = await readJsonObject(request, state.maxJsonBodyBytes);
       requireOnlyKeys(body, ["title"]);
       if (!("title" in body)) {
         throw apiError(400, "invalid_request", "title is required");
       }
+      const title = body.title;
+      if (title !== null && (typeof title !== "string" || !title.trim() || title.trim().length > 256)) throw apiError(400, "invalid_request", "会话名应为 1–256 个字符");
       const session = await state.application.updateSessionMetadata({
         sessionId: sessionMatch,
-        title: nullableString(body, "title"),
+        title: title?.trim() ?? null,
         signal: operation.signal,
       });
       sendJson(response, 200, { session });
@@ -378,9 +565,14 @@ async function routeRequest(
     );
     if (method === "POST" && runControls !== undefined) {
       const body = await readJsonObject(request, state.maxJsonBodyBytes);
+      const control = webRunControl(body);
+      const run = state.runs.get(runControls);
+      if (run && control.type !== "abort") {
+        await state.application.sessionFeatures?.beforeInput(run.sessionId, control.type === "follow_up" ? control.payload.text : control.text);
+      }
       const receipt = state.application.controlRun(
         runControls,
-        webRunControl(body),
+        control,
       );
       sendJson(response, 200, { receipt });
       return;
@@ -403,10 +595,11 @@ async function routeRequest(
     );
     if (method === "POST" && approvalMatch !== undefined) {
       const body = await readJsonObject(request, state.maxJsonBodyBytes);
-      requireOnlyKeys(body, ["approved"]);
+      requireOnlyKeys(body, ["approved", "scope"]);
       const approval = state.approvals.decide(
         approvalMatch,
         booleanField(body, "approved"),
+        approvalScope(body.scope),
       );
       if (approval === undefined) {
         throw apiError(
@@ -416,6 +609,28 @@ async function routeRequest(
         );
       }
       sendJson(response, 200, { approval });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/approval-rules") {
+      const rules = requireApprovalRules(state);
+      sendJson(response, 200, { rules: await rules.list(state.shutdown.signal) });
+      return;
+    }
+
+    const approvalRuleMatch = matchRoute(
+      url.pathname,
+      /^\/api\/approval-rules\/([^/]+)$/u,
+    );
+    if (method === "DELETE" && approvalRuleMatch !== undefined) {
+      const revoked = await requireApprovalRules(state).revoke(
+        approvalRuleMatch,
+        state.shutdown.signal,
+      );
+      if (!revoked) {
+        throw apiError(404, "approval_rule_not_found", "Approval rule was not found");
+      }
+      sendJson(response, 200, { revoked: true });
       return;
     }
 
@@ -698,6 +913,31 @@ function stringField(
   return item;
 }
 
+function boundedStringField(
+  value: Readonly<Record<string, unknown>>,
+  field: string,
+  maxBytes: number,
+  measureBytes = false,
+): string {
+  const item = stringField(value, field);
+  const size = measureBytes ? Buffer.byteLength(item, "utf8") : item.length;
+  if (size > maxBytes) {
+    throw apiError(400, "invalid_request", `${field} is too large`);
+  }
+  return item;
+}
+
+function optionalBoundedString(
+  value: Readonly<Record<string, unknown>>,
+  field: string,
+  maxBytes: number,
+  measureBytes = false,
+): string | undefined {
+  return value[field] === undefined
+    ? undefined
+    : boundedStringField(value, field, maxBytes, measureBytes);
+}
+
 function optionalString(
   value: Readonly<Record<string, unknown>>,
   field: string,
@@ -711,13 +951,6 @@ function optionalStringProperty(
 ): Readonly<Record<string, string>> {
   const item = optionalString(value, field);
   return item === undefined ? {} : { [field]: item };
-}
-
-function nullableString(
-  value: Readonly<Record<string, unknown>>,
-  field: string,
-): string | null {
-  return value[field] === null ? null : stringField(value, field);
 }
 
 function booleanField(
@@ -788,6 +1021,7 @@ function sendError(response: ServerResponse, error: unknown): void {
 
 function mapError(error: unknown): WishWebApiError {
   if (error instanceof WishWebApiError) return error;
+  if (error instanceof Error && "code" in error && error.code === "session_busy") return apiError(409, "session_busy", error.message);
   if (error instanceof SessionNotFoundError) {
     return apiError(404, error.code, error.message);
   }
@@ -812,6 +1046,12 @@ function mapError(error: unknown): WishWebApiError {
   }
   if (error instanceof RunGenerationRetiredError) {
     return apiError(503, error.code, error.message);
+  }
+  if (error instanceof RuntimeReconciliationNotFoundError) {
+    return apiError(404, error.code, error.message);
+  }
+  if (error instanceof RuntimeReconciliationConflictError) {
+    return apiError(409, error.code, error.message);
   }
   if (error instanceof Error && /already has an active Run/u.test(error.message)) {
     return apiError(409, "session_run_active", error.message);
@@ -843,7 +1083,7 @@ function writeResponse(response: ServerResponse, text: string): Promise<void> {
   });
 }
 
-async function closeServer(server: Server, state: WebServerState): Promise<void> {
+async function closeState(state: WebServerState): Promise<void> {
   state.shutdown.abort("Wish WebUI server is closing");
   state.approvals.close();
   const generationRetirement = state.application.runGeneration?.retire({
@@ -851,12 +1091,6 @@ async function closeServer(server: Server, state: WebServerState): Promise<void>
     onDrainTimeout: state.onRunGenerationDrainTimeout,
   });
   if (generationRetirement === undefined) abortRunningRuns(state);
-  await new Promise<void>((accept, reject) => {
-    server.close((error) => {
-      if (error === undefined) accept();
-      else reject(error);
-    });
-  });
   if (generationRetirement === undefined) abortRunningRuns(state);
   while (state.runCompletions.size > 0) {
     await Promise.all([...state.runCompletions.values()]);
@@ -925,6 +1159,52 @@ function requireServerOptions(options: WishWebUiServerOptions): void {
   ) {
     throw new Error("Wish WebUI server requires Application and approvals");
   }
+}
+
+function requireApprovalRules(state: WebServerState): ApprovalRuleStore {
+  if (state.approvalRules === undefined) {
+    throw apiError(
+      503,
+      "approval_rules_unavailable",
+      "Approval rule management is unavailable",
+    );
+  }
+  return state.approvalRules;
+}
+
+function requireRuntimeRecovery(state: WebServerState): WishRuntimeRecovery {
+  if (state.application.runtimeRecovery === undefined) {
+    throw apiError(
+      503,
+      "runtime_recovery_unavailable",
+      "Runtime recovery management is unavailable",
+    );
+  }
+  return state.application.runtimeRecovery;
+}
+
+function reconciliationOutcome(value: unknown): RuntimeReconciliationOutcome {
+  if (
+    value !== "confirmed-completed" &&
+    value !== "confirmed-not-completed" &&
+    value !== "accepted-unknown"
+  ) {
+    throw apiError(
+      400,
+      "invalid_reconciliation_outcome",
+      "Reconciliation outcome is invalid",
+    );
+  }
+  return value;
+}
+
+function approvalScope(value: unknown): "once" | "run" | "session" | "workspace" {
+  if (value === undefined) return "once";
+  if (
+    value !== "once" && value !== "run" && value !== "session" &&
+    value !== "workspace"
+  ) throw apiError(400, "invalid_approval_scope", "Approval scope is invalid");
+  return value;
 }
 
 function browserUrl(host: string, port: number): string {

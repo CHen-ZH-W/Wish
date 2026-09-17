@@ -1,4 +1,5 @@
 import type {
+  AgentInputSource,
   AgentId,
   AgentRunId,
   UserTurnId,
@@ -52,6 +53,8 @@ export interface SessionMessageRecord {
   readonly userTurnId: UserTurnId;
   readonly stepId: AgentStepId;
   readonly origin: SessionMessageOrigin;
+  /** Host provenance outside ModelMessage; absent legacy values mean unknown. */
+  readonly inputSource?: AgentInputSource;
   readonly createdAt: string;
   readonly message: ModelMessage;
   /** Structural metadata; never part of the model-visible message body. */
@@ -117,6 +120,9 @@ export interface ArchiveSessionInput {
   readonly signal?: AbortSignal;
 }
 
+export type RestoreSessionInput = GetSessionInput;
+export type DeleteSessionInput = GetSessionInput;
+
 export interface ReadSessionHistoryInput {
   readonly sessionId: SessionId;
   readonly signal?: AbortSignal;
@@ -129,6 +135,7 @@ export interface SessionMessageDraft {
   readonly userTurnId: UserTurnId;
   readonly stepId: AgentStepId;
   readonly origin: SessionMessageOrigin;
+  readonly inputSource?: AgentInputSource;
   readonly message: ModelMessage;
   readonly toolResultArchive?: SessionToolResultArchiveReceipt;
 }
@@ -178,6 +185,11 @@ export interface SessionStore {
   list(input?: ListSessionsInput): Promise<readonly Session[]>;
   updateMetadata(input: UpdateSessionMetadataInput): Promise<Session>;
   archive(input: ArchiveSessionInput): Promise<Session>;
+  restore(input: RestoreSessionInput): Promise<Session>;
+  /** Removes Session-owned history and metadata; the identity cannot be reused. */
+  delete(input: DeleteSessionInput): Promise<void>;
+  /** Distinguishes a permanent deletion tombstone from an ID in another data root. */
+  wasDeleted(input: GetSessionInput): Promise<boolean>;
   readHistory(input: ReadSessionHistoryInput): Promise<SessionHistorySnapshot>;
   appendMessages(
     input: AppendSessionMessagesInput,

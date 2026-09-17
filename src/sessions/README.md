@@ -27,32 +27,41 @@ src/sessions/
 ├── session.ts
 ├── transcript.ts
 ├── memory-store.ts
-├── service.ts              # Cordis wrapper；领域实现仍保持框架无关
-└── adapters/
-    ├── history.ts
-    └── agent-loop.ts
-
-src/storage/sessions/
-└── file-session-store.ts
+├── persistence.ts          # SessionPersistence Cordis Definition
+├── standalone.ts           # 显式 standalone file 组合
+├── service.ts              # Sessions Consumer；领域实现仍保持框架无关
+├── adapters/
+│   ├── history.ts
+│   └── agent-loop.ts
+└── providers/
+    └── file/
+        ├── store.ts        # 原有 Session 磁盘格式
+        └── plugin.ts       # session-file Cordis Provider
 ```
 
-文件系统逻辑只存在于 `src/storage/sessions/`，不会混入 Sessions 领域模块。
+文件系统逻辑只存在于 `providers/file/`，不会混入 SessionManager、Transcript 或 adapters。
+Provider 属于 SessionPersistence 能力；通用 Storage Backend 不认识 Session 业务格式。
 
 ## Cordis 集成
 
-`Sessions` 是领域层外面的生命周期和装配 wrapper。它提供默认 `dataDirectory`，构造
-`FileSessionStore`、`SessionManager` 和唯一的 `SessionHistoryAdapter`，并作为
+`SessionPersistence` 是可替换 Definition，默认 `session-file` Provider 原样包装
+`FileSessionStore`。`Sessions` 注入 Definition，提供默认 `dataDirectory`，再为返回的
+`SessionStore` 构造 `SessionManager` 和唯一的 `SessionHistoryAdapter`，并作为
 `ctx.sessions` 暴露。`SessionManager`、Store Port、ContextHistorySource 与
 CompactionSessionPort 没有继承或导入 Cordis。
 
-`open(dataDirectory)` 支持 CLI 已解析的显式目录覆盖，并在同一 service generation 内按
-规范化目录复用 Session graph。默认目录来自插件 Config；相对路径按 `launch.cwd` 解析，
-未配置时使用 `<launch.homeDirectory>/.wish`。service reload 后会创建新的 manager，但
-FileSessionStore 会从同一目录读取既有 Session 事实。
+`open(dataDirectory)` 返回当前 service generation 内的非拥有共享视图，供 Context、
+Compaction 等同步组装步骤复用；`acquire(dataDirectory)` 返回显式
+`SessionResourcesHandle`，供 Application/Run generation 跨异步边界持有。同一规范化目录
+始终复用一个 Session graph。默认目录来自插件 Config；相对路径按 `launch.cwd` 解析，
+未配置时使用 `<launch.homeDirectory>/.wish`。
 
-当前 File Store 仍是 Sessions service 内部的具体实现，不提前增加 `sessionStore` provider。
-只有以后确实需要在配置中动态选择 file/sqlite/postgres/memory/remote 时，才把 Store Port
-提升成另一条 Cordis provider/consumer 依赖。
+生产 AgentLoop 只 acquire 一次。RunGeneration 退休时先停止接纳和排空活动 Run，再释放
+Handle；Sessions 收到依赖卸载后拒绝新 acquire，等待全部 Handle 释放，最后关闭底层
+`SessionPersistenceHandle`。File Session Provider 同样先停止 `open()`、等待已有 Handle
+自行关闭，不会用并发 Cordis disposer 提前强制关闭活动 Store。service reload 后会创建新的
+manager，但 FileSessionStore 会从同一目录读取既有 Session 事实。Provider 恢复后 Sessions
+和下游重新激活。未来 SQLite Provider 必须实现相同 SessionStore 契约，不能改变业务语义。
 
 ## Session 与历史事实
 
@@ -84,6 +93,16 @@ Sessions 自己不负责调度。
 的最终值，而且不会改变 `historyRevision`，因此普通标题修改不会制造无意义的
 Compaction CAS 冲突。
 
+`archive` 把会话设为只读；`restore` 恢复为活动状态，两者均保留历史及其 revision。
+`delete` 清理 Session 自己的元数据、历史和 checkpoint，其他领域的数据不属于此操作。
+默认 File Store 先将精确哈希目录原子移动为 `.deleted-session-<sha256>`，再清空内容；
+空目录保留以禁止 ID 复用，避免把其他领域保留的旧引用关联到新会话。移动后的目录不再
+出现在列表或读取入口；清理中断时 Store 的同 ID `delete` 可继续清理，但不自动恢复会话。
+该操作不是可撤销的归档，也不承诺安全擦除磁盘。运行与关联模块是否允许删除由 Apps
+及领域所有者检查，Store 只保证单进程事务顺序，不负责取消运行。
+`SessionManager.wasDeleted()` 通过 Store Port 只读查询删除墓碑，用来区分“当前数据根中
+明确已删除”和“此数据根未见该 ID”；它不返回历史内容，也不扫描其他数据根。
+
 历史包含两类 append-only 事实。
 
 ### Message Record
@@ -93,8 +112,13 @@ Compaction CAS 冲突。
 - `recordId`、Session 分配的连续 `sequence` 和调用方提供的 `idempotencyKey`；
 - `runId`、`userTurnId`、`stepId`；
 - `user_input | steering | assistant | tool | imported` 来源；
+- 可选的 `inputSource` 宿主投递来源（user／steering／follow_up／unknown）；
 - 完整的 provider-neutral `ModelMessage`；
 - 可选的 Tool Result archive receipt。
+
+`inputSource` 只允许附在 user-role 消息记录旁，不能进入 `ModelMessage`；旧记录缺失时
+含义是 unknown。`origin=user_input` 或 `role=user` 本身不证明输入来自人类。
+该字段参与幂等一致性检查，文件恢复和 Context／Compaction 的规范历史视图都会保留它。
 
 `contentParts`、`reasoningContent`、`toolCalls` 和 `toolCallId` 都会无损保留。Tool
 Result receipt 使用 `schemaVersion + toolCallId + locator + hash`，作为 record 的结构
@@ -272,19 +296,20 @@ Sessions 不实现：
 - Token 预算、Tool Result 模型可见裁剪；
 - `oldEntries` 规划、摘要生成和压缩重试；
 - Model/Provider 调用和 Tool 执行；
-- Runtime Run/Step/Tool 中断恢复；
+- Runtime Run/Step/Tool 中断恢复（由 `core/runtime/durability` authority 所有）；
 - Workflow、Memory、Skill、Slack/WebUI 同步；
 - 标题生成模型、usage/cost 展示；
 - Runtime stream delta 的长期 Event Store；
-- 常规硬删除 API。
+- 跨领域级联删除、回收站恢复或磁盘安全擦除。
 
 Transport adapter 可以把外部事件转换成规范 Session 输入，但 Sessions record 不包含
 Slack、WebUI 或其他具体平台字段。
 
-当前 AgentLoop 会在 Assistant Tool Call 获得权威持久化提交之前开始 dispatch Tool。
-因此 Sessions 能保证会话历史、Context 和 Compaction 的一致性，但不能据此宣称进程
-在 Tool 执行中被杀死后可以安全自动恢复。已经进入 `dispatched` 的 Tool 可能产生
-副作用，必须由后续 Runtime durability/reconciliation 处理，不能在 Sessions 中偷偷
+Assistant Tool Call 的 Session transcript 提交与副作用边界是两个独立事务。生产
+AgentLoop 会通过 Runtime lifecycle Journal 在执行前提交 `tool.prepared` 和
+`tool.dispatched`，因此重启扫描可以区分“尚未 dispatch”和“结果未知”；但 Sessions
+仍不能据此宣称进程可安全自动恢复。已经进入 `dispatched` 的 Tool 可能产生副作用，
+必须按 Runtime authority 给出的 recovery disposition 显式处理，不能在 Sessions 中偷偷
 重放。
 
 ## 验证

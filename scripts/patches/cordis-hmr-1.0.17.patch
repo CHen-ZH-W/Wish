@@ -1,0 +1,1288 @@
+===================================================================
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,5 +1,5 @@
+-import { Context, Service, type Plugin } from '@deepseek-ai/cordis'
++import { Context, Service, type FiberState, type Plugin } from '@deepseek-ai/cordis'
+ import type { Dict } from '@deepseek-ai/cosmokit'
+ import { ModuleLoader, type ModuleJob, type ResolveResult } from '@deepseek-ai/cordis-plugin-loader'
+ import type { Include } from '@deepseek-ai/cordis-plugin-include'
+ import { FSWatcher, watch, type ChokidarOptions } from 'chokidar'
+@@ -11,16 +11,26 @@
+ import { createRequire } from 'node:module'
+ import picomatch from 'picomatch'
+ import z from '@deepseek-ai/schemastery'
+ 
++// Cordis exposes FiberState as a const enum, not a runtime export.
++const ACTIVE: FiberState = 2
++
+ declare module '@deepseek-ai/cordis' {
+   interface Context {
+     hmr: Hmr
+   }
+ 
+   interface Events {
++    /** Encloses analysis/import/cache work as well as replacement. */
++    'hmr/reload-batch'(signal: AbortSignal, next: () => Promise<void>): Promise<void>
+     'hmr/change'(url: string): void
+     'hmr/reload'(reloads: Map<Plugin, Reload>): void
++    /** Awaitable pre-disposal middleware. Throw to veto; call next exactly once to apply. */
++    'hmr/reload-prepare'(reloads: ReadonlyMap<Plugin, Reload>, signal: AbortSignal, next: () => Promise<void>): Promise<void>
++    'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply'): void
++    /** Full reload can also be vetoed by a host that requires explicit restart. */
++    'hmr/restart'(url: string, next: () => void): void
+     /**
+      * A watched config-file refresh failed.
+      * @param filename - Absolute path observed by HMR.
+      * @param error - Normalized refresh failure.
+@@ -84,8 +94,10 @@
+ }
+ 
+ class Hmr extends Service {
+   static inject = ['loader', 'timer']
++  /** Hosts must check this before relying on pre-disposal coordination. */
++  static readonly coordinationVersion = 3
+ 
+   public baseDir: string
+ 
+   private internal: ModuleLoader
+@@ -113,8 +125,12 @@
+   private declined!: Set<string>
+ 
+   /** Stashed file changes waiting to be processed */
+   private stashed = new Set<string>()
++  private queued = new Set<string>()
++  private codeTask?: Promise<void>
++  private halted = false
++  private readonly closing = new AbortController()
+ 
+   constructor(ctx: Context, public config: Hmr.Config) {
+     super(ctx, 'hmr')
+     if (!this.ctx.loader.internal) {
+@@ -197,9 +213,11 @@
+   }
+ 
+   async* [Service.init]() {
+     yield async () => {
++      this.closing.abort(new Error('HMR disposed'))
+       await this.watcher?.close()
++      await this.codeTask
+       await Promise.allSettled([...this.configs.values()].map(registration => registration.watcher.close()))
+       this.configs.clear()
+       await Promise.allSettled([...this.refreshTasks])
+     }
+@@ -238,16 +256,16 @@
+       // user patch layer present at registration must apply once.
+       ignoreInitial: true,
+     })
+ 
+-    const partialReload = this.ctx.debounce(() => this.partialReload(), this.config.debounce)
++    const partialReload = this.ctx.debounce(() => this.flushChanges(), this.config.debounce)
+ 
+     const onChange = (kind: 'add' | 'change' | 'unlink', path: string) => {
+       this.ctx.logger.debug('%s detected at %C', kind, path)
+       const filename = resolve(watchBaseDir, path)
+       const configuredFilename = resolve(this.baseDir, path)
+       // Config reload: the file is a loader config file (e.g. cordis.yml).
+-      for (const entry of loader.entries()) {
++      for (const entry of this.config.watchConfig === false ? [] : loader.entries()) {
+         const include = entry.subtree as Include | undefined
+         if (include?.filename !== filename && include?.filename !== configuredFilename) continue
+         this.refreshConfig(include, include.filename, () => include.refresh())
+         return
+@@ -256,15 +274,15 @@
+       if (kind !== 'change') return
+       const url = pathToFileURL(filename).href
+ 
+       // Full reload: the changed file is part of the framework
+-      if (this.externals.has(url)) return loader.exit()
++      if (this.externals.has(url)) return this.ctx.waterfall('hmr/restart', url, () => loader.exit())
+ 
+       // Partial reload: the file is in the ESM loadCache
+       // In Node 24, both CJS and ESM modules imported via import() end up
+       // in loadCache, so this check covers all module formats.
+       if (loader.internal!.loadCache.has(url)) {
+-        this.stashed.add(url)
++        this.queued.add(url)
+         return partialReload()
+       }
+ 
+       this.ctx.emit('hmr/change', url)
+@@ -323,8 +341,25 @@
+     this.refreshTasks.add(task)
+   }
+ 
+   // hide stack trace from HMR
++  private flushChanges() {
++    if (this.codeTask || this.halted || this.closing.signal.aborted) return
++    this.codeTask = (async () => {
++      while (this.queued.size && !this.halted && !this.closing.signal.aborted) {
++        this.stashed = this.queued
++        this.queued = new Set()
++        try { await this.ctx.waterfall('hmr/reload-batch', this.closing.signal, () => this.partialReload()) }
++        catch (reason) {
++          const error = reason instanceof Error ? reason : new Error(String(reason))
++          this.ctx.logger.warn(error)
++          this.ctx.emit('hmr/reload-failed', error, 'prepare')
++        }
++      }
++    })().finally(() => { this.codeTask = undefined })
++    return this.codeTask
++  }
++
+   getOuterStack = (): string[] => [
+     // '    at HMR.partialReload (<anonymous>)',
+   ]
+ 
+@@ -495,53 +530,72 @@
+         attempts[filename] = this.ctx.loader.unwrapExports(await this.ctx.loader.import(filename, this.getOuterStack))
+       }
+     } catch (e) {
+       handleError(this.ctx, e)
++      this.ctx.emit('hmr/reload-failed', e instanceof Error ? e : new Error(String(e)), 'import')
+       return rollback()
+     }
+ 
+-    const reload = (plugin: any, runtime: Plugin.Runtime) => {
+-      if (!runtime) return
+-      for (const oldFiber of runtime.fibers) {
+-        const fiber = oldFiber.parent.registry.plugin(plugin, oldFiber._config, this.getOuterStack)
+-        fiber.entry = oldFiber.entry
+-        if (fiber.entry) fiber.entry.fiber = fiber
+-      }
+-    }
+-
++    // Snapshot before middleware waits; never resurrect a fiber disabled while draining.
++    const targets = [...reloads].flatMap(([plugin, { filename, runtime }]) =>
++      [...runtime?.fibers ?? []].map(fiber => ({ plugin, filename, fiber, uid: fiber.uid, config: fiber._config,
++        configVersion: JSON.stringify(fiber._config) })))
++    let started = false
+     try {
+-      for (const [plugin, { filename, runtime }] of reloads) {
+-        if (!runtime) continue
+-        const path = relative(this.baseDir, fileURLToPath(filename))
+-
+-        try {
+-          this.ctx.registry.delete(plugin)
+-        } catch (err) {
+-          this.ctx.logger.warn('failed to dispose plugin at %C', path)
+-          this.ctx.logger.warn(err)
++      await this.ctx.waterfall('hmr/reload-prepare', reloads, this.closing.signal, async () => {
++        this.closing.signal.throwIfAborted()
++        if (started) throw new Error('HMR batch applied twice')
++        for (const { fiber, uid, configVersion } of targets) {
++          if (fiber.uid !== uid || JSON.stringify(fiber._config) !== configVersion || fiber.state !== ACTIVE || fiber.entry?.disabled) {
++            throw new Error('HMR target changed before disposal')
++          }
+         }
+-
+-        try {
+-          reload(attempts[filename], runtime)
+-          this.ctx.logger.info('reload plugin at %C', path)
+-        } catch (err) {
+-          this.ctx.logger.warn('failed to reload plugin at %C', path)
+-          this.ctx.logger.warn(err)
+-          throw err
++        started = true
++        const timeout = new AbortController()
++        const signal = AbortSignal.any([this.closing.signal, timeout.signal])
++        let timer: ReturnType<typeof setTimeout>
++        const deadline = new Promise<never>((_resolve, reject) => {
++          timer = setTimeout(() => {
++            const error = new Error('HMR replacement timeout; recovery required')
++            timeout.abort(error)
++            reject(error)
++          }, this.config.reloadTimeout ?? 30_000)
++        })
++        const apply = async () => {
++        // Registry.delete() marks this as replacement (not a user self-disable).
++        // Join captured fibers' lifecycle inertia before activating any new
++        // owner. Public effect disposers are single-shot; calling dispose() a
++        // second time does NOT join the cleanup already started by deletion.
++        for (const plugin of reloads.keys()) this.ctx.registry.delete(plugin)
++        await Promise.all(targets.map(({ fiber }) => fiber.await()))
++        signal.throwIfAborted()
++        const fibers = targets.map(({ filename, fiber: oldFiber, config }) => {
++          const fiber = oldFiber.parent.registry.plugin(attempts[filename], config, this.getOuterStack)
++          fiber.entry = oldFiber.entry
++          if (fiber.entry) fiber.entry.fiber = fiber
++          return fiber
++        })
++        await Promise.all(fibers.map(fiber => fiber.await()))
++        // A dependent may initially be PENDING while an asynchronous Provider
++        // initializes. Settle Loader's full lifecycle graph before validation.
++        await this.ctx.loader.await()
++        for (const fiber of fibers) {
++          if (fiber.state !== ACTIVE) throw new Error('HMR replacement did not activate')
+         }
+-      }
+-    } catch {
+-      // Rollback: restore caches and re-register old plugins
+-      rollback()
+-      for (const [plugin, { filename, runtime }] of reloads) {
+-        if (!runtime) continue
+-        try {
+-          this.ctx.registry.delete(attempts[filename])
+-          reload(plugin, runtime)
+-        } catch (err) {
+-          this.ctx.logger.warn(err)
++        signal.throwIfAborted()
+         }
+-      }
++        try { await Promise.race([apply(), deadline]) }
++        finally { clearTimeout(timer!) }
++      })
++      if (!started) throw new Error('HMR batch was vetoed')
++    } catch (reason) {
++      // Import/preparation failure can restore caches. Once cleanup has started,
++      // business effects are not reversible; fence subsequent batches, no replay.
++      if (!started) rollback()
++      else this.halted = true
++      const error = reason instanceof Error ? reason : new Error(String(reason))
++      this.ctx.logger.warn(error)
++      this.ctx.emit('hmr/reload-failed', error, started ? 'apply' : 'prepare')
+       return
+     }
+ 
+     this.ctx.emit('hmr/reload', reloads)
+@@ -554,8 +608,12 @@
+     base?: string
+     root: string[]
+     debounce: number
+     ignored: string[]
++    /** Post-drain cleanup/activation deadline. Expiry fences HMR, never replays effects. */
++    reloadTimeout?: number
++    /** Disable automatic Include refresh; explicit registerConfig remains supported. */
++    watchConfig?: boolean
+   }
+ 
+   export const Config: z<Config> = z.object({
+     base: z.string(),
+@@ -566,8 +624,10 @@
+       'cache',
+       'data',
+     ]),
+     debounce: z.natural().role('ms').default(100),
++    reloadTimeout: z.natural().min(1).role('ms').default(30_000),
++    watchConfig: z.boolean().default(true),
+   })
+   // [deepseek-harness] vendored modification: removed `.i18n({ 'en-US': enUS, 'zh-CN': zhCN })`
+   // and the corresponding `./locales/*.yml` imports, to avoid a runtime YAML import hook
+   // (@cordisjs/unyaml) that we don't vendor. See vendor/README.md.
+===================================================================
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1,452 +1,535 @@
+-import { createRequire } from "node:module";
++// node_modules/@deepseek-ai/cordis-plugin-hmr/src/index.ts
+ import { Service } from "@deepseek-ai/cordis";
+ import { watch } from "chokidar";
+ import { dirname, relative, resolve } from "node:path";
+ import { realpath, stat } from "node:fs/promises";
++
++// node_modules/@deepseek-ai/cordis-plugin-hmr/src/error.ts
+ import { codeFrameColumns } from "@babel/code-frame";
+ import { readFileSync } from "node:fs";
+-import { fileURLToPath, pathToFileURL } from "node:url";
+-import picomatch from "picomatch";
+-import z from "@deepseek-ai/schemastery";
+-//#region lib/types/error.js
+ function isBuildFailure(e) {
+-	return Array.isArray(e?.errors) && e.errors.every((error) => error.text);
++  return Array.isArray(e?.errors) && e.errors.every((error) => error.text);
+ }
+-/** Log HMR build failures with code frames when source locations are available. */
+ function handleError(ctx, e) {
+-	if (!isBuildFailure(e)) {
+-		ctx.logger.warn(e);
+-		return;
+-	}
+-	for (const error of e.errors) {
+-		if (!error.location) {
+-			ctx.logger.warn(error.text);
+-			continue;
+-		}
+-		try {
+-			const { file, line, column } = error.location;
+-			const formatted = codeFrameColumns(readFileSync(file, "utf8"), { start: {
+-				line,
+-				column
+-			} }, {
+-				highlightCode: true,
+-				message: error.text
+-			});
+-			ctx.logger.warn(`File: ${file}:${line}:${column}\n` + formatted);
+-		} catch (e) {
+-			ctx.logger.warn(e);
+-		}
+-	}
++  if (!isBuildFailure(e)) {
++    ctx.logger.warn(e);
++    return;
++  }
++  for (const error of e.errors) {
++    if (!error.location) {
++      ctx.logger.warn(error.text);
++      continue;
++    }
++    try {
++      const { file, line, column } = error.location;
++      const source = readFileSync(file, "utf8");
++      const formatted = codeFrameColumns(source, {
++        start: { line, column }
++      }, {
++        highlightCode: true,
++        message: error.text
++      });
++      ctx.logger.warn(`File: ${file}:${line}:${column}
++` + formatted);
++    } catch (e2) {
++      ctx.logger.warn(e2);
++    }
++  }
+ }
+-//#endregion
+-//#region lib/types/index.js
+-/**
+-* Recursively collect all module dependencies from a ModuleJob.
+-* Skips node: builtins and node_modules to focus on user code.
+-*/
++
++// node_modules/@deepseek-ai/cordis-plugin-hmr/src/index.ts
++import { fileURLToPath, pathToFileURL } from "node:url";
++import { createRequire } from "node:module";
++import picomatch from "picomatch";
++import z from "@deepseek-ai/schemastery";
++var ACTIVE = 2;
+ async function loadDependencies(job, ignored = /* @__PURE__ */ new Set()) {
+-	const dependencies = /* @__PURE__ */ new Set();
+-	async function traverse(job) {
+-		if (ignored.has(job.url) || dependencies.has(job.url)) return;
+-		if (job.url.startsWith("node:") || job.url.includes("/node_modules/")) return;
+-		dependencies.add(job.url);
+-		const children = await job.linked;
+-		await Promise.all(Array.prototype.map.call(children, traverse));
+-	}
+-	await traverse(job);
+-	return dependencies;
++  const dependencies = /* @__PURE__ */ new Set();
++  async function traverse(job2) {
++    if (ignored.has(job2.url) || dependencies.has(job2.url)) return;
++    if (job2.url.startsWith("node:") || job2.url.includes("/node_modules/")) return;
++    dependencies.add(job2.url);
++    const children = await job2.linked;
++    await Promise.all(Array.prototype.map.call(children, traverse));
++  }
++  await traverse(job);
++  return dependencies;
+ }
+ async function findWatchRoot(filename) {
+-	let root = dirname(filename);
+-	let depth = 0;
+-	while (true) try {
+-		if (!(await stat(root)).isDirectory()) throw new Error(`config watch parent is not a directory: ${root}`);
+-		const canonicalRoot = await realpath(root);
+-		return {
+-			filename: resolve(canonicalRoot, relative(root, filename)),
+-			root: canonicalRoot,
+-			depth
+-		};
+-	} catch (error) {
+-		if (error.code !== "ENOENT") throw error;
+-		const parent = dirname(root);
+-		if (parent === root) throw error;
+-		root = parent;
+-		depth += 1;
+-	}
++  let root = dirname(filename);
++  let depth = 0;
++  while (true) {
++    try {
++      if (!(await stat(root)).isDirectory()) throw new Error(`config watch parent is not a directory: ${root}`);
++      const canonicalRoot = await realpath(root);
++      return {
++        filename: resolve(canonicalRoot, relative(root, filename)),
++        root: canonicalRoot,
++        depth
++      };
++    } catch (error) {
++      if (error.code !== "ENOENT") throw error;
++      const parent = dirname(root);
++      if (parent === root) throw error;
++      root = parent;
++      depth += 1;
++    }
++  }
+ }
+ var Hmr = class extends Service {
+-	config;
+-	static inject = ["loader", "timer"];
+-	baseDir;
+-	internal;
+-	watcher;
+-	configs = /* @__PURE__ */ new Map();
+-	configRefreshes = /* @__PURE__ */ new WeakMap();
+-	refreshTasks = /* @__PURE__ */ new Set();
+-	/**
+-	* Changes from externals will always trigger a full reload.
+-	* Externals are the dependency tree of the CLI worker entry point.
+-	*/
+-	externals;
+-	/**
+-	* Files that should be reloaded (accepted changes).
+-	* Includes all stashed files and their dependents.
+-	*/
+-	accepted;
+-	/**
+-	* Files that should NOT be reloaded.
+-	* Includes externals and files whose dependents are all declined.
+-	*/
+-	declined;
+-	/** Stashed file changes waiting to be processed */
+-	stashed = /* @__PURE__ */ new Set();
+-	constructor(ctx, config) {
+-		super(ctx, "hmr");
+-		this.config = config;
+-		if (!this.ctx.loader.internal) throw new Error("--expose-internals is required for HMR service");
+-		this.internal = this.ctx.loader.internal;
+-		this.baseDir = fileURLToPath(new URL(config.base || ".", ctx.baseUrl));
+-	}
+-	/**
+-	* Watch one exact config path outside the configured module roots.
+-	* @param filename - Config path, resolved against the HMR base directory.
+-	* @param refresh - Refresh callback run serially on add, change, or unlink.
+-	* @returns an asynchronous disposer once the exact watch is ready.
+-	* @throws when HMR is inactive, the path is already registered, or watcher startup fails.
+-	*/
+-	async registerConfig(filename, refresh) {
+-		if (!this.watcher) throw new Error("HMR is not active");
+-		filename = resolve(this.baseDir, filename);
+-		const target = await findWatchRoot(filename);
+-		const watchFilename = target.filename;
+-		if (this.configs.has(watchFilename)) throw new Error(`config path already registered: ${filename}`);
+-		const { root, depth } = target;
+-		const watcher = watch(root, {
+-			...this.config,
+-			cwd: void 0,
+-			depth,
+-			ignored: void 0,
+-			ignoreInitial: false
+-		});
+-		const registration = { watcher };
+-		this.configs.set(watchFilename, registration);
+-		const onChange = (path) => {
+-			const observed = resolve(path);
+-			if (observed !== filename && observed !== watchFilename) return;
+-			this.refreshConfig(registration, filename, refresh);
+-		};
+-		watcher.on("add", onChange);
+-		watcher.on("change", onChange);
+-		watcher.on("unlink", onChange);
+-		const ready = Promise.withResolvers();
+-		let readyState = "pending";
+-		watcher.once("ready", () => {
+-			readyState = "resolved";
+-			ready.resolve();
+-		});
+-		watcher.on("error", (error) => {
+-			if (readyState === "pending") {
+-				readyState = "rejected";
+-				ready.reject(error);
+-			} else this.ctx.logger.warn(error);
+-		});
+-		try {
+-			await ready.promise;
+-			return this.ctx.effect(() => async () => {
+-				if (this.configs.get(watchFilename) === registration) this.configs.delete(watchFilename);
+-				await watcher.close();
+-				await this.configRefreshes.get(registration)?.running;
+-			}, "hmr.registerConfig()");
+-		} catch (error) {
+-			this.configs.delete(watchFilename);
+-			await watcher.close();
+-			throw error;
+-		}
+-	}
+-	/**
+-	* Resolve a module specifier to a URL, compatible with Node 22-24.
+-	*/
+-	async _resolve(specifier, parentURL, attrs) {
+-		switch (this.internal.version) {
+-			case "v1": return await this.internal.resolve(specifier, parentURL, attrs);
+-			case "v2": return this.internal.resolveSync(parentURL, {
+-				specifier,
+-				attributes: attrs
+-			});
+-		}
+-	}
+-	async *[Service.init]() {
+-		yield async () => {
+-			await this.watcher?.close();
+-			await Promise.allSettled([...this.configs.values()].map((registration) => registration.watcher.close()));
+-			this.configs.clear();
+-			await Promise.allSettled([...this.refreshTasks]);
+-		};
+-		const { loader } = this.ctx;
+-		const { root, ignored } = this.config;
+-		if (!this.config.base) this.ctx.logger.info("watching %o", root);
+-		else this.ctx.logger.info("watching %o in %s", root, this.baseDir);
+-		const match = picomatch(ignored);
+-		const watchBaseDir = await realpath(this.baseDir);
+-		const mainUrl = pathToFileURL(resolve(process.argv[1])).href;
+-		const mainJob = this.internal.loadCache.get(mainUrl);
+-		if (mainJob) this.externals = await loadDependencies(mainJob);
+-		else this.externals = /* @__PURE__ */ new Set();
+-		this.watcher = watch(root, {
+-			...this.config,
+-			cwd: watchBaseDir,
+-			ignored: (path) => match(relative(watchBaseDir, path)),
+-			ignoreInitial: true
+-		});
+-		const partialReload = this.ctx.debounce(() => this.partialReload(), this.config.debounce);
+-		const onChange = (kind, path) => {
+-			this.ctx.logger.debug("%s detected at %C", kind, path);
+-			const filename = resolve(watchBaseDir, path);
+-			const configuredFilename = resolve(this.baseDir, path);
+-			for (const entry of loader.entries()) {
+-				const include = entry.subtree;
+-				if (include?.filename !== filename && include?.filename !== configuredFilename) continue;
+-				this.refreshConfig(include, include.filename, () => include.refresh());
+-				return;
+-			}
+-			if (kind !== "change") return;
+-			const url = pathToFileURL(filename).href;
+-			if (this.externals.has(url)) return loader.exit();
+-			if (loader.internal.loadCache.has(url)) {
+-				this.stashed.add(url);
+-				return partialReload();
+-			}
+-			this.ctx.emit("hmr/change", url);
+-		};
+-		this.watcher.on("add", (path) => onChange("add", path));
+-		this.watcher.on("change", (path) => onChange("change", path));
+-		this.watcher.on("unlink", (path) => onChange("unlink", path));
+-		const ready = Promise.withResolvers();
+-		let readyState = root.length === 0 ? "resolved" : "pending";
+-		if (root.length === 0) ready.resolve();
+-		else this.watcher.once("ready", () => {
+-			readyState = "resolved";
+-			ready.resolve();
+-		});
+-		this.watcher.on("error", (error) => {
+-			if (readyState === "pending") {
+-				readyState = "rejected";
+-				ready.reject(error);
+-			} else this.ctx.logger.warn(error);
+-		});
+-		await ready.promise;
+-	}
+-	refreshConfig(key, filename, refresh) {
+-		const state = this.configRefreshes.get(key) ?? { dirty: false };
+-		this.configRefreshes.set(key, state);
+-		state.dirty = true;
+-		if (state.running) return;
+-		const task = (async () => {
+-			do {
+-				state.dirty = false;
+-				try {
+-					await refresh();
+-				} catch (reason) {
+-					const error = reason instanceof Error ? reason : new Error(String(reason), { cause: reason });
+-					this.ctx.logger.warn("config reload at %C failed", filename);
+-					this.ctx.logger.warn(error);
+-					try {
+-						await this.ctx.parallel("hmr/config-update-failed", filename, error);
+-					} catch (rejection) {
+-						this.ctx.logger.warn(rejection);
+-					}
+-				}
+-			} while (state.dirty);
+-		})().finally(() => {
+-			state.running = void 0;
+-			this.refreshTasks.delete(task);
+-		});
+-		state.running = task;
+-		this.refreshTasks.add(task);
+-	}
+-	getOuterStack = () => [];
+-	async getLinked(url) {
+-		const job = this.internal.loadCache.get(url);
+-		if (!job) return [];
+-		const linked = await job.linked;
+-		return Array.prototype.map.call(linked, (job) => job.url);
+-	}
+-	/**
+-	* Classify changed files into accepted (should reload) and declined (should not).
+-	*
+-	* A file is accepted if it's directly changed (stashed) or if any of its
+-	* dependents are accepted. A file is declined if all its dependents are
+-	* declined or if it's an external.
+-	*/
+-	async analyzeChanges() {
+-		const pending = [];
+-		this.accepted = new Set(this.stashed);
+-		this.declined = new Set(this.externals);
+-		const isExcluded = (url) => url.startsWith("node:") || url.includes("/node_modules/");
+-		await Promise.all([...this.stashed].map(async (url) => {
+-			const children = await this.getLinked(url);
+-			for (const child of children) {
+-				if (this.accepted.has(child) || this.declined.has(child) || isExcluded(child)) continue;
+-				pending.push(child);
+-			}
+-		}));
+-		while (pending.length) {
+-			let index = 0, hasUpdate = false;
+-			while (index < pending.length) {
+-				const url = pending[index];
+-				const children = await this.getLinked(url);
+-				let isDeclined = true, isAccepted = false;
+-				for (const child of children) {
+-					if (this.declined.has(child) || isExcluded(child)) continue;
+-					if (this.accepted.has(child)) {
+-						isAccepted = true;
+-						break;
+-					} else {
+-						isDeclined = false;
+-						if (!pending.includes(child)) {
+-							hasUpdate = true;
+-							pending.push(child);
+-						}
+-					}
+-				}
+-				if (isAccepted || isDeclined) {
+-					hasUpdate = true;
+-					pending.splice(index, 1);
+-					if (isAccepted) this.accepted.add(url);
+-					else this.declined.add(url);
+-				} else index++;
+-			}
+-			if (!hasUpdate) break;
+-		}
+-		for (const url of pending) this.declined.add(url);
+-	}
+-	async partialReload() {
+-		await this.analyzeChanges();
+-		const pending = /* @__PURE__ */ new Map();
+-		const reloads = /* @__PURE__ */ new Map();
+-		const nameMap = Object.create(null);
+-		for (const entry of this.ctx.loader.entries()) (nameMap[entry.parent.tree.ctx.baseUrl] ??= /* @__PURE__ */ new Set()).add(entry.options.name);
+-		for (const baseUrl in nameMap) for (const name of nameMap[baseUrl]) try {
+-			const { url } = await this._resolve(name, baseUrl, {});
+-			if (this.declined.has(url)) continue;
+-			const job = this.internal.loadCache.get(url);
+-			const plugin = this.ctx.loader.unwrapExports(job?.module?.getNamespace());
+-			if (!job || !plugin) continue;
+-			pending.set(job, plugin);
+-			this.declined.add(url);
+-		} catch (err) {
+-			this.ctx.logger.warn(err);
+-		}
+-		for (const [job, plugin] of pending) {
+-			this.declined.delete(job.url);
+-			const dependencies = [...await loadDependencies(job, this.declined)];
+-			this.declined.add(job.url);
+-			if (!dependencies.some((dep) => this.accepted.has(dep))) continue;
+-			dependencies.forEach((dep) => this.accepted.add(dep));
+-			reloads.set(plugin, {
+-				filename: job.url,
+-				runtime: this.ctx.registry.get(plugin)
+-			});
+-		}
+-		/**
+-		* Clear module caches for all accepted files before re-importing.
+-		*
+-		* We need to clear both:
+-		* 1. ESM loadCache — managed by Node's internal ModuleLoader
+-		* 2. CJS Module._cache — for CJS modules that were imported via import()
+-		*
+-		* In Node 24, CJS modules loaded via import() appear in both caches.
+-		* If we only clear loadCache, the CJS cache may serve stale modules.
+-		*
+-		* We use Map.prototype methods directly on loadCache because:
+-		* - In Node 22/23, loadCache is a plain Map<url, ModuleJob>
+-		* - In Node 24, loadCache is a LoadCache extends Map<url, { [type]: ModuleJob }>
+-		*   where .delete() only sets the type slot to undefined (doesn't remove the entry)
+-		* Using Map.prototype.delete ensures complete removal in both versions.
+-		*/
+-		const esmBackup = Object.create(null);
+-		const cjsBackup = Object.create(null);
+-		const require = createRequire(import.meta.url);
+-		for (const filename of this.accepted) {
+-			esmBackup[filename] = Map.prototype.get.call(this.internal.loadCache, filename);
+-			Map.prototype.delete.call(this.internal.loadCache, filename);
+-			try {
+-				const filepath = fileURLToPath(filename);
+-				if (require.cache[filepath]) {
+-					cjsBackup[filepath] = require.cache[filepath];
+-					delete require.cache[filepath];
+-				}
+-			} catch {}
+-		}
+-		const rollback = () => {
+-			for (const filename in esmBackup) Map.prototype.set.call(this.internal.loadCache, filename, esmBackup[filename]);
+-			for (const filepath in cjsBackup) require.cache[filepath] = cjsBackup[filepath];
+-		};
+-		const attempts = {};
+-		try {
+-			for (const [, { filename }] of reloads) attempts[filename] = this.ctx.loader.unwrapExports(await this.ctx.loader.import(filename, this.getOuterStack));
+-		} catch (e) {
+-			handleError(this.ctx, e);
+-			return rollback();
+-		}
+-		const reload = (plugin, runtime) => {
+-			if (!runtime) return;
+-			for (const oldFiber of runtime.fibers) {
+-				const fiber = oldFiber.parent.registry.plugin(plugin, oldFiber._config, this.getOuterStack);
+-				fiber.entry = oldFiber.entry;
+-				if (fiber.entry) fiber.entry.fiber = fiber;
+-			}
+-		};
+-		try {
+-			for (const [plugin, { filename, runtime }] of reloads) {
+-				if (!runtime) continue;
+-				const path = relative(this.baseDir, fileURLToPath(filename));
+-				try {
+-					this.ctx.registry.delete(plugin);
+-				} catch (err) {
+-					this.ctx.logger.warn("failed to dispose plugin at %C", path);
+-					this.ctx.logger.warn(err);
+-				}
+-				try {
+-					reload(attempts[filename], runtime);
+-					this.ctx.logger.info("reload plugin at %C", path);
+-				} catch (err) {
+-					this.ctx.logger.warn("failed to reload plugin at %C", path);
+-					this.ctx.logger.warn(err);
+-					throw err;
+-				}
+-			}
+-		} catch {
+-			rollback();
+-			for (const [plugin, { filename, runtime }] of reloads) {
+-				if (!runtime) continue;
+-				try {
+-					this.ctx.registry.delete(attempts[filename]);
+-					reload(plugin, runtime);
+-				} catch (err) {
+-					this.ctx.logger.warn(err);
+-				}
+-			}
+-			return;
+-		}
+-		this.ctx.emit("hmr/reload", reloads);
+-		this.stashed = /* @__PURE__ */ new Set();
+-	}
++  constructor(ctx, config) {
++    super(ctx, "hmr");
++    this.config = config;
++    if (!this.ctx.loader.internal) {
++      throw new Error("--expose-internals is required for HMR service");
++    }
++    this.internal = this.ctx.loader.internal;
++    this.baseDir = fileURLToPath(new URL(config.base || ".", ctx.baseUrl));
++  }
++  config;
++  static inject = ["loader", "timer"];
++  /** Hosts must check this before relying on pre-disposal coordination. */
++  static coordinationVersion = 3;
++  baseDir;
++  internal;
++  watcher;
++  configs = /* @__PURE__ */ new Map();
++  configRefreshes = /* @__PURE__ */ new WeakMap();
++  refreshTasks = /* @__PURE__ */ new Set();
++  /**
++   * Changes from externals will always trigger a full reload.
++   * Externals are the dependency tree of the CLI worker entry point.
++   */
++  externals;
++  /**
++   * Files that should be reloaded (accepted changes).
++   * Includes all stashed files and their dependents.
++   */
++  accepted;
++  /**
++   * Files that should NOT be reloaded.
++   * Includes externals and files whose dependents are all declined.
++   */
++  declined;
++  /** Stashed file changes waiting to be processed */
++  stashed = /* @__PURE__ */ new Set();
++  queued = /* @__PURE__ */ new Set();
++  codeTask;
++  halted = false;
++  closing = new AbortController();
++  /**
++   * Watch one exact config path outside the configured module roots.
++   * @param filename - Config path, resolved against the HMR base directory.
++   * @param refresh - Refresh callback run serially on add, change, or unlink.
++   * @returns an asynchronous disposer once the exact watch is ready.
++   * @throws when HMR is inactive, the path is already registered, or watcher startup fails.
++   */
++  async registerConfig(filename, refresh) {
++    if (!this.watcher) throw new Error("HMR is not active");
++    filename = resolve(this.baseDir, filename);
++    const target = await findWatchRoot(filename);
++    const watchFilename = target.filename;
++    if (this.configs.has(watchFilename)) throw new Error(`config path already registered: ${filename}`);
++    const { root, depth } = target;
++    const watcher = watch(root, {
++      ...this.config,
++      cwd: void 0,
++      depth,
++      ignored: void 0,
++      ignoreInitial: false
++    });
++    const registration = { watcher };
++    this.configs.set(watchFilename, registration);
++    const onChange = (path) => {
++      const observed = resolve(path);
++      if (observed !== filename && observed !== watchFilename) return;
++      this.refreshConfig(registration, filename, refresh);
++    };
++    watcher.on("add", onChange);
++    watcher.on("change", onChange);
++    watcher.on("unlink", onChange);
++    const ready = Promise.withResolvers();
++    let readyState = "pending";
++    watcher.once("ready", () => {
++      readyState = "resolved";
++      ready.resolve();
++    });
++    watcher.on("error", (error) => {
++      if (readyState === "pending") {
++        readyState = "rejected";
++        ready.reject(error);
++      } else {
++        this.ctx.logger.warn(error);
++      }
++    });
++    try {
++      await ready.promise;
++      return this.ctx.effect(() => async () => {
++        if (this.configs.get(watchFilename) === registration) this.configs.delete(watchFilename);
++        await watcher.close();
++        await this.configRefreshes.get(registration)?.running;
++      }, "hmr.registerConfig()");
++    } catch (error) {
++      this.configs.delete(watchFilename);
++      await watcher.close();
++      throw error;
++    }
++  }
++  /**
++   * Resolve a module specifier to a URL, compatible with Node 22-24.
++   */
++  async _resolve(specifier, parentURL, attrs) {
++    switch (this.internal.version) {
++      case "v1":
++        return await this.internal.resolve(specifier, parentURL, attrs);
++      case "v2":
++        return this.internal.resolveSync(parentURL, { specifier, attributes: attrs });
++    }
++  }
++  async *[Service.init]() {
++    yield async () => {
++      this.closing.abort(new Error("HMR disposed"));
++      await this.watcher?.close();
++      await this.codeTask;
++      await Promise.allSettled([...this.configs.values()].map((registration) => registration.watcher.close()));
++      this.configs.clear();
++      await Promise.allSettled([...this.refreshTasks]);
++    };
++    const { loader } = this.ctx;
++    const { root, ignored } = this.config;
++    if (!this.config.base) {
++      this.ctx.logger.info("watching %o", root);
++    } else {
++      this.ctx.logger.info("watching %o in %s", root, this.baseDir);
++    }
++    const match = picomatch(ignored);
++    const watchBaseDir = await realpath(this.baseDir);
++    const mainUrl = pathToFileURL(resolve(process.argv[1])).href;
++    const mainJob = this.internal.loadCache.get(mainUrl);
++    if (mainJob) {
++      this.externals = await loadDependencies(mainJob);
++    } else {
++      this.externals = /* @__PURE__ */ new Set();
++    }
++    this.watcher = watch(root, {
++      ...this.config,
++      cwd: watchBaseDir,
++      ignored: (path) => match(relative(watchBaseDir, path)),
++      // The initial scan re-announces files the boot just consumed: an `add`
++      // for a config file refreshes an include whose initial apply may still
++      // be in flight, and a failing apply then rolls this plugin back while
++      // the scan-triggered refresh waits on that apply — a teardown deadlock
++      // that strands boot without a diagnostic. Only events after the scan
++      // matter here; `registerConfig` keeps its own initial scan because a
++      // user patch layer present at registration must apply once.
++      ignoreInitial: true
++    });
++    const partialReload = this.ctx.debounce(() => this.flushChanges(), this.config.debounce);
++    const onChange = (kind, path) => {
++      this.ctx.logger.debug("%s detected at %C", kind, path);
++      const filename = resolve(watchBaseDir, path);
++      const configuredFilename = resolve(this.baseDir, path);
++      for (const entry of this.config.watchConfig === false ? [] : loader.entries()) {
++        const include = entry.subtree;
++        if (include?.filename !== filename && include?.filename !== configuredFilename) continue;
++        this.refreshConfig(include, include.filename, () => include.refresh());
++        return;
++      }
++      if (kind !== "change") return;
++      const url = pathToFileURL(filename).href;
++      if (this.externals.has(url)) return this.ctx.waterfall("hmr/restart", url, () => loader.exit());
++      if (loader.internal.loadCache.has(url)) {
++        this.queued.add(url);
++        return partialReload();
++      }
++      this.ctx.emit("hmr/change", url);
++    };
++    this.watcher.on("add", (path) => onChange("add", path));
++    this.watcher.on("change", (path) => onChange("change", path));
++    this.watcher.on("unlink", (path) => onChange("unlink", path));
++    const ready = Promise.withResolvers();
++    let readyState = root.length === 0 ? "resolved" : "pending";
++    if (root.length === 0) {
++      ready.resolve();
++    } else {
++      this.watcher.once("ready", () => {
++        readyState = "resolved";
++        ready.resolve();
++      });
++    }
++    this.watcher.on("error", (error) => {
++      if (readyState === "pending") {
++        readyState = "rejected";
++        ready.reject(error);
++      } else {
++        this.ctx.logger.warn(error);
++      }
++    });
++    await ready.promise;
++  }
++  refreshConfig(key, filename, refresh) {
++    const state = this.configRefreshes.get(key) ?? { dirty: false };
++    this.configRefreshes.set(key, state);
++    state.dirty = true;
++    if (state.running) return;
++    const task = (async () => {
++      do {
++        state.dirty = false;
++        try {
++          await refresh();
++        } catch (reason) {
++          const error = reason instanceof Error ? reason : new Error(String(reason), { cause: reason });
++          this.ctx.logger.warn("config reload at %C failed", filename);
++          this.ctx.logger.warn(error);
++          try {
++            await this.ctx.parallel("hmr/config-update-failed", filename, error);
++          } catch (rejection) {
++            this.ctx.logger.warn(rejection);
++          }
++        }
++      } while (state.dirty);
++    })().finally(() => {
++      state.running = void 0;
++      this.refreshTasks.delete(task);
++    });
++    state.running = task;
++    this.refreshTasks.add(task);
++  }
++  // hide stack trace from HMR
++  flushChanges() {
++    if (this.codeTask || this.halted || this.closing.signal.aborted) return;
++    this.codeTask = (async () => {
++      while (this.queued.size && !this.halted && !this.closing.signal.aborted) {
++        this.stashed = this.queued;
++        this.queued = /* @__PURE__ */ new Set();
++        try {
++          await this.ctx.waterfall("hmr/reload-batch", this.closing.signal, () => this.partialReload());
++        } catch (reason) {
++          const error = reason instanceof Error ? reason : new Error(String(reason));
++          this.ctx.logger.warn(error);
++          this.ctx.emit("hmr/reload-failed", error, "prepare");
++        }
++      }
++    })().finally(() => {
++      this.codeTask = void 0;
++    });
++    return this.codeTask;
++  }
++  getOuterStack = () => [
++    // '    at HMR.partialReload (<anonymous>)',
++  ];
++  async getLinked(url) {
++    const job = this.internal.loadCache.get(url);
++    if (!job) return [];
++    const linked = await job.linked;
++    return Array.prototype.map.call(linked, (job2) => job2.url);
++  }
++  /**
++   * Classify changed files into accepted (should reload) and declined (should not).
++   *
++   * A file is accepted if it's directly changed (stashed) or if any of its
++   * dependents are accepted. A file is declined if all its dependents are
++   * declined or if it's an external.
++   */
++  async analyzeChanges() {
++    const pending = [];
++    this.accepted = new Set(this.stashed);
++    this.declined = new Set(this.externals);
++    const isExcluded = (url) => url.startsWith("node:") || url.includes("/node_modules/");
++    await Promise.all([...this.stashed].map(async (url) => {
++      const children = await this.getLinked(url);
++      for (const child of children) {
++        if (this.accepted.has(child) || this.declined.has(child) || isExcluded(child)) continue;
++        pending.push(child);
++      }
++    }));
++    while (pending.length) {
++      let index = 0, hasUpdate = false;
++      while (index < pending.length) {
++        const url = pending[index];
++        const children = await this.getLinked(url);
++        let isDeclined = true, isAccepted = false;
++        for (const child of children) {
++          if (this.declined.has(child) || isExcluded(child)) continue;
++          if (this.accepted.has(child)) {
++            isAccepted = true;
++            break;
++          } else {
++            isDeclined = false;
++            if (!pending.includes(child)) {
++              hasUpdate = true;
++              pending.push(child);
++            }
++          }
++        }
++        if (isAccepted || isDeclined) {
++          hasUpdate = true;
++          pending.splice(index, 1);
++          if (isAccepted) {
++            this.accepted.add(url);
++          } else {
++            this.declined.add(url);
++          }
++        } else {
++          index++;
++        }
++      }
++      if (!hasUpdate) break;
++    }
++    for (const url of pending) {
++      this.declined.add(url);
++    }
++  }
++  async partialReload() {
++    await this.analyzeChanges();
++    const pending = /* @__PURE__ */ new Map();
++    const reloads = /* @__PURE__ */ new Map();
++    const nameMap = /* @__PURE__ */ Object.create(null);
++    for (const entry of this.ctx.loader.entries()) {
++      (nameMap[entry.parent.tree.ctx.baseUrl] ??= /* @__PURE__ */ new Set()).add(entry.options.name);
++    }
++    for (const baseUrl in nameMap) {
++      for (const name of nameMap[baseUrl]) {
++        try {
++          const { url } = await this._resolve(name, baseUrl, {});
++          if (this.declined.has(url)) continue;
++          const job = this.internal.loadCache.get(url);
++          const plugin = this.ctx.loader.unwrapExports(job?.module?.getNamespace());
++          if (!job || !plugin) continue;
++          pending.set(job, plugin);
++          this.declined.add(url);
++        } catch (err) {
++          this.ctx.logger.warn(err);
++        }
++      }
++    }
++    for (const [job, plugin] of pending) {
++      this.declined.delete(job.url);
++      const dependencies = [...await loadDependencies(job, this.declined)];
++      this.declined.add(job.url);
++      if (!dependencies.some((dep) => this.accepted.has(dep))) continue;
++      dependencies.forEach((dep) => this.accepted.add(dep));
++      reloads.set(plugin, {
++        filename: job.url,
++        runtime: this.ctx.registry.get(plugin)
++      });
++    }
++    const esmBackup = /* @__PURE__ */ Object.create(null);
++    const cjsBackup = /* @__PURE__ */ Object.create(null);
++    const require2 = createRequire(import.meta.url);
++    for (const filename of this.accepted) {
++      const job = Map.prototype.get.call(this.internal.loadCache, filename);
++      esmBackup[filename] = job;
++      Map.prototype.delete.call(this.internal.loadCache, filename);
++      try {
++        const filepath = fileURLToPath(filename);
++        if (require2.cache[filepath]) {
++          cjsBackup[filepath] = require2.cache[filepath];
++          delete require2.cache[filepath];
++        }
++      } catch {
++      }
++    }
++    const rollback = () => {
++      for (const filename in esmBackup) {
++        Map.prototype.set.call(this.internal.loadCache, filename, esmBackup[filename]);
++      }
++      for (const filepath in cjsBackup) {
++        require2.cache[filepath] = cjsBackup[filepath];
++      }
++    };
++    const attempts = {};
++    try {
++      for (const [, { filename }] of reloads) {
++        attempts[filename] = this.ctx.loader.unwrapExports(await this.ctx.loader.import(filename, this.getOuterStack));
++      }
++    } catch (e) {
++      handleError(this.ctx, e);
++      this.ctx.emit("hmr/reload-failed", e instanceof Error ? e : new Error(String(e)), "import");
++      return rollback();
++    }
++    const targets = [...reloads].flatMap(([plugin, { filename, runtime }]) => [...runtime?.fibers ?? []].map((fiber) => ({
++      plugin,
++      filename,
++      fiber,
++      uid: fiber.uid,
++      config: fiber._config,
++      configVersion: JSON.stringify(fiber._config)
++    })));
++    let started = false;
++    try {
++      await this.ctx.waterfall("hmr/reload-prepare", reloads, this.closing.signal, async () => {
++        this.closing.signal.throwIfAborted();
++        if (started) throw new Error("HMR batch applied twice");
++        for (const { fiber, uid, configVersion } of targets) {
++          if (fiber.uid !== uid || JSON.stringify(fiber._config) !== configVersion || fiber.state !== ACTIVE || fiber.entry?.disabled) {
++            throw new Error("HMR target changed before disposal");
++          }
++        }
++        started = true;
++        const timeout = new AbortController();
++        const signal = AbortSignal.any([this.closing.signal, timeout.signal]);
++        let timer;
++        const deadline = new Promise((_resolve, reject) => {
++          timer = setTimeout(() => {
++            const error = new Error("HMR replacement timeout; recovery required");
++            timeout.abort(error);
++            reject(error);
++          }, this.config.reloadTimeout ?? 3e4);
++        });
++        const apply = async () => {
++          for (const plugin of reloads.keys()) this.ctx.registry.delete(plugin);
++          await Promise.all(targets.map(({ fiber }) => fiber.await()));
++          signal.throwIfAborted();
++          const fibers = targets.map(({ filename, fiber: oldFiber, config }) => {
++            const fiber = oldFiber.parent.registry.plugin(attempts[filename], config, this.getOuterStack);
++            fiber.entry = oldFiber.entry;
++            if (fiber.entry) fiber.entry.fiber = fiber;
++            return fiber;
++          });
++          await Promise.all(fibers.map((fiber) => fiber.await()));
++          // Settle dependent PENDING -> LOADING -> ACTIVE transitions as well.
++          await this.ctx.loader.await();
++          for (const fiber of fibers) {
++            if (fiber.state !== ACTIVE) throw new Error("HMR replacement did not activate");
++          }
++          signal.throwIfAborted();
++        };
++        try {
++          await Promise.race([apply(), deadline]);
++        } finally {
++          clearTimeout(timer);
++        }
++      });
++      if (!started) throw new Error("HMR batch was vetoed");
++    } catch (reason) {
++      if (!started) rollback();
++      else this.halted = true;
++      const error = reason instanceof Error ? reason : new Error(String(reason));
++      this.ctx.logger.warn(error);
++      this.ctx.emit("hmr/reload-failed", error, started ? "apply" : "prepare");
++      return;
++    }
++    this.ctx.emit("hmr/reload", reloads);
++    this.stashed = /* @__PURE__ */ new Set();
++  }
+ };
+-(function(Hmr) {
+-	Hmr.Config = z.object({
+-		base: z.string(),
+-		root: z.array(String).role("table").default(["."]),
+-		ignored: z.array(String).role("table").default([
+-			"**/node_modules",
+-			"**/.*",
+-			"cache",
+-			"data"
+-		]),
+-		debounce: z.natural().role("ms").default(100)
+-	});
++((Hmr2) => {
++  Hmr2.Config = z.object({
++    base: z.string(),
++    root: z.array(String).role("table").default(["."]),
++    ignored: z.array(String).role("table").default([
++      "**/node_modules",
++      "**/.*",
++      "cache",
++      "data"
++    ]),
++    debounce: z.natural().role("ms").default(100),
++    reloadTimeout: z.natural().min(1).role("ms").default(3e4),
++    watchConfig: z.boolean().default(true)
++  });
+ })(Hmr || (Hmr = {}));
+-var types_default = Hmr;
+-//#endregion
+-export { types_default as default };
++var index_default = Hmr;
++export {
++  index_default as default
++};
+===================================================================
+--- a/lib/types/index.d.ts
++++ b/lib/types/index.d.ts
+@@ -5,10 +5,15 @@
+     interface Context {
+         hmr: Hmr;
+     }
+     interface Events {
++        'hmr/reload-batch'(signal: AbortSignal, next: () => Promise<void>): Promise<void>;
+         'hmr/change'(url: string): void;
+         'hmr/reload'(reloads: Map<Plugin, Reload>): void;
++        /** Awaitable pre-disposal middleware. Throw to veto; call next exactly once to apply. */
++        'hmr/reload-prepare'(reloads: ReadonlyMap<Plugin, Reload>, signal: AbortSignal, next: () => Promise<void>): Promise<void>;
++        'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply'): void;
++        'hmr/restart'(url: string, next: () => void): void;
+         /**
+          * A watched config-file refresh failed.
+          * @param filename - Absolute path observed by HMR.
+          * @param error - Normalized refresh failure.
+@@ -21,8 +26,9 @@
+     filename: string;
+     runtime?: Plugin.Runtime;
+ }
+ declare class Hmr extends Service {
++    static readonly coordinationVersion = 3;
+     config: Hmr.Config;
+     static inject: string[];
+     baseDir: string;
+     private internal;
+@@ -79,9 +85,11 @@
+         base?: string;
+         root: string[];
+         debounce: number;
+         ignored: string[];
++        reloadTimeout?: number;
++        watchConfig?: boolean;
+     }
+     const Config: z<Config>;
+ }
+ export default Hmr;
+-//# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=index.d.ts.map

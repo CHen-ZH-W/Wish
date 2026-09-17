@@ -21,7 +21,11 @@ import type {
 interface RegisteredToolDefinition<Context> {
   readonly descriptor: ToolDescriptor;
   parse(input: Readonly<Record<string, unknown>>): ToolInputParseResult<unknown>;
-  resolveCapabilities(input: unknown, context: Context): ToolCapabilityRequest;
+  resolveCapabilities(
+    input: unknown,
+    context: Context,
+    signal?: AbortSignal,
+  ): Promise<ToolCapabilityRequest> | ToolCapabilityRequest;
   execute(
     input: unknown,
     context: Context,
@@ -60,8 +64,8 @@ export class ToolRegistry<Context = unknown> {
     const registered: RegisteredToolDefinition<Context> = {
       descriptor,
       parse: (input) => definition.parse(input),
-      resolveCapabilities: (input, context) =>
-        definition.resolveCapabilities(input as Input, context),
+      resolveCapabilities: (input, context, signal) =>
+        definition.resolveCapabilities(input as Input, context, signal),
       execute: (input, context, grant, signal) =>
         definition.execute(input as Input, context, grant, signal),
     };
@@ -191,13 +195,14 @@ export class ToolRegistry<Context = unknown> {
     return this.definitions.get(call.name)?.descriptor.executionMode ?? "sequential";
   }
 
-  resolveCapabilities(
+  async resolveCapabilities(
     call: ReadyToolCall,
     context: Context,
-  ): ToolCapabilityRequest {
+    signal?: AbortSignal,
+  ): Promise<ToolCapabilityRequest> {
     const definition = this.requireDefinition(call.name);
     return normalizeToolCapabilityRequest(
-      definition.resolveCapabilities(call.input, context),
+      await definition.resolveCapabilities(call.input, context, signal),
     );
   }
 
@@ -217,7 +222,7 @@ export class ToolRegistry<Context = unknown> {
     });
     if (
       this.currentVersion !== registryVersion ||
-      grant.registryVersion !== this.currentVersion
+      grant.subject.generation !== this.currentVersion
     ) {
       throw new Error(
         `Tool authorization Grant ${grant.grantId} registry is stale`,

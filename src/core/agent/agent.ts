@@ -11,12 +11,14 @@ import type {
 export type {
   AgentDefinition,
   AgentId,
+  AgentInputSource,
   AgentMetadata,
   AgentProtocol,
   AgentRunId,
   ObserveOptions,
   RunHandle,
   RunInput,
+  RunInputSource,
   UserTurnId,
 } from "./types.js";
 

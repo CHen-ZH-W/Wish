@@ -2,6 +2,9 @@ import { resolve } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { createWishWebUiHandler } from "./server.js";
+import type {} from "./host/management.js";
+import { localDirectoryBrowser } from "../../workspace/directory-picker/local.js";
 
 import {
   loadWishWebUiConfiguration,
@@ -11,7 +14,7 @@ import {
 } from "./index.js";
 
 export const name = "webui-surface";
-export const inject = ["launch", "application"];
+export const inject = ["launch", "approval", "approvalRules", "application"];
 
 /** WebUI-owned configuration supplied by its Loader row. */
 export interface Config {
@@ -38,7 +41,7 @@ interface SurfaceOwner {
 
 const surfaceOwners = new WeakMap<Context["fiber"], SurfaceOwner>();
 
-/** Run the WebUI through the injected Application service. */
+/** Attach business routes to the Root host; unmanaged embeddings expose only the API. */
 export async function apply(ctx: Context, config: Config): Promise<void> {
   if (ctx.launch.surface !== "webui") {
     throw new Error("WebUI surface was mounted for a non-WebUI process");
@@ -53,7 +56,24 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       : { workspaceRoot: resolve(ctx.launch.cwd, config.workspaceRoot) }),
   });
   const approvals = new WebToolApprovalBroker();
-  const application = await ctx.application.open({ approval: approvals });
+  ctx.approval.register(approvals, {
+    id: "webui-surface",
+    replace: true,
+  });
+  const application = await ctx.application.open();
+
+  const managementHost = ctx.get("webManagementHost");
+  if (managementHost) {
+    await ctx.effect(async () => {
+      const handler = await createWishWebUiHandler({ application, approvals, approvalRules: ctx.approvalRules,
+        workspaceRoot: configuration.workspaceRoot, directoryBrowser: localDirectoryBrowser, onRunGenerationDrainTimeout: error => ctx.launch.fail(error) });
+      let registration;
+      try { registration = managementHost.register(handler.handle); }
+      catch (error) { await handler.close(); throw error; }
+      return async () => { registration.release(); await handler.close(); };
+    }, "WebUI business handler");
+    return;
+  }
 
   let started: StartedWishWebUiServer | undefined;
   await ctx.effect(async () => {
@@ -74,7 +94,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         const server = await startWishWebUiServer({
           application,
           approvals,
+          approvalRules: ctx.approvalRules,
           workspaceRoot: configuration.workspaceRoot,
+          directoryBrowser: localDirectoryBrowser,
           host: configuration.host,
           port: configuration.port,
           onRunGenerationDrainTimeout: (error) => ctx.launch.fail(error),

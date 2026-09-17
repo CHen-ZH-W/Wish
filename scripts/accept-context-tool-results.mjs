@@ -321,7 +321,12 @@ test("restores a Session-side archive receipt before history admission", async (
       stepId: "step-2",
       sessionId: "session-1",
       model,
-      workspace: { cwd: "/workspace", instructions: [] },
+      workspace: {
+        cwd: "/workspace",
+        fingerprint: "workspace:fixture",
+        revision: "workspace-revision:fixture",
+        instructions: [],
+      },
       runtime: {
         capturedAt: "2026-09-03T12:01:00.000Z",
         stateVersion: 4,

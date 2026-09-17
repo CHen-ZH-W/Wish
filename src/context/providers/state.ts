@@ -23,6 +23,31 @@ export class StateContextProvider implements ContextProvider<ContextInput> {
     throwIfAborted(signal);
     const state = Object.freeze({
       cwd: requireIdentifier(input.workspace.cwd, "Context cwd"),
+      workspace: Object.freeze({
+        fingerprint: requireIdentifier(
+          input.workspace.fingerprint,
+          "Context workspace fingerprint",
+        ),
+        revision: requireIdentifier(
+          input.workspace.revision,
+          "Context workspace revision",
+        ),
+        ...(input.workspace.repository === undefined
+          ? {}
+          : {
+            repository: Object.freeze({
+              kind: input.workspace.repository.kind,
+              root: requireIdentifier(
+                input.workspace.repository.root,
+                "Context workspace repository root",
+              ),
+              identity: requireIdentifier(
+                input.workspace.repository.identity,
+                "Context workspace repository identity",
+              ),
+            }),
+          }),
+      }),
       capturedAt: requireIdentifier(
         input.runtime.capturedAt,
         "Context capturedAt",

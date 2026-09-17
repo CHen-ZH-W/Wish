@@ -10,6 +10,9 @@ import { Context } from "@deepseek-ai/cordis";
 
 import * as WebUi from "../dist/apps/webui/plugin.js";
 import { createLaunch } from "../dist/boot/launch.js";
+import ApprovalHub from "../dist/approval/service.js";
+import MemoryApprovalRules from
+  "../dist/permissions/rules/providers/memory.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const FiberState = Object.freeze({ PENDING: 0, ACTIVE: 2, DISPOSED: 4 });
@@ -56,6 +59,8 @@ test("provider loss drains every WebUI effect before reactivation", async () => 
   let provider;
   let surface;
   try {
+    await root.plugin(ApprovalHub);
+    await root.plugin(MemoryApprovalRules);
     provider = await root.plugin(providerPlugin);
     surface = await root.plugin(WebUi, {
       host: "127.0.0.1",
@@ -63,7 +68,10 @@ test("provider loss drains every WebUI effect before reactivation", async () => 
       workspaceRoot: directory,
     });
     assert.equal(surface.state, FiberState.ACTIVE);
-    assert.deepEqual(effectLabels(surface), ["WebUI process surface"]);
+    assert.deepEqual(effectLabels(surface), [
+      "WebUI process surface",
+      "approval.register(answerer)",
+    ]);
     await assertHealthy(port);
 
     await provider.dispose();
@@ -75,7 +83,10 @@ test("provider loss drains every WebUI effect before reactivation", async () => 
     provider = await root.plugin(providerPlugin);
     await surface.await();
     assert.equal(surface.state, FiberState.ACTIVE);
-    assert.deepEqual(effectLabels(surface), ["WebUI process surface"]);
+    assert.deepEqual(effectLabels(surface), [
+      "WebUI process surface",
+      "approval.register(answerer)",
+    ]);
     await assertHealthy(port);
 
     await root.fiber.dispose();

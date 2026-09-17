@@ -6,7 +6,7 @@ import test from "node:test";
 
 import {
   FileToolResultArchive,
-} from "../dist/storage/tool-results/file-tool-result-archive.js";
+} from "../dist/tools/results/providers/file.js";
 
 async function withArchive(execute) {
   const root = await mkdtemp(join(tmpdir(), "wish-tool-result-archive-"));

@@ -29,6 +29,8 @@ import {
   type AppendSessionMessagesInput,
   type AppendSessionMessagesResult,
   type ArchiveSessionInput,
+  type RestoreSessionInput,
+  type DeleteSessionInput,
   type CreateSessionInput,
   type GetSessionInput,
   type ListSessionsInput,
@@ -53,6 +55,7 @@ export interface InMemorySessionStoreOptions {
 /** Deterministic-friendly fake Store with the same transaction rules as files. */
 export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, MutableMemorySession>();
+  private readonly deleted = new Set<string>();
   private readonly tails = new Map<string, Promise<void>>();
   private readonly now: () => Date | string;
   private readonly recordId: () => string;
@@ -68,7 +71,7 @@ export class InMemorySessionStore implements SessionStore {
     const normalized = normalizeCreateSessionInput(input);
     return this.serial(normalized.sessionId, async () => {
       throwIfAborted(normalized.signal);
-      if (this.sessions.has(normalized.sessionId)) {
+      if (this.sessions.has(normalized.sessionId) || this.deleted.has(normalized.sessionId)) {
         throw new SessionAlreadyExistsError(normalized.sessionId);
       }
       const session = createSessionDescriptor({
@@ -135,6 +138,35 @@ export class InMemorySessionStore implements SessionStore {
         updatedAt: this.timestamp(),
       });
       return snapshotSession(state.session);
+    });
+  }
+
+  async restore(input: RestoreSessionInput): Promise<Session> {
+    const normalized = normalizeGetSessionInput(input);
+    return this.serial(normalized.sessionId, async () => {
+      throwIfAborted(normalized.signal);
+      const state = this.requireState(normalized.sessionId);
+      if (state.session.status !== "active") state.session = snapshotSession({ ...state.session, status: "active", updatedAt: this.timestamp() });
+      return snapshotSession(state.session);
+    });
+  }
+
+  async delete(input: DeleteSessionInput): Promise<void> {
+    const normalized = normalizeGetSessionInput(input);
+    return this.serial(normalized.sessionId, async () => {
+      throwIfAborted(normalized.signal);
+      if (this.deleted.has(normalized.sessionId)) return;
+      this.requireState(normalized.sessionId);
+      this.deleted.add(normalized.sessionId);
+      this.sessions.delete(normalized.sessionId);
+    });
+  }
+
+  async wasDeleted(input: GetSessionInput): Promise<boolean> {
+    const normalized = normalizeGetSessionInput(input);
+    return this.serial(normalized.sessionId, async () => {
+      throwIfAborted(normalized.signal);
+      return this.deleted.has(normalized.sessionId);
     });
   }
 

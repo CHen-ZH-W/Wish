@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { TaskRuntime, MemoryTaskStore, readyTasks } from "../dist/tasks/index.js";
+const spec = (id, dependencies = []) => ({ id, title: id, dependencies, execution: { role: "test", readOnly: true, timeoutMs: 1000 } });
+test("Task DAG rejects cycles and stale drafts; frozen execution enforces dependencies and Attempt ownership", async () => {
+  const tasks = new TaskRuntime(new MemoryTaskStore());
+  assert.throws(() => tasks.replace("s", [spec("a", ["b"]), spec("b", ["a"])], 0), /cycle/);
+  const draft = await tasks.replace("s", [spec("a"), spec("b", ["a"])], 0);
+  await assert.rejects(tasks.replace("s", [], 0), /version conflict/);
+  await assert.rejects(tasks.transition(draft, "a", "running", "attempt-a"), /frozen/);
+  let graph = await tasks.freeze(draft, "a".repeat(64));
+  assert.deepEqual(readyTasks(graph).map(task => task.id), ["a"]);
+  await assert.rejects(tasks.transition(graph, "b", "running", "attempt-b"), /dependencies/);
+  await tasks.transition(graph, "a", "running", "attempt-a");
+  await assert.rejects(tasks.transition(graph, "a", "completed", "stale"), /Stale/);
+  graph = await tasks.transition(graph, "a", "completed", "attempt-a", "verified");
+  assert.deepEqual(readyTasks(graph).map(task => task.id), ["b"]);
+  await assert.rejects(tasks.transition(graph, "a", "running", "again"), /Illegal/);
+  await tasks.replace("s", [spec("a")], 1);
+  assert.equal((await tasks.get("s", 1)).tasks[0].status, "completed");
+  assert.equal((await tasks.get("s")).tasks[0].status, "pending");
+});

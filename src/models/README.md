@@ -25,8 +25,13 @@ Cordis Models service
 - `config.ts`：JSON/环境配置加载、启动期校验、完整模型引用解析和覆盖合并。
 - `registry.ts`：协议到 Adapter factory 的显式注册表。
 - `runtime.ts`：严格按 `ModelRequest.model` 路由，并在调用时解析 headers/凭据。
+- `session-reasoning.ts`：Models 拥有的 Session 级思考强度选择，借用 Storage Domain
+  持久化；不把选择写入通用 Settings 或 Browser Conversation 状态。
 - `service.ts`：Cordis wrapper，拥有配置来源、Registry、usage estimator 和每个
-  AgentLoop 与 Application 使用的请求资源组合。
+  AgentLoop 与 Application 使用的请求资源组合，并在 WebUI surface 向 Settings 注册默认
+  模型选择、逐模型上下文窗口和单次请求最大输出覆盖。
+- `consumers/webui/index.tsx`：Models 自己拥有的模型配置面板；Host Models 条目失效时，
+  Browser Cordis 同步撤销该入口；同一 Browser 插件向已有会话和新建会话输入框分别贡献可卸载的思考强度控件。
 - `plugins.ts`：三个协议 Adapter 的独立 Loader 插件；每项注册都绑定调用插件 fiber。
 - `providers/`：OpenAI Responses、OpenAI Chat Completions-compatible 与
   Anthropic Messages 转换。
@@ -36,7 +41,11 @@ Cordis Models service
 - `providers/anthropic-messages-tokens.ts`：调用 Anthropic Messages 官方计数端点，
   统计最终映射请求。
 - `catalog.ts`：请求热路径外的 list/check/diff/sync 控制面服务。
-- `storage/models/file-catalog-store.ts`：Catalog 的原子 JSON 文件 Store。
+- `catalog-persistence.ts`：可替换的 Catalog 持久化 Service Definition。
+- `persistence/domain-store.ts`：基于 Storage Domain 的 Catalog Store。
+- `persistence/storage-provider.ts`：把 Catalog Store 接到所选 Storage Backend 的
+  Cordis Provider。
+- `persistence/file-store.ts`：保留的原子 JSON 文件兼容 Store。
 
 Provider 不发布 Runtime event、不执行 Tool、不聚合 `ModelOutput`，也不实现 retry
 或 fallback。`ConfiguredModel` 同样不做 retry；`createConfiguredModelStack` 只按上图
@@ -45,15 +54,17 @@ Provider 不发布 Runtime event、不执行 Tool、不聚合 `ModelOutput`，�
 ## 配置
 
 没有提供 JSON 时，Wish 使用提交在仓库中的 generated defaults。当前快照从
-models.dev、OpenRouter 和 Vercel AI Gateway 生成，只收录声明支持 Tool Call、且能由
+models.dev、OpenRouter 和 Vercel AI Gateway 生成；DeepSeek 直连 Provider 使用经官方文档
+核对的定义覆盖第三方目录的滞后数据。其余模型只收录声明支持 Tool Call、且能由
 Wish 当前 `openai-responses`、`openai-chat-completions` 或
 `anthropic-messages` Adapter 表达的模型。固定
 Provider 定义决定协议、endpoint 和鉴权；远端模型源只能提供模型名、能力、窗口和价格
 元数据，不能覆盖凭据或传输行为。
 
-当前 checked-in 快照包含 17 个 Provider、803 个模型，默认选择
-`deepseek/deepseek-v4-flash`。模型源没有可靠提供的字段保持未知；OpenRouter 的分段价格
-也不会压扁成一个失真的静态价格。generated 元数据不等于当前账号已经可以调用。
+当前默认选择 `deepseek/deepseek-flash`。旧 `deepseek-v4-flash` 与
+`deepseek-v4-flash-vision-exp` 保留为已退役兼容名；已保存的旧选择在实际使用时指向新版
+Flash，不静默改写原设置。DeepSeek 的峰谷价格和 OpenRouter 的分段价格都不会压扁成
+失真的静态价格，因此价格未知。generated 元数据不等于当前账号已经可以调用。
 
 普通 `npm run build` 不访问网络。显式刷新和校验 generated 文件：
 
@@ -125,7 +136,8 @@ npm run models:check-generated
       "models": [
         {
           "id": "deepseek-v4-pro",
-          "maxOutputTokens": 65536
+          "maxOutputTokens": 65536,
+          "defaultMaxOutputTokens": 16384
         }
       ]
     },
@@ -140,6 +152,13 @@ npm run models:check-generated
   ]
 }
 ```
+
+`maxOutputTokens` 是模型目录的能力上限，不会直接发送到请求中。
+`defaultMaxOutputTokens` 是可选的逐模型请求默认值。WebUI 模型配置中的
+“单次请求最大输出”覆盖按完整模型引用单独保存，优先于该默认值；清空覆盖后恢复默认值。
+如果两者都没有，OpenAI-compatible/Responses 请求省略相应字段，交由模型服务决定；
+Anthropic Messages 因协议需要显式 `max_tokens`，使用不超过目录能力上限的协议兜底值。
+显式 Run 请求参数优先于 WebUI 覆盖，任何显式值均不能超过已知模型上限。
 
 `loadModelsConfigurationFile` 从显式 `path` 或 `WISH_MODELS_CONFIG` 读取文件；
 `loadModelsConfiguration` 也可直接接收已解析值、JSON 字符串或
@@ -160,6 +179,24 @@ profile 直接配置 `model`、`fallbackModels` 和 `maxRetries`。CLI `--models
 默认值 → 文件 `defaultModel` → 第一个 Provider `defaultModel`。每次模型请求仍必须
 携带完整 `provider/model`；`ConfiguredModel` 不会用可变默认值覆盖请求。AgentLoop
 会在首个 Step 固定主模型，所以运行中的 UserTurn 不受后续默认值切换影响。
+
+WebUI 的“模型配置”从这份已验证配置生成完整 `provider/model` 选项。默认模型选择在
+下一次新 Run 开始时采样；上下文窗口与单次请求最大输出覆盖在下一次请求时读取，不修改
+已经发出的请求。它不改变 fallback、retry、Provider endpoint 或凭据，也不把 Catalog
+元数据当作账号可调用证明。配置更新移除旧选择时，设置保留该值供用户修复，实际新 Run
+回退到当前部署默认值。
+
+会话输入区仅对显式声明 `reasoningControl` 且协议适配器可表达的模型显示思考强度。
+当前默认 DeepSeek 模型提供“关闭／低／高／极高”；下拉框直接选中模型请求配置的默认强度，
+不额外列出“默认”项，也不把目录最大能力当作请求默认值。选回默认强度会清除 Session 覆盖，
+继续继承模型配置。选择按 Session 和模型引用持久保存，切换默认模型后
+旧选择不会误应用到新模型。新 Run 启动时把强度固定进输入；运行中的 Step、steer 与
+同一 Run 的后续 UserTurn 不受选择变化影响。WebUI 的
+`GET/POST /api/sessions/:id/model-reasoning` 只读写这一 Models 能力；并发写入以
+Storage revision 冲突拒绝。停用 Models Browser 插件会撤销输入区控件，不影响已保存的选择。
+新建会话界面通过 `GET /api/model-reasoning/default` 读取默认模型能力，不因此创建 Session。
+用户选择先留在 Browser；首次发送创建 Session 后，通过同一 Models 接口持久化所选强度，
+成功后才启动首个 Run。默认选项不写入覆盖；选项冲突或写入失败时不以错误强度发送首条消息。
 
 Provider 默认配置先应用，Model 的 endpoint/auth/headers/developer role/request
 配置随后覆盖。`extraBody` 不能设置 `model`、`messages`、`tools`、`system`、
@@ -190,7 +227,8 @@ OpenAI-compatible SSE 的中间 chunk 可以携带 `usage: null`；它按缺失 
 `ModelRequestTokenCounter`，然后把完整请求依赖交给 AgentLoop service；Application
 只得到模型选择所需的 `configuredModel` view。`ApplicationFacade` 不创建
 Registry、estimator、模型请求栈或 request counter。
-Provider 凭据仍在每次调用时从 `launch.environment` 的原引用读取，配置 DTO 不保存密钥。
+Provider 凭据在每次调用时按原引用解析：显式请求环境、启动环境或独立 Credentials Provider；
+启动环境优先，配置 DTO、Settings DTO 和模型 Browser Client Model 都不保存或读回密钥。
 `RetryingModel` 继续是纯 Core 对象，没有继承 Cordis Service。
 
 ## Usage 与费用
@@ -227,9 +265,18 @@ OpenAI Responses 与 Chat Completions 当前没有注册“精确”本地计数
 `provider/model` 另行注册经过验证的 `ModelRequestTokenizer`。
 
 模型窗口由 `ConfiguredModel.getContextWindowTokens()` 从已经加载、校验的
-`ModelSpec` 读取。控制面的 `ModelCatalog` 不进入每次请求的 Budget 热路径。
+`ModelSpec` 读取。WebUI 可以按完整 `provider/model` 保存 1K–10M 的用户覆盖；Context 在下一次
+请求预算时动态读取，留空则继续使用模型目录值。覆盖不改写公开 Models 配置，也不会改变已经
+冻结的 Step。控制面的 `ModelCatalog` 不进入每次请求的 Budget 热路径。
 
 ## Catalog
+
+Catalog 的持久化边界仍是 `ModelCatalogStore`。除原有 `FileCatalogStore` 外，Storage 模块
+提供 `DomainModelCatalogStore`，将相同 Port 映射到 `models/catalog` Domain；Catalog 本身
+不依赖 Storage Hub、KV 或文件 Provider，也不会静默迁移旧 catalog 文件。
+默认 `model-catalog-storage` Cordis Provider 把这个 Store 绑定到选中的
+`storageBackend`。Provider 生命周期只负责装配；canonical Catalog 状态仍属于 Domain/Store，
+不会放进 Cordis Context。
 
 `ModelCatalog.list/check/diff` 不写 Store；只有 `sync` 写入。文件 Store 使用同目录
 临时文件和 rename 原子替换。Provider 同步互相隔离，失败项保留 last-known-good。
@@ -244,6 +291,7 @@ npm run test:cordis-models
 npm run test:model-generation
 npm run test:models-runtime
 npm run test:model-providers
+npm run test:model-reasoning
 npm run test:model-usage
 npm run test:model-input-tokens
 npm run test:model-composition
@@ -251,5 +299,7 @@ npm run test:model-catalog
 npm test
 ```
 
-Provider 测试使用本地 fixture 和注入的 `fetch`。只有另行加载真实凭据并执行在线
-检查后，才能声称某个账号或模型实际可调用。
+Provider 测试使用本地 fixture 和注入的 `fetch`。`test:model-composition` 还覆盖
+DeepSeek 思考模式下 Tool 调用、完整 `reasoning_content` 回传、下一次请求和流式 usage；
+严格模拟服务端在遗漏回传时返回 400。只有另行加载真实凭据并执行在线检查后，才能
+声称某个账号或模型实际可调用。

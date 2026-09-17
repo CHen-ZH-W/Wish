@@ -37,6 +37,10 @@ export interface RunGenerationOptions<Protocol extends AgentProtocol> {
     readonly generationId: string;
     readonly reason: string;
   }) => Protocol["control"];
+  /** Release resources captured by this generation after every Run drains. */
+  readonly release?: () => void | Promise<void>;
+  /** Current execution availability; never cancels an already admitted Run. */
+  readonly assertAdmission?: () => void;
 }
 
 interface ActiveRun<Completion> {
@@ -62,6 +66,12 @@ export class RunGenerationRetiredError extends Error {
   }
 }
 
+/** A reversible Host admission fence; it does not retire or abort an existing Run. */
+export class RunGenerationSuspendedError extends Error {
+  readonly code = "run_generation_suspended";
+  constructor() { super("Run admission is suspended"); this.name = "RunGenerationSuspendedError"; }
+}
+
 /** Drain deadline notification; it never declares an active generation clean. */
 export class RunGenerationDrainTimeoutError extends Error {
   readonly code = "run_generation_drain_timeout";
@@ -79,7 +89,8 @@ export class RunGenerationDrainTimeoutError extends Error {
 }
 
 /**
- * Admission and drain boundary around one immutable Runtime dependency graph.
+ * Admission and drain boundary around one stable Runtime state owner.
+ * Step implementation replacement is separate from this owner's retirement.
  *
  * It delegates normal behavior to Core Runtime, but permanently closes new Run
  * admission before a Cordis generation unloads. Retirement sends one explicit
@@ -92,6 +103,7 @@ export class RunGeneration<Protocol extends AgentProtocol>
   readonly drainTimeoutMs: number;
 
   private stateValue: RunGenerationState = "accepting";
+  private readonly admissionFences = new Set<symbol>();
   private readonly active = new Map<string, ActiveRun<Protocol["completion"]>>();
   private readonly timeoutObservers = new Set<
     (error: RunGenerationDrainTimeoutError) => void
@@ -112,6 +124,9 @@ export class RunGeneration<Protocol extends AgentProtocol>
     if (typeof options.abortControl !== "function") {
       throw new Error("Run generation requires an abort control factory");
     }
+    if (options.release !== undefined && typeof options.release !== "function") {
+      throw new Error("Run generation release must be a function");
+    }
   }
 
   get state(): RunGenerationState {
@@ -125,6 +140,8 @@ export class RunGeneration<Protocol extends AgentProtocol>
     if (this.stateValue !== "accepting") {
       throw new RunGenerationRetiredError(this.id, this.stateValue);
     }
+    if (this.admissionFences.size > 0) throw new RunGenerationSuspendedError();
+    this.options.assertAdmission?.();
     const handle = this.runtime.startRun(definition, input);
     const key = runKey(handle.agentId, handle.runId);
     const record: ActiveRun<Protocol["completion"]> = {
@@ -173,6 +190,13 @@ export class RunGeneration<Protocol extends AgentProtocol>
     });
   }
 
+  /** Releasing this fence never reopens a retired generation or another owner's fence. */
+  suspendAdmission(): () => void {
+    const fence = Symbol();
+    this.admissionFences.add(fence);
+    return () => { this.admissionFences.delete(fence); };
+  }
+
   retire(options: RunGenerationRetireOptions = {}): Promise<void> {
     if (this.stateValue === "retired" && this.retirement !== undefined) {
       return this.retirement;
@@ -194,9 +218,7 @@ export class RunGeneration<Protocol extends AgentProtocol>
     for (const run of this.active.values()) this.abortRun(run, reason);
 
     if (this.active.size === 0) {
-      this.stateValue = "retired";
-      this.retirement = Promise.resolve();
-      this.timeoutObservers.clear();
+      this.retirement = this.finishRetirement();
       return this.retirement;
     }
 
@@ -232,12 +254,18 @@ export class RunGeneration<Protocol extends AgentProtocol>
     timer.unref?.();
     try {
       await drained;
-      this.stateValue = "retired";
+      await this.finishRetirement();
     } finally {
       clearTimeout(timer);
       this.releaseDrain = undefined;
       this.timeoutObservers.clear();
     }
+  }
+
+  private async finishRetirement(): Promise<void> {
+    await this.options.release?.();
+    this.stateValue = "retired";
+    this.timeoutObservers.clear();
   }
 
   private notifyDrainTimeout(): void {

@@ -36,7 +36,7 @@ const definition: ToolDefinition<"read", { readonly path: string }, string, Tool
   },
   execute(input, _context, grant) {
     assertActiveToolAuthorizationGrant(grant, {
-      callId: grant.callId,
+      callId: grant.subject.id,
       toolName: "read",
     });
     return input.path;

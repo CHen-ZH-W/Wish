@@ -7,6 +7,8 @@ import type {
   ModelConfigurationSource,
   ModelInputCapabilities,
   ModelPrice,
+  ModelReasoningControl,
+  ModelReasoningEffort,
   ModelRequestCompatibility,
   ModelSpec,
   ModelsConfiguration,
@@ -303,8 +305,10 @@ function mergeModelOverlay(
       "status",
       "contextWindowTokens",
       "maxOutputTokens",
+      "defaultMaxOutputTokens",
       "input",
       "reasoning",
+      "reasoningControl",
       "toolCalling",
       "developerRole",
       "price",
@@ -464,6 +468,12 @@ function parseProvider(value: unknown, path: string): ProviderProfile {
     );
   }
   validateDeveloperRoleConfiguration(protocol, developerRoleMode, models, path);
+  for (const model of models) {
+    const format = model.reasoningControl?.format;
+    if (format !== undefined && (format === "deepseek-chat" ? protocol !== "openai-chat-completions" : protocol !== "openai-responses")) {
+      throw configurationError(`${path} Model "${model.id}" has reasoningControl incompatible with protocol "${protocol}"`);
+    }
+  }
   return Object.freeze({
     id,
     protocol,
@@ -519,8 +529,10 @@ function parseModelSpec(value: unknown, path: string): ModelSpec {
       "status",
       "contextWindowTokens",
       "maxOutputTokens",
+      "defaultMaxOutputTokens",
       "input",
       "reasoning",
+      "reasoningControl",
       "toolCalling",
       "developerRole",
       "price",
@@ -543,8 +555,21 @@ function parseModelSpec(value: unknown, path: string): ModelSpec {
     input.maxOutputTokens,
     `${path}.maxOutputTokens`,
   );
+  const defaultMaxOutputTokens = optionalPositiveInteger(
+    input.defaultMaxOutputTokens,
+    `${path}.defaultMaxOutputTokens`,
+  );
+  if (defaultMaxOutputTokens !== undefined && maxOutputTokens !== undefined && defaultMaxOutputTokens > maxOutputTokens) {
+    throw configurationError(`${path}.defaultMaxOutputTokens exceeds maxOutputTokens`);
+  }
   const capabilities = parseInputCapabilities(input.input, `${path}.input`);
   const reasoning = optionalBoolean(input.reasoning, `${path}.reasoning`) ?? false;
+  const reasoningControl = input.reasoningControl === undefined
+    ? undefined
+    : parseReasoningControl(input.reasoningControl, `${path}.reasoningControl`);
+  if (reasoningControl !== undefined && !reasoning) {
+    throw configurationError(`${path}.reasoningControl requires reasoning capability`);
+  }
   const toolCalling = optionalBoolean(input.toolCalling, `${path}.toolCalling`) ?? false;
   const developerRole = optionalBoolean(
     input.developerRole,
@@ -570,8 +595,10 @@ function parseModelSpec(value: unknown, path: string): ModelSpec {
     status,
     ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(defaultMaxOutputTokens === undefined ? {} : { defaultMaxOutputTokens }),
     input: capabilities,
     reasoning,
+    ...(reasoningControl === undefined ? {} : { reasoningControl }),
     toolCalling,
     developerRole,
     ...(price === undefined ? {} : { price }),
@@ -751,6 +778,29 @@ function parseInputCapabilities(
     text: optionalBoolean(input.text, `${path}.text`) ?? true,
     image: optionalBoolean(input.image, `${path}.image`) ?? false,
   });
+}
+
+function parseReasoningControl(value: unknown, path: string): ModelReasoningControl {
+  const input = record(value, path);
+  knownKeys(input, ["format", "efforts", "defaultEffort"], path);
+  const format = requiredString(input.format, `${path}.format`);
+  if (format !== "deepseek-chat" && format !== "openai-responses") {
+    throw configurationError(`${path}.format is unsupported`);
+  }
+  const efforts = array(input.efforts, `${path}.efforts`).map((value, index): ModelReasoningEffort => {
+    if (value !== "none" && value !== "low" && value !== "high" && value !== "max") {
+      throw configurationError(`${path}.efforts[${index}] is unsupported`);
+    }
+    return value;
+  });
+  if (efforts.length === 0 || new Set(efforts).size !== efforts.length) {
+    throw configurationError(`${path}.efforts must contain unique values`);
+  }
+  const defaultEffort = requiredString(input.defaultEffort, `${path}.defaultEffort`);
+  if (!efforts.includes(defaultEffort as ModelReasoningEffort)) {
+    throw configurationError(`${path}.defaultEffort must be included in efforts`);
+  }
+  return Object.freeze({ format, efforts: Object.freeze(efforts), defaultEffort: defaultEffort as ModelReasoningEffort });
 }
 
 function parsePrice(value: unknown, path: string): ModelPrice {

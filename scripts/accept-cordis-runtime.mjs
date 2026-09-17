@@ -10,7 +10,7 @@ import { Context, Service } from "@deepseek-ai/cordis";
 import { bootstrap } from "../dist/boot/bootstrap.js";
 import Runtime, {
   Config as RuntimeConfig,
-} from "../dist/core/runtime/service.js";
+} from "../dist/composition/runtime-service.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const fiberState = Object.freeze({ pending: 0, active: 2, disposed: 4 });
@@ -22,8 +22,33 @@ class StubAgentLoop extends Service {
   }
 
   open() {
+    let sessionReleased = false;
+    let contextReleased = false;
+    let resourcesReleased = false;
+    const sessions = Object.freeze({
+      manager: {},
+      get released() {
+        return sessionReleased;
+      },
+      release() {
+        if (sessionReleased) return false;
+        sessionReleased = true;
+        return true;
+      },
+    });
+    const context = Object.freeze({
+      get released() {
+        return contextReleased;
+      },
+      release() {
+        if (contextReleased) return false;
+        contextReleased = true;
+        return true;
+      },
+    });
     return Object.freeze({
-      sessions: Object.freeze({ manager: {} }),
+      sessions,
+      context,
       models: Object.freeze({ configuredModel: {} }),
       stepPipeline: {
         async execute({ snapshot }) {
@@ -34,11 +59,36 @@ class StubAgentLoop extends Service {
           };
         },
       },
+      get released() {
+        return resourcesReleased;
+      },
+      release() {
+        if (resourcesReleased) return false;
+        resourcesReleased = true;
+        context.release();
+        sessions.release();
+        return true;
+      },
     });
   }
 }
 
-test("Runtime owns Core construction and follows AgentLoop generations", async () => {
+class StubRuntimeLifecycle extends Service {
+  version = "fixture-runtime-lifecycle-v1";
+
+  constructor(ctx) {
+    super(ctx, "runtimeLifecycle");
+  }
+
+  openRun() {}
+  finishRun() {}
+  openUserTurn() {}
+  finishUserTurn() {}
+  openStep() {}
+  finishStep() {}
+}
+
+test("Runtime owns Core construction and survives AgentLoop replacement, but still retires on its own config update", async () => {
   const root = new Context();
   const generations = [];
   let disposals = 0;
@@ -65,6 +115,9 @@ test("Runtime owns Core construction and follows AgentLoop generations", async (
     assert.equal(consumer.state, fiberState.pending);
 
     root.provide("launch", { fail() {} });
+    root.provide("sessions", { acquire() { return { manager: {}, release() {} }; } });
+    root.provide("models", { open() { return { configuredModel: {} }; } });
+    await root.plugin(StubRuntimeLifecycle);
     await runtimeProvider.await();
     await consumer.await();
     assert.equal(runtimeProvider.state, fiberState.active);
@@ -75,16 +128,16 @@ test("Runtime owns Core construction and follows AgentLoop generations", async (
 
     await agentLoopProvider.dispose();
     assert.equal(root.get("agentLoop"), undefined);
-    assert.equal(root.get("runEngine"), undefined);
-    assert.equal(consumer.state, fiberState.pending);
-    assert.equal(disposals, 1);
-    assert.deepEqual(consumer.getEffects(), []);
+    assert.ok(root.get("runEngine"));
+    assert.equal(consumer.state, fiberState.active);
+    assert.equal(disposals, 0);
+    assert.throws(() => root.runEngine.open({}), { code: "step_execution_unavailable" });
 
     agentLoopProvider = await root.plugin(StubAgentLoop);
     await consumer.await();
     assert.equal(root.runEngine.maxSteps, 2);
     assert.equal(consumer.state, fiberState.active);
-    assert.equal(generations.length, 2);
+    assert.equal(generations.length, 1);
 
     const first = root.runEngine;
     await runtimeProvider.update({
@@ -96,8 +149,8 @@ test("Runtime owns Core construction and follows AgentLoop generations", async (
     assert.equal(root.runEngine.maxSteps, 3);
     assert.equal(root.runEngine.generationDrainTimeoutMs, 2_000);
     assert.equal(await executedSteps(root.runEngine), 3);
-    assert.equal(disposals, 2);
-    assert.equal(generations.length, 3);
+    assert.equal(disposals, 1);
+    assert.equal(generations.length, 2);
 
     assert.throws(
       () => runtimeProvider.update({ maxSteps: 0 }),
@@ -111,7 +164,7 @@ test("Runtime owns Core construction and follows AgentLoop generations", async (
 
   assert.equal(consumer.state, fiberState.disposed);
   assert.deepEqual(consumer.getEffects(), []);
-  assert.equal(disposals, 3);
+  assert.equal(disposals, 2);
 });
 
 test("Loader updates and disables Runtime by stable id", async () => {
@@ -200,8 +253,8 @@ test("Runtime schema and source keep Application and Core algorithms narrow", as
 
   const [serviceSource, agentServiceSource, facadeSource, applicationSource, coreSource, profile] =
     await Promise.all([
-      readFile(join(repositoryRoot, "src/core/runtime/service.ts"), "utf8"),
-      readFile(join(repositoryRoot, "src/core/agent/service.ts"), "utf8"),
+      readFile(join(repositoryRoot, "src/composition/runtime-service.ts"), "utf8"),
+      readFile(join(repositoryRoot, "src/composition/agent-service.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/apps/application.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/apps/service.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/core/runtime/runtime.ts"), "utf8"),
@@ -210,8 +263,13 @@ test("Runtime schema and source keep Application and Core algorithms narrow", as
 
   assert.match(serviceSource, /new CoreRuntime/u);
   assert.match(serviceSource, /new RunGeneration/u);
-  assert.match(serviceSource, /static readonly inject = \["launch", "agentLoop"\]/u);
-  assert.match(serviceSource, /this\.ctx\.agentLoop\.open/u);
+  assert.match(
+    serviceSource,
+    /static readonly inject = \["launch", "sessions", "models", "runtimeLifecycle"\]/u,
+  );
+  assert.match(serviceSource, /this\.ctx\.get\("agentLoop"\)/u);
+  assert.match(serviceSource, /this\.execution\.source/u);
+  assert.match(serviceSource, /this\.ctx\.runtimeLifecycle/u);
   assert.match(serviceSource, /super\(ctx, "runEngine"\)/u);
   assert.doesNotMatch(facadeSource, /new Runtime/u);
   assert.doesNotMatch(facadeSource, /options\.runtime/u);

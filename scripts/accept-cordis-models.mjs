@@ -11,6 +11,7 @@ import { bootstrap } from "../dist/boot/bootstrap.js";
 import Models, {
   Config as ModelsConfig,
 } from "../dist/models/service.js";
+import { SettingsService } from "../dist/settings/service.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const fiberState = Object.freeze({ pending: 0, active: 2, disposed: 4 });
@@ -110,6 +111,103 @@ test("Model Adapter plugins follow Models and own their registrations", async ()
   }
 
   assert.equal(adapterFiber.state, fiberState.disposed);
+});
+
+test("Models owns a WebUI setting that changes the default sampled by new Runs", async () => {
+  const root = new Context();
+  root.provide("launch", {
+    surface: "webui",
+    cwd: repositoryRoot,
+    homeDirectory: repositoryRoot,
+    environment: {},
+  });
+  let document = { version: 1, revision: "initial", sections: { models: { "default-model": "fixture/removed" } } };
+  new SettingsService(root, {
+    writable: true,
+    read: () => document,
+    save: async (_revision, sections) => document = { version: 1, revision: "saved", sections },
+    close: async () => {},
+  });
+  const seenLimits = [];
+  const adapter = root.plugin({
+    inject: ["models"],
+    apply(ctx) {
+      ctx.models.register("fixture-protocol", () => ({ async *stream(request) { seenLimits.push(request.maxOutputTokens); } }));
+    },
+  });
+  try {
+    await root.plugin(Models); await adapter;
+    const configuration = await root.models.load({
+      dataDirectory: repositoryRoot,
+      configurationJson: JSON.stringify({
+        schemaVersion: 1,
+        defaultModel: "fixture/primary",
+        maxRetries: 0,
+        providers: [{
+          id: "fixture", protocol: "fixture-protocol", baseUrl: "https://fixture.example.test/v1",
+          auth: { type: "none" }, developerRoleMode: "native",
+          models: [
+            { id: "primary", developerRole: true, maxOutputTokens: 2048, defaultMaxOutputTokens: 1024 },
+            { id: "secondary", developerRole: true, maxOutputTokens: 4096 },
+          ],
+        }],
+      }),
+    });
+    const configured = root.models.open(configuration).configuredModel;
+    const settings = root.settings.port.describe().sections.find(section => section.namespace === "models");
+    assert.ok(settings);
+    assert.deepEqual(settings.fields[0].options.map(option => option.value), ["fixture/primary", "fixture/secondary"]);
+    assert.equal(settings.value["default-model"], "fixture/removed", "removed choices stay visible for repair");
+    assert.deepEqual(configured.getDefaultModel(), { provider: "fixture", model: "primary" });
+    await root.settings.port.replace({ namespace: "models", revision: settings.revision, user: { "default-model": "fixture/secondary" } });
+    assert.deepEqual(configured.getDefaultModel(), { provider: "fixture", model: "secondary" });
+    const primaryRequest = { model: { provider: "fixture", model: "primary" }, messages: [{ role: "user", content: "hello" }], tools: [] };
+    await collect(configured.stream(primaryRequest));
+    assert.deepEqual(seenLimits, [1024]);
+    const next = root.settings.port.describe().sections.find(section => section.namespace === "models");
+    assert.deepEqual(next.fields[0].options[0].attributes, {
+      provider: "fixture", model: "primary", maxOutputTokens: 2048, defaultMaxOutputTokens: 1024,
+    });
+    await root.settings.port.replace({ namespace: "models", revision: next.revision, user: {
+      ...next.user, "max-output-token-overrides": JSON.stringify({ "fixture/primary": 1536 }),
+    } });
+    await collect(configured.stream(primaryRequest));
+    assert.deepEqual(seenLimits, [1024, 1536]);
+    const current = root.settings.port.describe().sections.find(section => section.namespace === "models");
+    await assert.rejects(root.settings.port.replace({ namespace: "models", revision: current.revision, user: {
+      ...current.user, "max-output-token-overrides": JSON.stringify({ "fixture/primary": 3000 }),
+    } }), { code: "settings_validation_failed" });
+    await collect(configured.stream(primaryRequest));
+    assert.deepEqual(seenLimits, [1024, 1536, 1536], "rejected values must not affect live requests");
+  } finally { await root.fiber.dispose(); }
+  assert.equal(root.get("settings"), undefined);
+});
+
+test("saved retired DeepSeek selections resolve to current Flash without discarding user settings", async () => {
+  const root = new Context();
+  root.provide("launch", { surface: "webui", cwd: repositoryRoot, homeDirectory: repositoryRoot, environment: {} });
+  let document = { version: 1, revision: "initial", sections: { models: { "default-model": "deepseek/deepseek-v4-flash-vision-exp" } } };
+  new SettingsService(root, {
+    writable: true, read: () => document,
+    save: async (_revision, sections) => document = { version: 1, revision: "saved", sections },
+    close: async () => {},
+  });
+  const adapter = root.plugin({ inject: ["models"], apply(ctx) {
+    for (const protocol of ["openai-chat-completions", "openai-responses", "anthropic-messages"]) {
+      ctx.models.register(protocol, () => ({ async *stream() {} }));
+    }
+  } });
+  try {
+    await root.plugin(Models); await adapter;
+    const configuration = await root.models.load({ dataDirectory: repositoryRoot });
+    const model = root.models.open(configuration).configuredModel;
+    assert.deepEqual(model.getDefaultModel(), { provider: "deepseek", model: "deepseek-flash" });
+    const settings = root.settings.port.describe().sections.find(section => section.namespace === "models");
+    assert.equal(settings.user["default-model"], "deepseek/deepseek-v4-flash-vision-exp", "stored preference remains visible and recoverable");
+    assert.match(settings.fields[0].options.find(option => option.value === "deepseek/deepseek-v4-flash-vision-exp").label, /已退役兼容名/u);
+    await root.settings.port.replace({ namespace: "models", revision: settings.revision, user: { "default-model": "deepseek/deepseek-v4-flash" } });
+    assert.deepEqual(model.getDefaultModel(), { provider: "deepseek", model: "deepseek-flash" });
+  } finally { await root.fiber.dispose(); }
 });
 
 test("Loader updates and disables Models and one Adapter by stable id", async () => {
@@ -226,7 +324,7 @@ test("Models owns its schema and AgentLoop consumes the request stack", async ()
   assert.doesNotMatch(applicationSource, /options\.models\.requestCounter/u);
 
   const agentLoopSource = await readFile(
-    join(repositoryRoot, "src/core/agent-loop/service.ts"),
+    join(repositoryRoot, "src/composition/agent-loop-service.ts"),
     "utf8",
   );
   assert.match(agentLoopSource, /this\.ctx\.models\.open/u);

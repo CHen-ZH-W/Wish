@@ -95,7 +95,7 @@ test("generated defaults expose current Providers and DeepSeek compatibility", (
 
   assert.deepEqual(configuration.defaultModel, {
     provider: "deepseek",
-    model: "deepseek-v4-flash",
+    model: "deepseek-flash",
   });
   assert.deepEqual(configuration.fallbackModels, []);
   assert.equal(configuration.maxRetries, 2);
@@ -127,6 +127,7 @@ test("generated defaults expose current Providers and DeepSeek compatibility", (
   assert.deepEqual(
     configuration.providers[0].models.map((model) => model.id),
     [
+      "deepseek-flash",
       "deepseek-v4-flash",
       "deepseek-v4-flash-vision-exp",
       "deepseek-v4-pro",
@@ -135,7 +136,7 @@ test("generated defaults expose current Providers and DeepSeek compatibility", (
 
   const flash = resolveConfiguredModel(
     configuration,
-    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-flash",
   );
   assert.equal(flash.baseUrl, "https://api.deepseek.com");
   assert.deepEqual(flash.auth, {
@@ -150,19 +151,23 @@ test("generated defaults expose current Providers and DeepSeek compatibility", (
     reasoning_effort: "high",
   });
   assert.equal(flash.spec.contextWindowTokens, 1_000_000);
-  assert.equal(flash.spec.maxOutputTokens, 384_000);
-  assert.equal(flash.spec.input.image, false);
+  assert.equal(flash.spec.maxOutputTokens, 393_216);
+  assert.equal(flash.spec.input.image, true);
   assert.equal(flash.spec.toolCalling, true);
-  assert.match(flash.spec.price.version, /^models\.dev:/u);
-  assert.equal(flash.spec.price.currency, "USD");
-  assert.equal(flash.spec.price.inputPerMillionTokens, 0.14);
-  assert.equal(flash.spec.price.outputPerMillionTokens, 0.28);
+  assert.equal(flash.spec.price, undefined, "tiered current pricing must not be flattened");
+
+  const legacyFlash = resolveConfiguredModel(configuration, "deepseek/deepseek-v4-flash");
+  assert.equal(legacyFlash.spec.status, "deprecated");
+  assert.equal(legacyFlash.spec.input.image, true);
+  assert.equal(legacyFlash.spec.price, undefined);
 
   const vision = resolveConfiguredModel(
     configuration,
     "deepseek/deepseek-v4-flash-vision-exp",
   );
   assert.equal(vision.spec.input.image, true);
+  assert.equal(vision.spec.status, "deprecated");
+  assert.equal(vision.spec.price, undefined);
 
   const openai = resolveConfiguredModel(configuration, "openai/gpt-5.6");
   assert.equal(openai.protocol, "openai-responses");
@@ -185,6 +190,16 @@ test("generated defaults expose current Providers and DeepSeek compatibility", (
   });
 });
 
+test("ConfiguredModel samples a late-bound default without rewriting explicit requests", () => {
+  const configuration = loadModelsConfiguration({ json: fixtureConfiguration(), environment: {} });
+  let selected = "openai/primary";
+  const model = new ConfiguredModel({ configuration, registry: createDefaultModelAdapterRegistry(), defaultModel: () => selected });
+  assert.deepEqual(model.getDefaultModel(), { provider: "openai", model: "primary" });
+  selected = "openai/secondary";
+  assert.deepEqual(model.getDefaultModel(), { provider: "openai", model: "secondary" });
+  assert.equal(model.resolve("openai/primary").spec.id, "primary");
+});
+
 test("schemaVersion 2 overlays generated Providers and upserts Models", () => {
   const configuration = loadModelsConfiguration({
     json: {
@@ -201,6 +216,7 @@ test("schemaVersion 2 overlays generated Providers and upserts Models", () => {
           models: [{
             id: "deepseek-v4-flash",
             name: "DeepSeek V4 Flash Overridden",
+            defaultMaxOutputTokens: 16384,
             input: { image: true },
           }],
         },
@@ -234,6 +250,8 @@ test("schemaVersion 2 overlays generated Providers and upserts Models", () => {
   );
   assert.equal(flash.spec.name, "DeepSeek V4 Flash Overridden");
   assert.equal(flash.spec.contextWindowTokens, 1_000_000);
+  assert.equal(flash.spec.maxOutputTokens, 393_216);
+  assert.equal(flash.spec.defaultMaxOutputTokens, 16_384);
   assert.equal(flash.spec.input.text, true);
   assert.equal(flash.spec.input.image, true);
   assert.equal(flash.headers["x-tenant"].fromEnv, "TENANT_ID");
@@ -245,7 +263,7 @@ test("schemaVersion 2 overlays generated Providers and upserts Models", () => {
   assert.equal(
     configuration.providers.find((provider) => provider.id === "deepseek")
       .models.length,
-    3,
+    4,
   );
 });
 
@@ -303,15 +321,61 @@ test("generated DeepSeek profile maps an authenticated thinking Tool request", a
     "Bearer deepseek-test-key",
   );
   const body = JSON.parse(requests[0].init.body);
-  assert.equal(body.model, "deepseek-v4-flash");
+  assert.equal(body.model, "deepseek-flash");
   assert.equal(body.messages[0].role, "system");
   assert.equal(body.messages[0].content, "Work carefully");
   assert.deepEqual(body.thinking, { type: "enabled" });
   assert.equal(body.reasoning_effort, "high");
-  assert.equal(body.max_tokens, 384_000);
+  assert.equal("max_tokens" in body, false, "model capability must not become a request default");
   assert.equal(body.stream_options.include_usage, true);
   assert.equal(body.tools[0].function.name, "read");
   assert.equal("temperature" in body, false);
+});
+
+test("model request defaults, user preferences and explicit limits have distinct precedence", async () => {
+  const configuration = loadModelsConfiguration({
+    json: {
+      schemaVersion: 1,
+      defaultModel: "fixture/one",
+      providers: [{
+        id: "fixture", protocol: "openai-chat-completions", baseUrl: "https://fixture.example.test/v1",
+        auth: { type: "none" }, developerRoleMode: "native",
+        models: [
+          { id: "one", developerRole: true, maxOutputTokens: 2048, defaultMaxOutputTokens: 1024 },
+          { id: "two", developerRole: true, maxOutputTokens: 4096 },
+        ],
+      }],
+    },
+  });
+  const captured = [];
+  const registry = new ModelAdapterRegistry();
+  registry.register("openai-chat-completions", () => ({
+    async *stream(input) {
+      captured.push(input.maxOutputTokens);
+      yield { type: "done" };
+    },
+  }));
+  let preference;
+  const model = new ConfiguredModel({
+    configuration, registry,
+    maxOutputTokens: (reference, configured) => reference.model === "one" ? preference ?? configured : configured,
+  });
+  await collect(model.stream(request({ provider: "fixture", model: "one" })));
+  preference = 1536;
+  await collect(model.stream(request({ provider: "fixture", model: "one" })));
+  await collect(model.stream({ ...request({ provider: "fixture", model: "one" }), maxOutputTokens: 512 }));
+  await collect(model.stream(request({ provider: "fixture", model: "two" })));
+  assert.deepEqual(captured, [1024, 1536, 512, undefined]);
+  const invalid = await collect(model.stream({ ...request({ provider: "fixture", model: "one" }), maxOutputTokens: 4096 }));
+  assert.equal(invalid.at(-1).error.code, "invalid_request");
+  assert.equal(captured.length, 4, "invalid request must not reach its Adapter");
+  assert.throws(() => loadModelsConfiguration({
+    json: { schemaVersion: 1, defaultModel: "fixture/one", providers: [{
+      id: "fixture", protocol: "openai-chat-completions", baseUrl: "https://fixture.example.test/v1",
+      auth: { type: "none" }, developerRoleMode: "native",
+      models: [{ id: "one", developerRole: true, maxOutputTokens: 2048, defaultMaxOutputTokens: 4096 }],
+    }] },
+  }), /defaultMaxOutputTokens exceeds maxOutputTokens/u);
 });
 
 test("configuration resolves ordered selections and model overrides immutably", () => {

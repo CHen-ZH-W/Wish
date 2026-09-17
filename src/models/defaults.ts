@@ -9,7 +9,7 @@ export function createDefaultModelsConfigurationSource(): unknown {
   >;
   return {
     schemaVersion: 1,
-    defaultModel: "deepseek/deepseek-v4-flash",
+    defaultModel: "deepseek/deepseek-flash",
     fallbackModels: [],
     maxRetries: 2,
     providers: BUILT_IN_PROVIDER_DEFINITIONS.map((definition) => {

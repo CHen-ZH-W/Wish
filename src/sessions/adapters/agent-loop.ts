@@ -56,6 +56,7 @@ export function createSessionInputRenderer<Payload = unknown>(
           userTurnId: input.snapshot.userTurn.userTurnId,
           stepId: input.snapshot.step.stepId,
           origin: "user_input",
+          inputSource: input.snapshot.userTurn.inputSource ?? "unknown",
           message,
         }],
       });
@@ -74,6 +75,7 @@ export function createSessionInputRenderer<Payload = unknown>(
           userTurnId: input.snapshot.userTurn.userTurnId,
           stepId: input.snapshot.step.stepId,
           origin: "steering",
+          inputSource: "steering",
           message,
         }],
       });

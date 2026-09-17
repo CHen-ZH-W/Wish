@@ -1,13 +1,20 @@
-# Runtime infrastructure has stable ids. HMR is opt-in because changing loaded
-# application code can terminate active Runs; set CORDIS_HMR=1 only when that
-# restart behavior is intended.
+# Runtime infrastructure has stable ids. WebUI code HMR defaults on (0 opts out);
+# CLI/child processes still opt in with 1. All code reloads pass the
+# Host's pre-disposal coordinator. Only explicitly Step-reloadable owners are
+# accepted; stable state owners require an explicit restart. Managed mode also
+# serializes native batches with config/UI writes and persists replacement intent.
 - id: timer
   name: 'cordis:timer'
 
 - id: hmr
   name: 'cordis:hmr'
-  disabled: !!js launch.environment.CORDIS_HMR !== '1'
+  disabled: !!js >-
+    launch.environment.CORDIS_HMR === undefined
+      ? launch.surface !== 'webui'
+      : launch.environment.CORDIS_HMR !== '1'
   config:
+    # The shipped profile lives in dist/config; watch loaded dist modules too.
+    base: '..'
     root: ['.']
 
 # Group updates are transactional: a failed child update rolls this application
@@ -20,7 +27,37 @@
   # the Root Context. A second application group can therefore publish the
   # same service names without seeing or replacing this generation.
   isolate:
+    sessionPersistence: true
     sessions: true
+    storage: true
+    storageBackend: true
+    runtimeLifecycle: true
+    modelCatalogPersistence: true
+    toolResultArchive: true
+    toolOutputArtifacts: true
+    workspace: true
+    skills: true
+    memory: true
+    memoryCuration: true
+    filesystem: true
+    filesystemSearch: true
+    shell: true
+    tmux: true
+    subagentExecution: true
+    subagentLauncher: true
+    subagents: true
+    approval: true
+    approvalRules: true
+    sandboxPolicy: true
+    permissions: true
+    plan: true
+    tasks: true
+    workflow: true
+    workflowContinuations: true
+    workflowScheduler: true
+    coordinator: true
+    webSearch: true
+    webFetch: true
     models: true
     contextEngine: true
     compaction: true
@@ -30,10 +67,384 @@
     agents: true
     application: true
   config:
+    - id: storage
+      name: 'cordis:storage'
+
+    - id: storage-file
+      name: 'cordis:storage-file'
+      config:
+        id: file
+        rootDirectory: !!js >-
+          launch.environment.WISH_STORAGE_FILE_ROOT === undefined || launch.environment.WISH_STORAGE_FILE_ROOT === ''
+            ? (launch.environment.WISH_DATA_DIR === undefined || launch.environment.WISH_DATA_DIR === ''
+              ? undefined
+              : launch.environment.WISH_DATA_DIR + '/storage')
+            : launch.environment.WISH_STORAGE_FILE_ROOT
+        journalTornTailRecovery: !!js >-
+          launch.environment.WISH_STORAGE_JOURNAL_TORN_TAIL_RECOVERY === undefined || launch.environment.WISH_STORAGE_JOURNAL_TORN_TAIL_RECOVERY === ''
+            ? undefined
+            : launch.environment.WISH_STORAGE_JOURNAL_TORN_TAIL_RECOVERY
+
+    - id: runtime-lifecycle-journal
+      name: 'cordis:runtime-lifecycle-journal'
+      config:
+        backendId: file
+
+    - id: tool-result-archive
+      name: 'cordis:tool-result-archive-blob'
+      config:
+        backendId: file
+
+    - id: tool-output-artifacts
+      name: 'cordis:tool-output-artifacts-blob'
+      config:
+        backendId: file
+
+    - id: model-catalog-storage
+      name: 'cordis:model-catalog-storage'
+      config:
+        backendId: file
+
+    - id: session-persistence
+      name: 'cordis:session-file'
+
     - id: sessions
       name: 'cordis:sessions'
       config:
         dataDirectory: !!js launch.environment.WISH_DATA_DIR
+
+    - id: workspace-local
+      name: 'cordis:workspace-local'
+      config:
+        instructionFiles: !!js >-
+          launch.environment.WISH_WORKSPACE_INSTRUCTION_FILES === undefined || launch.environment.WISH_WORKSPACE_INSTRUCTION_FILES === ''
+            ? undefined
+            : launch.environment.WISH_WORKSPACE_INSTRUCTION_FILES.split(',').map(value => value.trim())
+        repositoryMarkers: !!js >-
+          launch.environment.WISH_WORKSPACE_REPOSITORY_MARKERS === undefined || launch.environment.WISH_WORKSPACE_REPOSITORY_MARKERS === ''
+            ? undefined
+            : launch.environment.WISH_WORKSPACE_REPOSITORY_MARKERS.split(',').map(value => value.trim())
+        maxInstructionBytes: !!js >-
+          launch.environment.WISH_WORKSPACE_MAX_INSTRUCTION_BYTES === undefined || launch.environment.WISH_WORKSPACE_MAX_INSTRUCTION_BYTES === ''
+            ? undefined
+            : Number(launch.environment.WISH_WORKSPACE_MAX_INSTRUCTION_BYTES)
+        maxInstructionFileBytes: !!js >-
+          launch.environment.WISH_WORKSPACE_MAX_INSTRUCTION_FILE_BYTES === undefined || launch.environment.WISH_WORKSPACE_MAX_INSTRUCTION_FILE_BYTES === ''
+            ? undefined
+            : Number(launch.environment.WISH_WORKSPACE_MAX_INSTRUCTION_FILE_BYTES)
+
+    # Optional knowledge capabilities and their independently replaceable consumers.
+    # A child attachment never falls back to the parent's writable Memory store.
+    - id: skills-local
+      name: 'cordis:skills-local'
+      disabled: !!js launch.environment.WISH_SKILLS_ENABLED === '0'
+      config:
+        userRoot: !!js launch.environment.WISH_SKILLS_USER_ROOT || undefined
+        maxSkills: !!js >-
+          launch.environment.WISH_SKILLS_MAX_SKILLS ? Number(launch.environment.WISH_SKILLS_MAX_SKILLS) : undefined
+        maxFileBytes: !!js >-
+          launch.environment.WISH_SKILLS_MAX_FILE_BYTES ? Number(launch.environment.WISH_SKILLS_MAX_FILE_BYTES) : undefined
+
+    - id: skills-context
+      name: 'cordis:skills-context'
+      disabled: !!js launch.environment.WISH_SKILLS_ENABLED === '0' || launch.environment.WISH_SKILLS_CONTEXT_ENABLED === '0'
+      config:
+        maxEntries: !!js >-
+          launch.environment.WISH_SKILLS_CONTEXT_MAX_ENTRIES ? Number(launch.environment.WISH_SKILLS_CONTEXT_MAX_ENTRIES) : undefined
+        maxCharacters: !!js >-
+          launch.environment.WISH_SKILLS_CONTEXT_MAX_CHARACTERS ? Number(launch.environment.WISH_SKILLS_CONTEXT_MAX_CHARACTERS) : undefined
+
+    - id: skills-tools
+      name: 'cordis:skills-tools'
+      disabled: !!js launch.environment.WISH_SKILLS_ENABLED === '0' || launch.environment.WISH_SKILLS_TOOLS_ENABLED === '0'
+
+    - id: skills-plan-controls
+      name: 'cordis:skills-plan-controls'
+      disabled: !!js launch.environment.WISH_SKILLS_ENABLED === '0' || launch.environment.WISH_SKILLS_TOOLS_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: skills-coordinator-controls
+      name: 'cordis:skills-coordinator-controls'
+      disabled: !!js launch.environment.WISH_SKILLS_ENABLED === '0' || launch.environment.WISH_SKILLS_TOOLS_ENABLED === '0' || launch.environment.WISH_COORDINATOR_ENABLED === '0' || launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
+    - id: skills-session-feature
+      name: 'cordis:skills-session-feature'
+      disabled: !!js launch.environment.WISH_SKILLS_ENABLED === '0' || launch.environment.WISH_SKILLS_SESSION_FEATURE_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child')
+
+    - id: memory-storage
+      name: 'cordis:memory-storage'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)
+      config:
+        backendId: file
+        libraryId: !!js launch.environment.WISH_MEMORY_LIBRARY_ID || undefined
+
+    - id: memory-child-snapshot
+      name: 'cordis:memory-child-snapshot'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)
+
+    - id: memory-context
+      name: 'cordis:memory-context'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_CONTEXT_ENABLED === '0'
+
+    - id: memory-read-tools
+      name: 'cordis:memory-read-tools'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0'
+
+    - id: memory-write-tool
+      name: 'cordis:memory-write-tool'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_MEMORY_WRITE_ENABLED === '0'
+
+    - id: memory-plan-controls
+      name: 'cordis:memory-plan-controls'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: memory-coordinator-controls
+      name: 'cordis:memory-coordinator-controls'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_COORDINATOR_ENABLED === '0' || launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
+    - id: memory-session-feature
+      name: 'cordis:memory-session-feature'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_SESSION_FEATURE_ENABLED === '0'
+
+    - id: memory-subagent-resources
+      name: 'cordis:memory-subagent-resources'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_SUBAGENTS_ENABLED === '0' || launch.environment.WISH_MEMORY_SUBAGENTS_ENABLED === '0'
+
+    - id: memory-curation
+      name: 'cordis:memory-curation'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1'
+      management:
+        activation: user
+        constraint: !!js >-
+          launch.environment.WISH_MEMORY_ENABLED === '0' ||
+          (launch.surface === 'cli' && launch.argv[0] === 'child') ||
+          (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) ||
+          (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined &&
+           launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' &&
+           launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
+      config:
+        backendId: file
+        automatic: !!js launch.environment.WISH_MEMORY_AUTO_CURATION === '1'
+        intervalMs: !!js >-
+          launch.environment.WISH_MEMORY_CURATION_INTERVAL_MS ? Number(launch.environment.WISH_MEMORY_CURATION_INTERVAL_MS) : undefined
+        maxConcurrent: !!js >-
+          launch.environment.WISH_MEMORY_CURATION_MAX_CONCURRENT ? Number(launch.environment.WISH_MEMORY_CURATION_MAX_CONCURRENT) : undefined
+        maxAttempts: !!js >-
+          launch.environment.WISH_MEMORY_CURATION_MAX_ATTEMPTS ? Number(launch.environment.WISH_MEMORY_CURATION_MAX_ATTEMPTS) : undefined
+        timeoutMs: !!js >-
+          launch.environment.WISH_MEMORY_CURATION_TIMEOUT_MS ? Number(launch.environment.WISH_MEMORY_CURATION_TIMEOUT_MS) : undefined
+
+    - id: memory-runtime-evidence
+      name: 'cordis:memory-runtime-evidence'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1'
+      management:
+        activation: user
+        constraint: !!js >-
+          launch.environment.WISH_MEMORY_ENABLED === '0' ||
+          (launch.surface === 'cli' && launch.argv[0] === 'child') ||
+          (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) ||
+          (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined &&
+           launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' &&
+           launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
+
+    - id: memory-workflow-evidence
+      name: 'cordis:memory-workflow-evidence'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1' || launch.environment.WISH_WORKFLOW_ENABLED === '0'
+      management:
+        activation: user
+        constraint: !!js >-
+          launch.environment.WISH_MEMORY_ENABLED === '0' ||
+          (launch.surface === 'cli' && launch.argv[0] === 'child') ||
+          (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) ||
+          launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+          (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined &&
+           launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' &&
+           launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
+
+    - id: approval-hub
+      name: 'cordis:approval-hub'
+
+    - id: approval-rules-storage
+      name: 'cordis:approval-rules-storage'
+      config:
+        backendId: file
+        maxRules: !!js >-
+          launch.environment.WISH_APPROVAL_RULE_MAX_RULES === undefined || launch.environment.WISH_APPROVAL_RULE_MAX_RULES === ''
+            ? undefined
+            : Number(launch.environment.WISH_APPROVAL_RULE_MAX_RULES)
+
+    - id: filesystem-local
+      name: 'cordis:filesystem-local'
+      config:
+        maxFileBytes: !!js >-
+          launch.environment.WISH_FILESYSTEM_MAX_FILE_BYTES === undefined || launch.environment.WISH_FILESYSTEM_MAX_FILE_BYTES === ''
+            ? undefined
+            : Number(launch.environment.WISH_FILESYSTEM_MAX_FILE_BYTES)
+        protectedDirectoryNames: !!js >-
+          launch.environment.WISH_FILESYSTEM_PROTECTED_DIRECTORIES === undefined || launch.environment.WISH_FILESYSTEM_PROTECTED_DIRECTORIES === ''
+            ? undefined
+            : launch.environment.WISH_FILESYSTEM_PROTECTED_DIRECTORIES.split(',').map(value => value.trim())
+        protectedFileNames: !!js >-
+          launch.environment.WISH_FILESYSTEM_PROTECTED_FILES === undefined || launch.environment.WISH_FILESYSTEM_PROTECTED_FILES === ''
+            ? undefined
+            : launch.environment.WISH_FILESYSTEM_PROTECTED_FILES.split(',').map(value => value.trim())
+        protectedFilePrefixes: !!js >-
+          launch.environment.WISH_FILESYSTEM_PROTECTED_PREFIXES === undefined || launch.environment.WISH_FILESYSTEM_PROTECTED_PREFIXES === ''
+            ? undefined
+            : launch.environment.WISH_FILESYSTEM_PROTECTED_PREFIXES.split(',').map(value => value.trim())
+        protectedNameExceptions: !!js >-
+          launch.environment.WISH_FILESYSTEM_PROTECTED_EXCEPTIONS === undefined || launch.environment.WISH_FILESYSTEM_PROTECTED_EXCEPTIONS === ''
+            ? undefined
+            : launch.environment.WISH_FILESYSTEM_PROTECTED_EXCEPTIONS.split(',').map(value => value.trim())
+
+    - id: filesystem-search-local
+      name: 'cordis:filesystem-search-local'
+      config:
+        maxFiles: !!js >-
+          launch.environment.WISH_FILESYSTEM_SEARCH_MAX_FILES === undefined || launch.environment.WISH_FILESYSTEM_SEARCH_MAX_FILES === ''
+            ? undefined
+            : Number(launch.environment.WISH_FILESYSTEM_SEARCH_MAX_FILES)
+        maxDirectories: !!js >-
+          launch.environment.WISH_FILESYSTEM_SEARCH_MAX_DIRECTORIES === undefined || launch.environment.WISH_FILESYSTEM_SEARCH_MAX_DIRECTORIES === ''
+            ? undefined
+            : Number(launch.environment.WISH_FILESYSTEM_SEARCH_MAX_DIRECTORIES)
+
+    - id: shell-linux-native
+      name: 'cordis:shell-linux-native'
+      disabled: !!js launch.environment.WISH_SHELL_PROVIDER === 'host'
+      config:
+        launcherPath: !!js launch.environment.WISH_SHELL_LAUNCHER
+        defaultTimeoutSeconds: !!js >-
+          launch.environment.WISH_SHELL_DEFAULT_TIMEOUT_SECONDS === undefined || launch.environment.WISH_SHELL_DEFAULT_TIMEOUT_SECONDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_SHELL_DEFAULT_TIMEOUT_SECONDS)
+        maxTimeoutSeconds: !!js >-
+          launch.environment.WISH_SHELL_MAX_TIMEOUT_SECONDS === undefined || launch.environment.WISH_SHELL_MAX_TIMEOUT_SECONDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_SHELL_MAX_TIMEOUT_SECONDS)
+
+    # Explicit development escape hatch. It inherits host environment and does
+    # not enforce per-call filesystem or network scopes.
+    - id: shell-host
+      name: 'cordis:shell-host'
+      disabled: !!js launch.environment.WISH_SHELL_PROVIDER !== 'host'
+      config:
+        enabled: !!js launch.environment.WISH_SHELL_HOST_ENABLED === '1'
+        shellPath: !!js launch.environment.WISH_SHELL_HOST_PATH
+        defaultTimeoutSeconds: !!js >-
+          launch.environment.WISH_SHELL_DEFAULT_TIMEOUT_SECONDS === undefined || launch.environment.WISH_SHELL_DEFAULT_TIMEOUT_SECONDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_SHELL_DEFAULT_TIMEOUT_SECONDS)
+        maxTimeoutSeconds: !!js >-
+          launch.environment.WISH_SHELL_MAX_TIMEOUT_SECONDS === undefined || launch.environment.WISH_SHELL_MAX_TIMEOUT_SECONDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_SHELL_MAX_TIMEOUT_SECONDS)
+
+    - id: tmux-local
+      name: 'cordis:tmux-local'
+      disabled: !!js launch.environment.WISH_TMUX_ENABLED === '0'
+      config:
+        socketPath: !!js >-
+          launch.environment.WISH_TMUX_SOCKET === undefined || launch.environment.WISH_TMUX_SOCKET === ''
+            ? ((launch.environment.WISH_DATA_DIR === undefined || launch.environment.WISH_DATA_DIR === '')
+              ? launch.homeDirectory + '/.wish/tmux.sock'
+              : launch.environment.WISH_DATA_DIR + '/tmux.sock')
+            : launch.environment.WISH_TMUX_SOCKET
+        sessionPrefix: wish-agent
+
+    - id: subagent-execution-tmux
+      name: 'cordis:subagent-execution-tmux'
+      disabled: !!js launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
+    - id: subagent-launcher-cli
+      name: 'cordis:subagent-launcher-cli'
+      disabled: !!js launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+      config:
+        childExecutable: !!js launch.environment.WISH_SUBAGENT_EXECUTABLE
+        childCliEntry: !!js launch.environment.WISH_SUBAGENT_CLI_ENTRY
+
+    - id: subagents-runtime
+      name: 'cordis:subagents-runtime'
+      disabled: !!js launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+      config:
+        backendId: file
+        maxRecords: !!js >-
+          launch.environment.WISH_SUBAGENT_MAX_RECORDS === undefined || launch.environment.WISH_SUBAGENT_MAX_RECORDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_SUBAGENT_MAX_RECORDS)
+        maxConcurrent: !!js >-
+          launch.environment.WISH_SUBAGENT_MAX_CONCURRENT === undefined || launch.environment.WISH_SUBAGENT_MAX_CONCURRENT === ''
+            ? undefined
+            : Number(launch.environment.WISH_SUBAGENT_MAX_CONCURRENT)
+        maxConcurrentPerRun: !!js >-
+          launch.environment.WISH_SUBAGENT_MAX_CONCURRENT_PER_RUN === undefined || launch.environment.WISH_SUBAGENT_MAX_CONCURRENT_PER_RUN === ''
+            ? undefined
+            : Number(launch.environment.WISH_SUBAGENT_MAX_CONCURRENT_PER_RUN)
+
+    - id: sandbox-policy-default
+      name: 'cordis:sandbox-policy-default'
+
+    - id: permissions-default
+      name: 'cordis:permissions-default'
+      config:
+        policyVersion: !!js launch.environment.WISH_PERMISSION_POLICY_VERSION
+
+    # Public HTTP capability Provider. Model Tool exposure is configured below.
+    - id: web-fetch-http
+      name: 'cordis:web-fetch-http'
+      disabled: !!js launch.environment.WISH_WEB_FETCH_ENABLED !== '1'
+      management:
+        activation: user
+        constraint: !!js >-
+          launch.environment.WISH_WEB_FETCH_ENABLED !== undefined &&
+          launch.environment.WISH_WEB_FETCH_ENABLED !== '' &&
+          launch.environment.WISH_WEB_FETCH_ENABLED !== '1'
+      config:
+        maxRedirects: !!js >-
+          launch.environment.WISH_WEB_FETCH_MAX_REDIRECTS === undefined || launch.environment.WISH_WEB_FETCH_MAX_REDIRECTS === ''
+            ? undefined
+            : Number(launch.environment.WISH_WEB_FETCH_MAX_REDIRECTS)
+        maxUrlLength: !!js >-
+          launch.environment.WISH_WEB_FETCH_MAX_URL_LENGTH === undefined || launch.environment.WISH_WEB_FETCH_MAX_URL_LENGTH === ''
+            ? undefined
+            : Number(launch.environment.WISH_WEB_FETCH_MAX_URL_LENGTH)
+        maxResponseBytes: !!js >-
+          launch.environment.WISH_WEB_FETCH_MAX_RESPONSE_BYTES === undefined || launch.environment.WISH_WEB_FETCH_MAX_RESPONSE_BYTES === ''
+            ? undefined
+            : Number(launch.environment.WISH_WEB_FETCH_MAX_RESPONSE_BYTES)
+        timeoutSeconds: !!js >-
+          launch.environment.WISH_WEB_FETCH_TIMEOUT_SECONDS === undefined || launch.environment.WISH_WEB_FETCH_TIMEOUT_SECONDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_WEB_FETCH_TIMEOUT_SECONDS)
+
+    # Search is a separate opt-in Provider. SearXNG queries search engines
+    # directly; no secondary model receives the query.
+    - id: web-search-searxng
+      name: 'cordis:web-search-searxng'
+      disabled: !!js launch.environment.WISH_WEB_SEARCH_PROVIDER !== 'searxng'
+      config:
+        baseUrl: !!js launch.environment.WISH_SEARXNG_BASE_URL
+        language: !!js launch.environment.WISH_SEARXNG_LANGUAGE
+        categories: !!js launch.environment.WISH_SEARXNG_CATEGORIES
+        safeSearch: !!js >-
+          launch.environment.WISH_SEARXNG_SAFE_SEARCH === undefined || launch.environment.WISH_SEARXNG_SAFE_SEARCH === ''
+            ? undefined
+            : Number(launch.environment.WISH_SEARXNG_SAFE_SEARCH)
+        maxQueryLength: !!js >-
+          launch.environment.WISH_SEARXNG_MAX_QUERY_LENGTH === undefined || launch.environment.WISH_SEARXNG_MAX_QUERY_LENGTH === ''
+            ? undefined
+            : Number(launch.environment.WISH_SEARXNG_MAX_QUERY_LENGTH)
+        maxResults: !!js >-
+          launch.environment.WISH_SEARXNG_MAX_RESULTS === undefined || launch.environment.WISH_SEARXNG_MAX_RESULTS === ''
+            ? undefined
+            : Number(launch.environment.WISH_SEARXNG_MAX_RESULTS)
+        maxResponseBytes: !!js >-
+          launch.environment.WISH_SEARXNG_MAX_RESPONSE_BYTES === undefined || launch.environment.WISH_SEARXNG_MAX_RESPONSE_BYTES === ''
+            ? undefined
+            : Number(launch.environment.WISH_SEARXNG_MAX_RESPONSE_BYTES)
+        timeoutSeconds: !!js >-
+          launch.environment.WISH_SEARXNG_TIMEOUT_SECONDS === undefined || launch.environment.WISH_SEARXNG_TIMEOUT_SECONDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_SEARXNG_TIMEOUT_SECONDS)
 
     - id: models
       name: 'cordis:models'
@@ -67,6 +478,60 @@
             ? undefined
             : Number(launch.environment.WISH_CONTEXT_RESERVED_OUTPUT_TOKENS)
 
+    - id: plan-storage
+      name: 'cordis:plan-storage'
+      disabled: !!js launch.environment.WISH_PLAN_ENABLED === '0'
+      config:
+        backendId: file
+
+    - id: coordinator-storage
+      name: 'cordis:coordinator-storage'
+      disabled: !!js >-
+        launch.environment.WISH_COORDINATOR_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+      config:
+        backendId: file
+
+    - id: tasks-storage
+      name: 'cordis:tasks-storage'
+      disabled: !!js launch.environment.WISH_TASKS_ENABLED === '0'
+      config:
+        backendId: file
+
+    - id: workflow-continuations
+      name: 'cordis:workflow-continuations'
+      disabled: !!js launch.environment.WISH_WORKFLOW_ENABLED === '0'
+
+    - id: workflow-storage
+      name: 'cordis:workflow-storage'
+      disabled: !!js launch.environment.WISH_WORKFLOW_ENABLED === '0'
+      config:
+        backendId: file
+
+    - id: workflow-schedulers
+      name: 'cordis:workflow-schedulers'
+      disabled: !!js >-
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+      config:
+        maxConcurrent: !!js >-
+          launch.environment.WISH_WORKFLOW_MAX_CONCURRENT === undefined || launch.environment.WISH_WORKFLOW_MAX_CONCURRENT === ''
+            ? undefined
+            : Number(launch.environment.WISH_WORKFLOW_MAX_CONCURRENT)
+
+    - id: workflow-plan-controls
+      name: 'cordis:workflow-plan-controls'
+      disabled: !!js launch.environment.WISH_WORKFLOW_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: workflow-coordinator-controls
+      name: 'cordis:workflow-coordinator-controls'
+      disabled: !!js >-
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_COORDINATOR_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
     - id: compaction
       name: 'cordis:compaction'
       config:
@@ -97,6 +562,72 @@
     - id: tool-bash
       name: 'cordis:bash'
 
+    - id: tool-subagents
+      name: 'cordis:subagent-tools'
+      disabled: !!js >-
+        launch.environment.WISH_SUBAGENT_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0' ||
+        (launch.environment.WISH_WORKFLOW_ENABLED !== '0' &&
+         launch.environment.WISH_TASKS_ENABLED !== '0' &&
+         launch.environment.WISH_PLAN_ENABLED !== '0')
+
+    - id: tool-workflow-subagents
+      name: 'cordis:workflow-subagent-tools'
+      disabled: !!js >-
+        launch.environment.WISH_SUBAGENT_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0' ||
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: tool-tasks
+      name: 'cordis:task-tools'
+      disabled: !!js >-
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_TASK_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: tool-workflow
+      name: 'cordis:workflow-tools'
+      disabled: !!js >-
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_WORKFLOW_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
+    - id: tool-plan
+      name: 'cordis:plan-tools'
+      disabled: !!js >-
+        launch.environment.WISH_PLAN_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_TOOLS_ENABLED === '0'
+
+    - id: tool-coordinator
+      name: 'cordis:coordinator-tools'
+      disabled: !!js >-
+        launch.environment.WISH_COORDINATOR_ENABLED === '0' ||
+        launch.environment.WISH_COORDINATOR_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENT_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
+    - id: tool-web-fetch
+      name: 'cordis:web-fetch-tool'
+      disabled: !!js >-
+        launch.environment.WISH_WEB_FETCH_ENABLED !== '1' ||
+        launch.environment.WISH_WEB_FETCH_TOOLS_ENABLED === '0'
+      management:
+        activation: user
+        constraint: !!js >-
+          launch.environment.WISH_WEB_FETCH_TOOLS_ENABLED !== undefined &&
+          launch.environment.WISH_WEB_FETCH_TOOLS_ENABLED !== '' &&
+          launch.environment.WISH_WEB_FETCH_TOOLS_ENABLED !== '1'
+
+    - id: tool-web-search
+      name: 'cordis:web-search-tool'
+      disabled: !!js >-
+        launch.environment.WISH_WEB_SEARCH_PROVIDER !== 'searxng' ||
+        launch.environment.WISH_WEB_SEARCH_TOOLS_ENABLED === '0'
+
     - id: agent-loop
       name: 'cordis:agent-loop'
 
@@ -117,13 +648,48 @@
       config:
         agentId: !!js launch.environment.WISH_AGENT_ID
         agentInstructions: !!js launch.environment.WISH_AGENT_INSTRUCTIONS
+        permissionProfile: !!js launch.environment.WISH_PERMISSION_PROFILE
+        availableTools: !!js >-
+          launch.environment.WISH_AVAILABLE_TOOLS === undefined || launch.environment.WISH_AVAILABLE_TOOLS === ''
+            ? undefined
+            : launch.environment.WISH_AVAILABLE_TOOLS.split(',').map(value => value.trim())
+        allowedCapabilities: !!js >-
+          launch.environment.WISH_ALLOWED_CAPABILITIES === undefined || launch.environment.WISH_ALLOWED_CAPABILITIES === ''
+            ? undefined
+            : launch.environment.WISH_ALLOWED_CAPABILITIES.split(',').map(value => value.trim())
 
     - id: application
       name: 'cordis:application'
 
+    - id: plan-session-feature
+      name: 'cordis:plan-session-feature'
+      disabled: !!js launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: tasks-session-feature
+      name: 'cordis:tasks-session-feature'
+      disabled: !!js launch.environment.WISH_TASKS_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: workflow-session-feature
+      name: 'cordis:workflow-session-feature'
+      disabled: !!js >-
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
     - id: cli
       name: 'cordis:cli'
       disabled: !!js launch.surface !== 'cli'
+
+    - id: context-session-feature
+      name: 'cordis:context-session-feature'
+      disabled: !!js launch.surface !== 'webui'
+    - id: subagents-session-feature
+      name: 'cordis:subagents-session-feature'
+      disabled: !!js launch.surface !== 'webui'
+    - id: tmux-session-feature
+      name: 'cordis:tmux-session-feature'
+      disabled: !!js launch.surface !== 'webui'
 
     - id: webui
       name: 'cordis:webui'

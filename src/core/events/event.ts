@@ -173,6 +173,9 @@ export class RuntimeEventStream<Transition> {
             if (self.events.some((event) => event.sequence > cursor)) continue;
             return;
           }
+          // New events can arrive while suspended at yield; their wakeup has
+          // already passed. Re-read before registering the next synchronous waiter.
+          if (self.sequence > cursor) continue;
           await self.waitForChange(options.signal);
         }
       },

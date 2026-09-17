@@ -1,9 +1,6 @@
 import type { ToolAuthorizationInput } from "../../core/tools/authorization.js";
-import type {
-  BasicToolContext,
-  ToolApprovalPort,
-  ToolApprovalResponse,
-} from "../../tools/index.js";
+import type { ToolApprovalPort, ToolApprovalResponse } from "../../tools/index.js";
+import type { WishToolExecutionContext } from "../../composition/tool-context.js";
 import type { WishCliTerminal } from "./terminal.js";
 
 export type CliControlReadResult =
@@ -24,7 +21,7 @@ interface ActiveControlRead {
  * control prompt. This coordinates stdin only; Runtime still owns all queues.
  */
 export class CliInputCoordinator {
-  readonly approval: ToolApprovalPort<BasicToolContext>;
+  readonly approval: ToolApprovalPort<WishToolExecutionContext>;
   private approvalTail = Promise.resolve();
   private pendingApprovals = 0;
   private approvalsIdle = Promise.resolve();
@@ -33,11 +30,11 @@ export class CliInputCoordinator {
 
   constructor(
     private readonly terminal: WishCliTerminal,
-    approval: ToolApprovalPort<BasicToolContext>,
+    approval: ToolApprovalPort<WishToolExecutionContext>,
   ) {
     this.approval = Object.freeze({
       requestApproval: (
-        input: ToolAuthorizationInput<BasicToolContext>,
+        input: ToolAuthorizationInput<WishToolExecutionContext>,
         signal?: AbortSignal,
       ) =>
         this.requestApproval(approval, input, signal),
@@ -91,8 +88,8 @@ export class CliInputCoordinator {
   }
 
   private async requestApproval(
-    approval: ToolApprovalPort<BasicToolContext>,
-    input: ToolAuthorizationInput<BasicToolContext>,
+    approval: ToolApprovalPort<WishToolExecutionContext>,
+    input: ToolAuthorizationInput<WishToolExecutionContext>,
     signal?: AbortSignal,
   ): Promise<ToolApprovalResponse> {
     this.beginApproval();

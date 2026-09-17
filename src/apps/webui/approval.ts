@@ -2,15 +2,16 @@ import { randomUUID } from "node:crypto";
 
 import type { ToolAuthorizationInput } from
   "../../core/tools/authorization.js";
-import type {
-  BasicToolContext,
-  ToolApprovalPort,
-  ToolApprovalResponse,
-} from "../../tools/index.js";
+import type { ToolApprovalPort, ToolApprovalResponse } from "../../tools/index.js";
+import type { WishToolExecutionContext } from "../../composition/tool-context.js";
 import type {
   WishWebApproval,
   WishWebApprovalEvent,
 } from "./types.js";
+import {
+  APPROVAL_RULE_SCOPES,
+  type ApprovalRuleScope,
+} from "../../permissions/rules/types.js";
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_MAX_PENDING_APPROVALS = 100;
@@ -32,8 +33,8 @@ interface PendingApproval {
 
 type ApprovalListener = (event: WishWebApprovalEvent) => void;
 
-/** One-shot WebUI approval authority; it never creates persistent allow rules. */
-export class WebToolApprovalBroker implements ToolApprovalPort<BasicToolContext> {
+/** WebUI approval authority with an explicit user-selected retention scope. */
+export class WebToolApprovalBroker implements ToolApprovalPort<WishToolExecutionContext> {
   private readonly timeoutMs: number;
   private readonly maxPendingApprovals: number;
   private readonly nextApprovalId: () => string;
@@ -56,7 +57,7 @@ export class WebToolApprovalBroker implements ToolApprovalPort<BasicToolContext>
   }
 
   requestApproval(
-    input: ToolAuthorizationInput<BasicToolContext>,
+    input: ToolAuthorizationInput<WishToolExecutionContext>,
     signal?: AbortSignal,
   ): Promise<ToolApprovalResponse> | ToolApprovalResponse {
     if (this.closed) return denied("WebUI approval service is closed");
@@ -125,14 +126,22 @@ export class WebToolApprovalBroker implements ToolApprovalPort<BasicToolContext>
     );
   }
 
-  decide(approvalId: string, approved: boolean): WishWebApproval | undefined {
+  decide(
+    approvalId: string,
+    approved: boolean,
+    scope: ApprovalRuleScope = "once",
+  ): WishWebApproval | undefined {
     if (typeof approved !== "boolean") {
       throw new Error("Web approval decision must be boolean");
+    }
+    if (!(APPROVAL_RULE_SCOPES as readonly string[]).includes(scope)) {
+      throw new Error("Web approval scope is invalid");
     }
     return this.settle(
       requireIdentifier(approvalId, "Web approval id"),
       approved ? "approved" : "denied",
       approved ? undefined : "Tool approval was denied by the user",
+      approved ? scope : undefined,
     );
   }
 
@@ -160,6 +169,7 @@ export class WebToolApprovalBroker implements ToolApprovalPort<BasicToolContext>
     approvalId: string,
     status: Exclude<WishWebApproval["status"], "pending">,
     reason: string | undefined,
+    retentionScope?: ApprovalRuleScope,
   ): WishWebApproval | undefined {
     const pending = this.pending.get(approvalId);
     if (pending === undefined) return undefined;
@@ -171,6 +181,7 @@ export class WebToolApprovalBroker implements ToolApprovalPort<BasicToolContext>
       ...pending.view,
       status,
       resolvedAt,
+      ...(retentionScope === undefined ? {} : { retentionScope }),
       ...(reason === undefined ? {} : { reason }),
     }) as WishWebApproval;
     this.emit(pending.view.scope.runId, Object.freeze({
@@ -180,9 +191,10 @@ export class WebToolApprovalBroker implements ToolApprovalPort<BasicToolContext>
     pending.resolve(status === "approved"
       ? Object.freeze({
           status: "approved" as const,
+          scope: retentionScope ?? "once",
           metadata: Object.freeze({
             source: "wish-webui",
-            persistence: "once",
+            persistence: retentionScope ?? "once",
             approvalId,
           }),
         })
@@ -202,7 +214,7 @@ export class WebToolApprovalBroker implements ToolApprovalPort<BasicToolContext>
 }
 
 function approvalView(
-  input: ToolAuthorizationInput<BasicToolContext>,
+  input: ToolAuthorizationInput<WishToolExecutionContext>,
   approvalId: string,
   createdAt: Date,
   expiresAt: Date,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -73,22 +73,36 @@ export function apply(ctx, config) {
 });
 
 test("the built-in profile can enable and dispose HMR for a one-shot CLI", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cordis-config-hmr-cli-"));
+  const configurationFile = join(directory, "cordis.yml");
+  await writeFile(
+    configurationFile,
+    // This copied profile is at the fixture root, not under dist/config.
+    // Do not let its default parent watch escape into the shared /tmp tree.
+    (await readFile(join(repositoryRoot, "config/cordis.yml"), "utf8")).replace("base: '..'", "base: '.'"),
+  );
   const environment = cleanEnvironment();
   environment.CORDIS_HMR = "1";
-  const result = await execFileAsync(
-    process.execPath,
-    [join(repositoryRoot, "dist/apps/cli/main.js"), "--version"],
-    {
-      cwd: repositoryRoot,
-      env: environment,
-      timeout: 10_000,
-    },
-  );
-  assert.equal(result.stdout, "wish 0.1.0\n");
-  assert.equal(result.stderr, "");
+  environment.CORDIS_CONFIG = configurationFile;
+  environment.WISH_DATA_DIR = join(directory, "data");
+  try {
+    const result = await execFileAsync(
+      process.execPath,
+      [join(repositoryRoot, "dist/apps/cli/main.js"), "--version"],
+      {
+        cwd: repositoryRoot,
+        env: environment,
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.stdout, "wish 0.1.0\n");
+    assert.equal(result.stderr, "");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
-test("a built WebUI process applies and rolls back external profile updates", async () => {
+test("an unmanaged API embedding applies and rolls back external profile updates", async () => {
   // Keep the fixture below the repository so its ESM plugin can resolve the
   // pinned Schemastery package from this project's node_modules.
   const directory = await mkdtemp(join(repositoryRoot, "cordis-config-live-"));
@@ -109,9 +123,17 @@ test("a built WebUI process applies and rolls back external profile updates", as
 
   const environment = cleanEnvironment();
   environment.CORDIS_CONFIG = configurationFile;
+  environment.WISH_DATA_DIR = join(directory, "data");
+  // Product WebUI is managed. Exercise the independent, non-managed
+  // Include/HMR rollback contract through an explicit API-only embedding.
+  const entry = join(directory, "api-embedding.mjs");
+  await writeFile(entry, `import { bootstrap } from ${JSON.stringify(new URL("../dist/boot/bootstrap.js", import.meta.url).href)};
+const booted = await bootstrap({ surface: "webui" });
+try { process.exitCode = await booted.completion; } finally { await booted.dispose(); }
+`);
   const child = spawn(
     process.execPath,
-    [join(repositoryRoot, "dist/apps/webui/main.js")],
+    [entry],
     {
       cwd: repositoryRoot,
       env: environment,
@@ -139,7 +161,7 @@ test("a built WebUI process applies and rolls back external profile updates", as
     );
     await assertHealthy(port);
 
-    await writeFile(configurationFile, liveProfile({
+    await replaceProfile(configurationFile, liveProfile({
       ...profileOptions,
       label: "v2",
     }));
@@ -155,7 +177,7 @@ test("a built WebUI process applies and rolls back external profile updates", as
     // this test exercises two distinct configuration generations.
     await delay(150);
 
-    await writeFile(
+    await replaceProfile(
       configurationFile,
       liveProfile({ ...profileOptions, label: 42 }),
     );
@@ -171,7 +193,7 @@ test("a built WebUI process applies and rolls back external profile updates", as
     await delay(150);
 
     const beforeDisable = count(await readEvents(eventFile), "dispose:v2");
-    await writeFile(
+    await replaceProfile(
       configurationFile,
       liveProfile({ ...profileOptions, label: "v2", disabled: true }),
     );
@@ -185,7 +207,7 @@ test("a built WebUI process applies and rolls back external profile updates", as
     await assertHealthy(port);
     await delay(150);
 
-    await writeFile(configurationFile, liveProfile({
+    await replaceProfile(configurationFile, liveProfile({
       ...profileOptions,
       label: "v3",
     }));
@@ -213,12 +235,20 @@ test("a built WebUI process applies and rolls back external profile updates", as
       "dispose:v2",
       "apply:v3",
       "dispose:v3",
-    ]);
+    ], stderr);
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+async function replaceProfile(filename, source) {
+  // This test asserts complete configuration generations. In-place truncation
+  // can be observed as malformed YAML before the intended schema failure, which
+  // correctly preserves the old Fiber but does not exercise Group rollback.
+  await writeFile(filename + ".next", source);
+  await rename(filename + ".next", filename);
+}
 
 function profileForSource(label, code) {
   return `- id: app
@@ -259,10 +289,51 @@ function liveProfile({
   name: 'cordis:group'
   group: true
   config:
+    - id: storage
+      name: 'cordis:storage'
+    - id: storage-file
+      name: 'cordis:storage-file'
+      config:
+        id: file
+        rootDirectory: ${JSON.stringify(join(dataDirectory, "storage"))}
+    - id: runtime-lifecycle-journal
+      name: 'cordis:runtime-lifecycle-journal'
+      config:
+        backendId: file
+    - id: tool-result-archive
+      name: 'cordis:tool-result-archive-blob'
+      config:
+        backendId: file
+    - id: tool-output-artifacts
+      name: 'cordis:tool-output-artifacts-blob'
+      config:
+        backendId: file
+    - id: session-persistence
+      name: 'cordis:session-file'
     - id: sessions
       name: 'cordis:sessions'
       config:
         dataDirectory: ${JSON.stringify(dataDirectory)}
+
+    - id: workspace-local
+      name: 'cordis:workspace-local'
+
+    - id: approval-hub
+      name: 'cordis:approval-hub'
+    - id: approval-rules-storage
+      name: 'cordis:approval-rules-storage'
+      config:
+        backendId: file
+    - id: filesystem-local
+      name: 'cordis:filesystem-local'
+    - id: filesystem-search-local
+      name: 'cordis:filesystem-search-local'
+    - id: shell-linux-native
+      name: 'cordis:shell-linux-native'
+    - id: sandbox-policy-default
+      name: 'cordis:sandbox-policy-default'
+    - id: permissions-default
+      name: 'cordis:permissions-default'
 
     - id: models
       name: 'cordis:models'

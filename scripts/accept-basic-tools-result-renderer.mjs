@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   createBasicToolResultRenderer,
   renderBasicToolResult,
-} from "../dist/tools/support/result-renderer.js";
+} from "../dist/tools/presentation/result-renderer.js";
 
 function success(toolName, output, callId = `${toolName}-call`) {
   return {

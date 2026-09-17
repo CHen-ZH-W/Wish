@@ -8,7 +8,13 @@ import type {
   ModelRequest,
 } from "../core/model/model.js";
 import type { AgentStepId } from "../core/runtime/runtime.js";
-import type { ToolResult } from "../core/tools/scheduler.js";
+import type { AgentLoopInputSource, AgentLoopRequestView } from "../core/agent-loop/types.js";
+import type { ToolResultArchiveReference } from "../tools/results/types.js";
+import type {
+  WorkspaceFingerprint,
+  WorkspaceRepository,
+  WorkspaceRevision,
+} from "../workspace/index.js";
 
 export type ContextSessionId = string;
 export type ContextProviderId = string;
@@ -25,7 +31,10 @@ export type ContextWorkspaceInstruction = ContextInstruction;
 /** Workspace facts captured outside Context for the current Step. */
 export interface ContextWorkspaceFacts {
   readonly cwd: string;
+  readonly fingerprint: WorkspaceFingerprint;
+  readonly revision: WorkspaceRevision;
   readonly instructions: readonly ContextWorkspaceInstruction[];
+  readonly repository?: WorkspaceRepository;
 }
 
 /** Runtime facts captured with the active immutable Step snapshot. */
@@ -45,13 +54,20 @@ export interface ContextInput {
   readonly model: ModelRef;
   readonly workspace: ContextWorkspaceFacts;
   readonly runtime: ContextRuntimeFacts;
+  /** Optional for legacy hosts; absence must not be treated as human input. */
+  readonly request?: ContextRequestView;
 }
+
+/** Read-only request facts, never an execution grant or instruction authority. */
+export interface ContextRequestView extends AgentLoopRequestView {}
 
 export interface ContextHistoryMessageRecord {
   readonly kind: "message";
   readonly sequence: number;
   /** Allows Context to exclude facts already supplied by the active UserTurn. */
   readonly userTurnId?: UserTurnId;
+  /** Optional provenance metadata; never copied into the model wire message. */
+  readonly inputSource?: AgentLoopInputSource;
   readonly message: ModelMessage;
   /** Separate structural metadata; it is never emitted on the Provider wire. */
   readonly toolResultArchive?: ContextToolResultArchiveReceipt;
@@ -83,22 +99,6 @@ export interface ContextHistorySource {
     | readonly ContextHistoryRecord[];
 }
 
-export interface ToolResultArchiveInput {
-  readonly sessionId: ContextSessionId;
-  readonly runId: AgentRunId;
-  readonly userTurnId: UserTurnId;
-  readonly stepId: AgentStepId;
-  /** Complete executor result, before any model-facing rendering or trimming. */
-  readonly result: ToolResult;
-  readonly signal?: AbortSignal;
-}
-
-/** Stable opaque identity for one archived complete Tool Result. */
-export interface ToolResultArchiveReference {
-  readonly locator: string;
-  readonly hash: string;
-}
-
 /**
  * Durable bridge between pre-render archival and later Context projection.
  * Session adapters may persist this beside a Tool message, never in its text.
@@ -109,14 +109,12 @@ export interface ContextToolResultArchiveReceipt
   readonly toolCallId: string;
 }
 
-/** Storage adapter Port used by the pre-render Tool Result decorator. */
-export interface ToolResultArchivePort {
-  archive(
-    input: ToolResultArchiveInput,
-  ):
-    | Promise<ToolResultArchiveReference>
-    | ToolResultArchiveReference;
-}
+/** Compatibility exports; canonical ownership is `src/tools/results/types.ts`. */
+export type {
+  ToolResultArchiveInput,
+  ToolResultArchivePort,
+  ToolResultArchiveReference,
+} from "../tools/results/types.js";
 
 export interface ModelInputTokenCountInput {
   /** Final projected request, immediately before Model invocation. */

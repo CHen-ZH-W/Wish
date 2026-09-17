@@ -9,7 +9,7 @@ import { Context, Service } from "@deepseek-ai/cordis";
 
 import Agents, {
   Config as AgentsConfig,
-} from "../dist/core/agent/service.js";
+} from "../dist/composition/agent-service.js";
 import { bootstrap } from "../dist/boot/bootstrap.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -223,13 +223,13 @@ test("Agents owns construction while Core Agent remains framework-free", async (
   assert.deepEqual(AgentsConfig({ agentId: "wish" }), { agentId: "wish" });
   assert.throws(() => AgentsConfig({ agentId: 42 }), /expected string/u);
 
-  const [service, core, facade, application, bootstrapSource, profile] =
+  const [service, core, facade, application, catalogSource, profile] =
     await Promise.all([
-      readFile(join(repositoryRoot, "src/core/agent/service.ts"), "utf8"),
+      readFile(join(repositoryRoot, "src/composition/agent-service.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/core/agent/agent.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/apps/application.ts"), "utf8"),
       readFile(join(repositoryRoot, "src/apps/service.ts"), "utf8"),
-      readFile(join(repositoryRoot, "src/boot/bootstrap.ts"), "utf8"),
+      readFile(join(repositoryRoot, "src/boot/plugin-catalog.ts"), "utf8"),
       readFile(join(repositoryRoot, "config/cordis.yml"), "utf8"),
     ]);
 
@@ -241,7 +241,7 @@ test("Agents owns construction while Core Agent remains framework-free", async (
   assert.doesNotMatch(facade, /options\.runtime/u);
   assert.match(application, /this\.ctx\.agents\.open/u);
   assert.doesNotMatch(application, /this\.ctx\.runEngine\.open/u);
-  assert.match(bootstrapSource, /builtins\.agents = Agents/u);
+  assert.match(catalogSource, /"agents": "\.\.\/composition\/agent-service\.js"/u);
   assert.match(profile, /id: agents\s+name: 'cordis:agents'/u);
   assert.ok(profile.indexOf("id: runtime") < profile.indexOf("id: agents"));
   assert.ok(profile.indexOf("id: agents") < profile.indexOf("id: application"));

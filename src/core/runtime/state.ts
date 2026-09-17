@@ -2,6 +2,7 @@ import type {
   AgentId,
   AgentMetadata,
   AgentRunId,
+  RunInputSource,
   UserTurnId,
 } from "../agent/types.js";
 
@@ -46,6 +47,7 @@ export interface UserTurnState<Payload = unknown, Result = unknown> {
   readonly ordinal: number;
   readonly status: UserTurnStatus;
   readonly input: Payload;
+  readonly inputSource?: RunInputSource;
   readonly startedAt: string;
   readonly endedAt?: string;
   readonly steps: readonly StepState[];

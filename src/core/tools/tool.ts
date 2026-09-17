@@ -142,7 +142,8 @@ export interface ToolDefinition<
   resolveCapabilities(
     input: Input,
     context: Context,
-  ): ToolCapabilityRequest;
+    signal?: AbortSignal,
+  ): Promise<ToolCapabilityRequest> | ToolCapabilityRequest;
 
   execute(
     input: Input,
