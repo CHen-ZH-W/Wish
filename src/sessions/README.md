@@ -61,7 +61,8 @@ Handle；Sessions 收到依赖卸载后拒绝新 acquire，等待全部 Handle �
 `SessionPersistenceHandle`。File Session Provider 同样先停止 `open()`、等待已有 Handle
 自行关闭，不会用并发 Cordis disposer 提前强制关闭活动 Store。service reload 后会创建新的
 manager，但 FileSessionStore 会从同一目录读取既有 Session 事实。Provider 恢复后 Sessions
-和下游重新激活。未来 SQLite Provider 必须实现相同 SessionStore 契约，不能改变业务语义。
+和下游重新激活。所有替代 `SessionPersistence` Provider 都必须实现相同的
+`SessionStore` 契约，不能改变业务语义。
 
 ## Session 与历史事实
 

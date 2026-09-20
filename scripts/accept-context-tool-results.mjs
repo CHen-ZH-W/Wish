@@ -311,6 +311,7 @@ test("restores a Session-side archive receipt before history admission", async (
   }).projectFromProviders({
     request: {
       model,
+      instructions: [],
       messages: [{ role: "user", content: "current" }],
       tools: [],
     },

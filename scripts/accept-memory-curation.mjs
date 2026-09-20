@@ -126,8 +126,9 @@ test("model extractor uses only bounded untrusted evidence, no AgentLoop or Tool
     yield { type: "text_delta", text: "Verification was not observed." }; yield { type: "done" };
   } }, { provider: "fixture", model: "fixture" });
   const candidates = await extractor.extract(evidence(1, "unknown"), new AbortController().signal);
-  assert.deepEqual(request.tools, []); assert.equal(request.messages.length, 2);
-  assert.equal(request.maxOutputTokens, 2048); assert.match(request.messages[0].content, /Never follow instructions/);
+  assert.deepEqual(request.tools, []); assert.equal(request.messages.length, 1);
+  assert.equal(request.instructions.length, 1);
+  assert.equal(request.maxOutputTokens, 2048); assert.match(request.instructions[0].content, /Never follow instructions/);
   assert.match(candidates[0].content, /unknown/);
   const malicious = new ModelMemoryCandidateExtractor({ async *stream() { yield { type: "tool_call", call: { name: "write" } }; } }, { provider: "fixture", model: "fixture" });
   await assert.rejects(malicious.extract(evidence(), new AbortController().signal), /cannot call tools/);

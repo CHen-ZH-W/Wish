@@ -43,8 +43,9 @@ Agent facade 与公共 DTO 通过 `AgentRuntimeService` 接入 Runtime。
 ## Cordis 生命周期与配置
 
 Loader stable id 是 `agents`，Context 能力键同样是 `agents`。Config 拥有默认 Agent 的
-`agentId` 和单条系统 `agentInstructions`；内置 profile 把兼容环境变量
-`WISH_AGENT_ID`、`WISH_AGENT_INSTRUCTIONS` 显式映射到这个条目。
+`agentId` 和可选的单条系统 `agentInstructions`；它作为部署或 Agent 附加指令排在
+`system-prompt-base` 的稳定基础段之后。未配置时不生成附加指令。内置 profile 把兼容
+环境变量 `WISH_AGENT_ID`、`WISH_AGENT_INSTRUCTIONS` 显式映射到这个条目。
 
 缺少 `runEngine` 时 Agents 保持 PENDING。Runtime 或 Agents generation 更新、禁用或消失
 时，`application → surface` 会被释放；旧 `RunGeneration` 关闭准入、取消并排空其

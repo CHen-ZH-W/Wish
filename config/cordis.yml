@@ -33,6 +33,7 @@
     storageBackend: true
     runtimeLifecycle: true
     modelCatalogPersistence: true
+    modelAttemptLedger: true
     toolResultArchive: true
     toolOutputArtifacts: true
     workspace: true
@@ -60,6 +61,7 @@
     webFetch: true
     models: true
     contextEngine: true
+    systemPrompt: true
     compaction: true
     tools: true
     agentLoop: true
@@ -104,6 +106,15 @@
       name: 'cordis:model-catalog-storage'
       config:
         backendId: file
+
+    - id: model-attempt-ledger-storage
+      name: 'cordis:model-attempt-ledger-storage'
+      config:
+        backendId: file
+        currency: !!js >-
+          launch.environment.WISH_MODEL_PRICING_CURRENCY === undefined || launch.environment.WISH_MODEL_PRICING_CURRENCY === ''
+            ? 'USD'
+            : launch.environment.WISH_MODEL_PRICING_CURRENCY
 
     - id: session-persistence
       name: 'cordis:session-file'
@@ -478,6 +489,15 @@
             ? undefined
             : Number(launch.environment.WISH_CONTEXT_RESERVED_OUTPUT_TOKENS)
 
+    - id: system-prompt
+      name: 'cordis:system-prompt'
+
+    - id: system-prompt-base
+      name: 'cordis:system-prompt-base'
+
+    - id: system-prompt-context
+      name: 'cordis:system-prompt-context'
+
     - id: plan-storage
       name: 'cordis:plan-storage'
       disabled: !!js launch.environment.WISH_PLAN_ENABLED === '0'
@@ -562,6 +582,15 @@
     - id: tool-bash
       name: 'cordis:bash'
 
+    - id: filesystem-tool-guidance
+      name: 'cordis:filesystem-tool-guidance'
+
+    - id: bash-tool-guidance
+      name: 'cordis:bash-tool-guidance'
+
+    - id: subagent-tool-guidance
+      name: 'cordis:subagent-tool-guidance'
+
     - id: tool-subagents
       name: 'cordis:subagent-tools'
       disabled: !!js >-
@@ -627,6 +656,9 @@
       disabled: !!js >-
         launch.environment.WISH_WEB_SEARCH_PROVIDER !== 'searxng' ||
         launch.environment.WISH_WEB_SEARCH_TOOLS_ENABLED === '0'
+
+    - id: web-tool-guidance
+      name: 'cordis:web-tool-guidance'
 
     - id: agent-loop
       name: 'cordis:agent-loop'

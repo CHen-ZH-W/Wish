@@ -16,6 +16,7 @@ const businessServices = Object.freeze([
   "storageBackend",
   "runtimeLifecycle",
   "modelCatalogPersistence",
+  "modelAttemptLedger",
   "toolResultArchive",
   "toolOutputArtifacts",
   "workspace",
@@ -28,6 +29,7 @@ const businessServices = Object.freeze([
   "permissions",
   "models",
   "contextEngine",
+  "systemPrompt",
   "compaction",
   "tools",
   "agentLoop",
@@ -45,6 +47,7 @@ export const inject = [
   "storageBackend",
   "runtimeLifecycle",
   "modelCatalogPersistence",
+  "modelAttemptLedger",
   "toolResultArchive",
   "toolOutputArtifacts",
   "workspace",
@@ -57,6 +60,7 @@ export const inject = [
   "permissions",
   "models",
   "contextEngine",
+  "systemPrompt",
   "compaction",
   "tools",
   "agentLoop",
@@ -74,6 +78,7 @@ export function apply(ctx, config) {
     storageBackend: ctx.storage.backend("file"),
     runtimeLifecycle: ctx.runtimeLifecycle,
     modelCatalogPersistence: ctx.modelCatalogPersistence,
+    modelAttemptLedger: ctx.modelAttemptLedger,
     toolResultArchive: ctx.toolResultArchive,
     toolOutputArtifacts: ctx.toolOutputArtifacts,
     workspace: ctx.workspace,
@@ -85,6 +90,7 @@ export function apply(ctx, config) {
     sandboxPolicy: ctx.sandboxPolicy,
     permissions: ctx.permissions,
     models: ctx.models.registry,
+    systemPrompt: ctx.systemPrompt,
     tools: ctx.tools.registry,
     agentDefinition: ctx.agents.definition,
     agentId: ctx.agents.agentId,
@@ -210,6 +216,7 @@ test("two application realms isolate providers, registrations, updates, and disp
       firstLeft.modelCatalogPersistence,
       firstRight.modelCatalogPersistence,
     );
+    assert.notEqual(firstLeft.modelAttemptLedger, firstRight.modelAttemptLedger);
     assert.notEqual(firstLeft.toolResultArchive, firstRight.toolResultArchive);
     assert.notEqual(firstLeft.workspace, firstRight.workspace);
     assert.notEqual(firstLeft.filesystem, firstRight.filesystem);
@@ -218,6 +225,7 @@ test("two application realms isolate providers, registrations, updates, and disp
     assert.notEqual(firstLeft.sandboxPolicy, firstRight.sandboxPolicy);
     assert.notEqual(firstLeft.permissions, firstRight.permissions);
     assert.notEqual(firstLeft.models, firstRight.models);
+    assert.notEqual(firstLeft.systemPrompt, firstRight.systemPrompt);
     assert.notEqual(firstLeft.tools, firstRight.tools);
     assert.notEqual(firstLeft.agentDefinition, firstRight.agentDefinition);
     assert.deepEqual(firstLeft.models.protocols(), ["openai-chat-completions"]);
@@ -230,6 +238,23 @@ test("two application realms isolate providers, registrations, updates, and disp
     assert.equal(firstRight.maxParallelCalls, 5);
     assert.equal(firstLeft.maxSteps, 3);
     assert.equal(firstRight.maxSteps, 7);
+
+    await firstLeft.modelAttemptLedger.start({
+      attemptId: "left-attempt",
+      sessionId: "left-session",
+      runId: "left-run",
+      userTurnId: "left-turn",
+      stepId: "left-step",
+      requestedAt: "2026-09-19T00:00:00.000Z",
+      requestedModel: { provider: "left", model: "fixture" },
+    });
+    await firstLeft.modelAttemptLedger.finish({
+      attemptId: "left-attempt",
+      status: "completed",
+      endedAt: "2026-09-19T00:00:01.000Z",
+    });
+    assert.equal((await firstLeft.modelAttemptLedger.list()).length, 1);
+    assert.equal((await firstRight.modelAttemptLedger.list()).length, 0);
 
     const leftProbe = root.loader.resolve("include:cli");
     const leftTools = root.loader.resolve("include:left-tools");
@@ -298,6 +323,11 @@ ${businessServices.map((service) => `    ${service}: true`).join("\n")}
       name: 'cordis:model-catalog-storage'
       config:
         backendId: file
+    - id: ${options.id}-model-attempt-ledger-storage
+      name: 'cordis:model-attempt-ledger-storage'
+      config:
+        backendId: file
+        currency: USD
     - id: ${options.id}-session-persistence
       name: 'cordis:session-file'
     - id: ${options.id}-sessions
@@ -330,6 +360,10 @@ ${businessServices.map((service) => `    ${service}: true`).join("\n")}
       name: 'cordis:context-engine'
       config:
         reservedOutputTokens: ${options.maxSteps * 100}
+    - id: ${options.id}-system-prompt
+      name: 'cordis:system-prompt'
+    - id: ${options.id}-system-prompt-context
+      name: 'cordis:system-prompt-context'
     - id: ${options.id}-compaction
       name: 'cordis:compaction'
       config:

@@ -88,6 +88,12 @@ export class ContextOverflowRecoveryPipeline<
         sessionId: target.sessionId,
         model: target.model,
         preserveUserTurnId: input.snapshot.userTurn.userTurnId,
+        invocationScope: Object.freeze({
+          sessionId: target.sessionId,
+          runId: input.snapshot.run.runId,
+          userTurnId: input.snapshot.userTurn.userTurnId,
+          stepId: input.snapshot.step.stepId,
+        }),
         signal: input.signal,
       });
     } catch (error: unknown) {

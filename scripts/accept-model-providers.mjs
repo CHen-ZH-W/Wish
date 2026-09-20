@@ -75,6 +75,7 @@ function createModel(protocol, fetch, options) {
 function request(provider, messages, overrides = {}) {
   return {
     model: { provider, model: "model-a" },
+    instructions: [],
     messages,
     tools: [{
       name: "lookup",
@@ -112,7 +113,7 @@ test("advertised DeepSeek reasoning efforts override only one request", () => {
   const configuration = loadModelsConfiguration({ environment: {} });
   const model = resolveConfiguredModel(configuration, "deepseek/deepseek-flash");
   const input = { model, headers: {}, fetch: async () => new Response() };
-  const base = { model: model.ref, messages: [{ role: "user", content: "hello" }], tools: [] };
+  const base = { model: model.ref, instructions: [], messages: [{ role: "user", content: "hello" }], tools: [] };
   assert.deepEqual(model.spec.reasoningControl?.efforts, ["none", "low", "high", "max"]);
   assert.equal(mapOpenAIRequest(base, input).body.reasoning_effort, "high");
   assert.equal(mapOpenAIRequest({ ...base, reasoningEffort: "low" }, input).body.reasoning_effort, "low");
@@ -132,6 +133,7 @@ test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", as
       captured = { url, init, body: JSON.parse(init.body) };
       return sse([
         { data: {
+          created: 1789963200,
           choices: [{ index: 0, delta: { reasoning_content: "think " }, finish_reason: null }],
         } },
         { data: {
@@ -157,6 +159,8 @@ test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", as
           usage: {
             prompt_tokens: 20,
             prompt_tokens_details: { cached_tokens: 4, cache_creation_tokens: 2 },
+            prompt_cache_hit_tokens: 4,
+            prompt_cache_miss_tokens: 16,
             completion_tokens: 6,
             total_tokens: 26,
           },
@@ -173,8 +177,6 @@ test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", as
     },
   );
   const events = await collect(model.stream(request("openai", [
-    { role: "system", content: "system" },
-    { role: "developer", content: "developer" },
     {
       role: "user",
       content: "question",
@@ -190,7 +192,15 @@ test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", as
       toolCalls: [{ id: "prior-1", name: "lookup", argumentsJson: '{"q":"old"}' }],
     },
     { role: "tool", content: '{"value":1}', toolCallId: "prior-1" },
-  ]), controller.signal));
+  ], { instructions: [
+    { role: "system", content: "system" },
+    { role: "developer", content: "developer" },
+  ], invocationScope: {
+    sessionId: "private-session",
+    runId: "private-run",
+    userTurnId: "private-turn",
+    stepId: "private-step",
+  } }), controller.signal));
 
   assert.deepEqual(events.map((event) => event.type), [
     "start",
@@ -214,6 +224,7 @@ test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", as
     totalTokens: 26,
     source: "provider",
   });
+  assert.equal(events.at(-1).providerCreatedAt, 1_789_963_200_000);
   assert.equal(captured.url, "https://openai.example.test/v1/chat/completions");
   assert.equal(captured.init.signal, controller.signal);
   assert.equal(captured.body.messages[1].role, "system");
@@ -225,6 +236,7 @@ test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", as
   assert.equal("temperature" in captured.body, false);
   assert.deepEqual(captured.body.stream_options, { include_usage: true });
   assert.equal(captured.body.service_tier, "auto");
+  assert.doesNotMatch(JSON.stringify(captured.body), /private-(session|run|turn|step)/u);
 });
 
 test("OpenAI-compatible preserves native developer authority and optional usage", async () => {
@@ -237,14 +249,40 @@ test("OpenAI-compatible preserves native developer authority and optional usage"
     ]);
   });
   const events = await collect(model.stream(request("openai", [
-    { role: "developer", content: "rules" },
     { role: "user", content: "hello" },
-  ], { tools: [] })));
+  ], { instructions: [{ role: "developer", content: "rules" }], tools: [] })));
 
   assert.equal(body.messages[0].role, "developer");
   assert.equal(events[0].developerRoleMode, "native");
   assert.equal("authorityDegraded" in events[0], false);
   assert.equal("usage" in events.at(-1), false);
+});
+
+test("OpenAI-compatible accepts DeepSeek native cache usage without details", async () => {
+  const model = createModel("openai-chat-completions", async () => sse([
+    { data: {
+      choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 10,
+        prompt_cache_hit_tokens: 8,
+        prompt_cache_miss_tokens: 2,
+        completion_tokens: 2,
+        total_tokens: 12,
+      },
+    } },
+    "[DONE]",
+  ]));
+  const events = await collect(model.stream(request("openai", [
+    { role: "user", content: "hello" },
+  ])));
+
+  assert.deepEqual(events.at(-1).usage, {
+    inputTokens: 10,
+    cachedInputTokens: 8,
+    outputTokens: 2,
+    totalTokens: 12,
+    source: "provider",
+  });
 });
 
 test("OpenAI Responses maps native authority, multimodal history, Tools, reasoning, and usage", async () => {
@@ -255,7 +293,12 @@ test("OpenAI Responses maps native authority, multimodal history, Tools, reasoni
     return sse([
       { data: {
         type: "response.created",
-        response: { id: "resp-1", model: "model-a", status: "in_progress" },
+        response: {
+          id: "resp-1",
+          model: "model-a",
+          status: "in_progress",
+          created_at: 1789963200,
+        },
       } },
       { data: {
         type: "response.output_item.added",
@@ -328,6 +371,7 @@ test("OpenAI Responses maps native authority, multimodal history, Tools, reasoni
           id: "resp-1",
           model: "model-a",
           status: "completed",
+          created_at: 1789963200,
           output: [{
             id: "fc-1",
             type: "function_call",
@@ -351,8 +395,6 @@ test("OpenAI Responses maps native authority, multimodal history, Tools, reasoni
   });
 
   const events = await collect(model.stream(request("openai", [
-    { role: "system", content: "system" },
-    { role: "developer", content: "developer" },
     {
       role: "user",
       content: "question",
@@ -368,7 +410,10 @@ test("OpenAI Responses maps native authority, multimodal history, Tools, reasoni
       toolCalls: [{ id: "prior-1", name: "lookup", argumentsJson: '{"q":"old"}' }],
     },
     { role: "tool", content: '{"value":1}', toolCallId: "prior-1" },
-  ]), controller.signal));
+  ], { instructions: [
+    { role: "system", content: "system" },
+    { role: "developer", content: "developer" },
+  ] }), controller.signal));
 
   assert.deepEqual(events.map((event) => event.type), [
     "start",
@@ -387,6 +432,7 @@ test("OpenAI Responses maps native authority, multimodal history, Tools, reasoni
   assert.deepEqual(events.at(-1), {
     type: "done",
     finishReason: "tool_calls",
+    providerCreatedAt: 1_789_963_200_000,
     usage: {
       inputTokens: 20,
       cachedInputTokens: 4,
@@ -455,6 +501,49 @@ test("OpenAI-compatible reports malformed streams and context overflow stably", 
   ])));
   assert.equal(malformedEvents.at(-1).error.code, "stream_parse_error");
 
+  const inconsistentCache = createModel(
+    "openai-chat-completions",
+    async () => sse([
+      { data: {
+        choices: [{ index: 0, delta: { content: "answer" }, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 10,
+          prompt_tokens_details: { cached_tokens: 4 },
+          prompt_cache_hit_tokens: 3,
+          prompt_cache_miss_tokens: 7,
+          completion_tokens: 1,
+          total_tokens: 11,
+        },
+      } },
+      "[DONE]",
+    ]),
+  );
+  const inconsistentCacheEvents = await collect(inconsistentCache.stream(request("openai", [
+    { role: "user", content: "hello" },
+  ])));
+  assert.equal(inconsistentCacheEvents.at(-1).error.code, "stream_parse_error");
+  assert.match(inconsistentCacheEvents.at(-1).error.message, /cached token fields must agree/u);
+
+  const inconsistentCreated = createModel(
+    "openai-chat-completions",
+    async () => sse([
+      { data: {
+        created: 1789963200,
+        choices: [{ index: 0, delta: { content: "answer" }, finish_reason: null }],
+      } },
+      { data: {
+        created: 1789963201,
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      } },
+      "[DONE]",
+    ]),
+  );
+  const inconsistentCreatedEvents = await collect(inconsistentCreated.stream(request("openai", [
+    { role: "user", content: "hello" },
+  ])));
+  assert.equal(inconsistentCreatedEvents.at(-1).error.code, "stream_parse_error");
+  assert.match(inconsistentCreatedEvents.at(-1).error.message, /must remain stable/u);
+
   const overflow = createModel("openai-chat-completions", async () => new Response(
     JSON.stringify({ error: { code: "context_length_exceeded", message: "context window exceeded" } }),
     { status: 400 },
@@ -518,8 +607,6 @@ test("Anthropic maps system fallback, images, thinking, Tools, and cache usage",
     ]);
   });
   const events = await collect(model.stream(request("anthropic", [
-    { role: "system", content: "system" },
-    { role: "developer", content: "developer" },
     {
       role: "user",
       content: "question",
@@ -534,7 +621,10 @@ test("Anthropic maps system fallback, images, thinking, Tools, and cache usage",
       toolCalls: [{ id: "prior-a", name: "lookup", argumentsJson: '{"q":"old"}' }],
     },
     { role: "tool", content: '{"value":1}', toolCallId: "prior-a" },
-  ]), controller.signal));
+  ], { instructions: [
+    { role: "system", content: "system" },
+    { role: "developer", content: "developer" },
+  ] }), controller.signal));
 
   assert.deepEqual(events.map((event) => event.type), [
     "start",

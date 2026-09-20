@@ -9,6 +9,8 @@ export type {
   DeveloperRoleMode,
   ModelError,
   ModelErrorCode,
+  ModelInstruction,
+  ModelInvocationScope,
   ModelMessage,
   ModelMessageContentPart,
   ModelMessageToolCall,

@@ -28,7 +28,7 @@ test("Memory proposal follows the Application Session lease, never the default d
     MemoryWriteTool.apply({ memory, tools: { register: definition => registry.register(definition) }, sessions: defaults });
     const ref = { provider: "fixture", model: "fixture" };
     let invocations = 0;
-    const context = createContextBundle({ history: custom.history.context, agentInstructions: [],
+    const context = createContextBundle({ history: custom.history.context,
       archive: { archive: ({ result }) => ({ locator: `tool:${result.callId}`, hash: `sha256:${hash(result)}` }) },
       models: { getContextWindowTokens: () => 4096 }, counter: { count: () => ({ inputTokens: 16, method: "fixture" }) }, configuration: { reservedOutputTokens: 512 } });
     const pipeline = createAgentLoopPipeline({ sessions: custom, agentId: "agent", context,

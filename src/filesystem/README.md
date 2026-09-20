@@ -50,15 +50,15 @@ Step generation。
 ## 当前边界
 
 Local Provider 对普通进程内文件工具提供强制边界，但 Node 路径检查无法抵御另一个恶意
-本地进程在检查和打开之间并发替换父目录。彻底的 hostile-host TOCTOU 文件句柄遍历仍需
-后续 openat2 层；Bash 已迁移到 Linux Native Shell，并由 Landlock 封闭进程可见文件树。
+本地进程在检查和打开之间并发替换父目录，不提供 hostile-host TOCTOU 文件句柄遍历保证。
+Bash 使用独立的 Linux Native Shell，并由 Landlock 封闭进程可见文件树。
 
 Grep 是 Filesystem Search 的 Tool Consumer。Local Search 通过 Node 目录遍历实现，不启动
 `rg` 或其他子进程；搜索根和每次文件读取都绑定同一 Filesystem generation、Step context
 和一次性 Grant。它确定性排序目录项，跳过符号链接、受保护名称、二进制和无效 UTF-8
 文件；权限、authority 或 Provider 故障不会作为“无匹配”静默吞掉。默认最多遍历 50,000
 个文件和 10,000 个目录，分别可由 `WISH_FILESYSTEM_SEARCH_MAX_FILES` 与
-`WISH_FILESYSTEM_SEARCH_MAX_DIRECTORIES` 收紧。第一版只支持 `*`、`**` 和 `?` glob，
+`WISH_FILESYSTEM_SEARCH_MAX_DIRECTORIES` 收紧。Local Search 只支持 `*`、`**` 和 `?` glob，
 不解析 `.gitignore`。
 
 ## 验证

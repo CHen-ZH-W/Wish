@@ -17,7 +17,14 @@ export function mapOpenAIRequest(
   readonly body: Readonly<Record<string, unknown>>;
   readonly authorityDegraded: boolean;
 } {
-  const hasDeveloper = request.messages.some((message) => message.role === "developer");
+  const instructionMessages: readonly ModelMessage[] = Object.freeze(
+    (request.instructions ?? []).map((instruction) => Object.freeze({
+      role: instruction.role,
+      content: instruction.content,
+    })),
+  );
+  const modelMessages = [...instructionMessages, ...request.messages];
+  const hasDeveloper = modelMessages.some((message) => message.role === "developer");
   const roleMode = input.model.developerRoleMode;
   if (hasDeveloper && roleMode === "unsupported") {
     throw new OpenAIRequestError(
@@ -29,7 +36,7 @@ export function mapOpenAIRequest(
       "Configured model cannot use native developer messages",
     );
   }
-  const messages = request.messages.map((message) =>
+  const messages = modelMessages.map((message) =>
     mapMessage(message, roleMode)
   );
   const tools = request.tools.map((tool) => {

@@ -33,7 +33,9 @@ import type {
   ContextWorkspaceFacts,
 } from "../context/types.js";
 import type { ModelDependencies } from "../models/runtime.js";
+import type { ModelInstruction } from "../core/model/model.js";
 import type { ModelsConfiguration } from "../models/types.js";
+import type {} from "../models/pricing/service.js";
 import {
   SessionArchivedError,
   type SessionManager,
@@ -122,6 +124,10 @@ export interface CreateAgentLoopPipelineOptions {
   /** Product graphs inject this; standalone callers may use explicit approval. */
   readonly permissions?: PermissionAuthority;
   readonly context: ContextBundle;
+  /** Resolves stable model instructions after final Tool permission filtering. */
+  readonly resolveInstructions?: (input: {
+    readonly availableTools: readonly string[];
+  }) => readonly ModelInstruction[];
   readonly compaction: ContextOverflowCompactor;
   /** Product graphs bind the durable Runtime-owned Tool lifecycle authority. */
   readonly toolLifecycle?: ToolExecutionLifecycle<WishToolExecutionContext>;
@@ -291,8 +297,14 @@ export function createAgentLoopPipeline(
           model,
           workspace: contextWorkspaceFacts(workspace),
         });
+        const instructions = snapshotModelInstructions(
+          options.resolveInstructions?.({
+            availableTools: permissions.availableTools,
+          }) ?? [],
+        );
         return Object.freeze({
           model,
+          instructions,
           context: contextEnvironment,
           tools: Object.freeze({
             context: Object.freeze({
@@ -332,12 +344,18 @@ export function createAgentLoopPipeline(
               workspaceRevision: workspace.revision,
             }),
           }),
-          ...(requestOptions === undefined && snapshot.userTurn.input.reasoningEffort === undefined
-            ? {}
-            : { request: Object.freeze({
-                ...(requestOptions ?? {}),
-                ...(snapshot.userTurn.input.reasoningEffort === undefined ? {} : { reasoningEffort: snapshot.userTurn.input.reasoningEffort }),
-              }) }),
+          request: Object.freeze({
+            ...(requestOptions ?? {}),
+            ...(snapshot.userTurn.input.reasoningEffort === undefined
+              ? {}
+              : { reasoningEffort: snapshot.userTurn.input.reasoningEffort }),
+            invocationScope: Object.freeze({
+              sessionId,
+              runId: snapshot.run.runId,
+              userTurnId: snapshot.userTurn.userTurnId,
+              stepId: snapshot.step.stepId,
+            }),
+          }),
         });
       },
     },
@@ -389,7 +407,9 @@ export class AgentLoop extends Service {
   static readonly inject = [
     "sessions",
     "models",
+    "modelAttemptLedger",
     "contextEngine",
+    "systemPrompt",
     "compaction",
     "tools",
     "workspace",
@@ -411,10 +431,14 @@ export class AgentLoop extends Service {
     const sessions = this.ctx.sessions.acquire(input.dataDirectory);
     let context: ContextBundleHandle | undefined;
     try {
-      const models = this.ctx.models.open(input.modelsConfiguration);
+      const models = this.ctx.models.open(input.modelsConfiguration, {
+        attemptLedger: {
+          ledger: this.ctx.modelAttemptLedger,
+          currency: this.ctx.modelAttemptLedger.currency,
+        },
+      });
       context = this.ctx.contextEngine.open({
         dataDirectory: input.dataDirectory,
-        agentInstructions: input.agentInstructions,
         models,
         configuration: {
           reservedOutputTokens: input.reservedOutputTokens,
@@ -437,6 +461,13 @@ export class AgentLoop extends Service {
         permissions: this.ctx.permissions,
         toolLifecycle: this.ctx.runtimeLifecycle,
         context: ownedContext,
+        resolveInstructions: ({ availableTools }) => Object.freeze([
+          ...this.ctx.systemPrompt.assembleInstructions({ availableTools }),
+          ...input.agentInstructions.map((instruction) => Object.freeze({
+            role: instruction.authority,
+            content: instruction.content,
+          })),
+        ]),
         compaction,
         tools: {
           registry: this.ctx.tools.registry,
@@ -558,6 +589,26 @@ function contextWorkspaceFacts(
       ? {}
       : { repository: workspace.repository }),
   });
+}
+
+function snapshotModelInstructions(
+  instructions: readonly ModelInstruction[],
+): readonly ModelInstruction[] {
+  if (!Array.isArray(instructions)) {
+    throw new Error("Wish model instructions must be an array");
+  }
+  return Object.freeze(instructions.map((instruction, index) => {
+    if (instruction === null || typeof instruction !== "object") {
+      throw new Error(`Wish model instruction ${index + 1} must be an object`);
+    }
+    if (instruction.role !== "system" && instruction.role !== "developer") {
+      throw new Error(`Wish model instruction ${index + 1} has an invalid role`);
+    }
+    if (typeof instruction.content !== "string" || instruction.content.trim().length === 0) {
+      throw new Error(`Wish model instruction ${index + 1} must contain text`);
+    }
+    return Object.freeze({ role: instruction.role, content: instruction.content });
+  }));
 }
 
 function snapshotRequestOptions(

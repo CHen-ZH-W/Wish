@@ -94,8 +94,8 @@ async function fetchJson(fetchImpl, url, label) {
 
 /**
  * DeepSeek's official contract takes precedence over lagging third-party indexes.
- * The current API has time-dependent peak/off-peak prices, which ModelPrice cannot
- * represent; omitting price keeps cost unknown instead of reporting a false total.
+ * The current API has time-dependent peak/off-peak prices. Runtime Pricing owns
+ * that schedule; omitting a static ModelPrice avoids reporting one period as universal.
  * Reviewed against https://api-docs.deepseek.com/quick_start/pricing/ and
  * https://api-docs.deepseek.com/guides/vision/ on 2026-09-16.
  */

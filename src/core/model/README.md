@@ -19,8 +19,9 @@ Model 是 Wish Core 的模型调用边界，只表达规范化请求、流式事
 - `retry`：失败尚未成为终态，调用将在等待后重试或切换候选。
 
 `start` 明确报告实际模型、developer role 的处理模式和是否发生 authority
-降级。调用方不得从模型名称或协议种类推断这些信息。`done` 携带完成原因和
-usage；消费方可以据流事件构造 `ModelOutput`。
+降级。调用方不得从模型名称或协议种类推断这些信息。`done` 携带完成原因、
+usage，以及可选的 Provider 响应创建时间（统一为 Unix 毫秒，仅供 Host 计费与审计）；
+消费方可以据流事件构造 `ModelOutput`。
 
 `ModelUsage` 的 input、output 和 total token 始终存在；Provider 无法区分缓存
 读取或缓存创建时，对应可选字段必须省略，不能用 `0` 表示未知。`source` 区分

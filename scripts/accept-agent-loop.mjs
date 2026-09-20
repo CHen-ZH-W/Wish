@@ -182,6 +182,7 @@ test("Runtime and AgentLoop complete the Context-Model-Tool-next-Step spine", as
       resolve() {
         environmentCall += 1;
         return {
+          instructions: [{ role: "system", content: "You are Wish." }],
           model: {
             provider: "provider",
             model: environmentCall === 1 ? "primary" : "changed-default",
@@ -223,6 +224,13 @@ test("Runtime and AgentLoop complete the Context-Model-Tool-next-Step spine", as
   assert.equal(requests.length, 2);
   assert.equal(requests[0].model.model, "primary");
   assert.equal(requests[1].model.model, "primary");
+  assert.deepEqual(requests[0].instructions, [
+    { role: "system", content: "You are Wish." },
+  ]);
+  assert.equal(Object.isFrozen(requests[0].instructions), true);
+  assert.equal(Object.isFrozen(requests[0].instructions[0]), true);
+  assert.deepEqual(requests[1].instructions, requests[0].instructions);
+  assert.equal(Object.isFrozen(requests[1].instructions), true);
   assert.deepEqual(requests[1].messages.map((message) => message.role), [
     "user",
     "assistant",

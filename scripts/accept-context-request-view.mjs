@@ -46,7 +46,7 @@ function fixture({ count = () => 8, staticInput = false } = {}) {
     id: "capture-view", provide(input) { views.push(input); return []; },
   }];
   const bundle = createContextBundle({
-    history: { read: () => [] }, agentInstructions: [],
+    history: { read: () => [] },
     archive: { archive() { throw new Error("No archive needed"); } },
     models: { getContextWindowTokens: () => 64 },
     counter: { count: () => ({ inputTokens: count(), method: "fixture" }) },
@@ -79,6 +79,7 @@ function fixture({ count = () => 8, staticInput = false } = {}) {
     environment: { resolve({ snapshot }) {
       return {
         model: modelRef,
+        instructions: [],
         context: staticInput
           ? { providers, input: legacy }
           : bundle.forStep({ snapshot, sessionId: "session-1", model: modelRef, workspace }),

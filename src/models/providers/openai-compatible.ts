@@ -11,6 +11,21 @@ import {
   mapOpenAIRequest,
   OpenAIRequestError,
 } from "./openai-compatible-request.js";
+import {
+  abortedError,
+  contextOverflow,
+  errorEvent,
+  freezeModelRef,
+  isSignalAborted,
+  jsonRecord,
+  networkError,
+  optionalRecord,
+  record,
+  safeProviderMessage,
+  stableProviderCreatedAt,
+  StreamParseError,
+  tokenCount,
+} from "./shared.js";
 import { decodeSse } from "./sse.js";
 
 export const OPENAI_CHAT_COMPLETIONS_PROTOCOL = "openai-chat-completions";
@@ -65,7 +80,11 @@ class OpenAICompatibleModel implements Model {
         },
       );
     } catch (error: unknown) {
-      yield errorEvent(fetchError(error, signal));
+      yield errorEvent(networkError(
+        error,
+        signal,
+        "OpenAI-compatible network request failed",
+      ));
       return;
     }
     if (!response.ok) {
@@ -93,6 +112,7 @@ class OpenAICompatibleModel implements Model {
     const toolCalls = new Map<number, ToolCallAccumulator>();
     let finishReason: string | undefined;
     let usage: ModelUsage | undefined;
+    let providerCreatedAt: number | undefined;
     let receivedDone = false;
     try {
       for await (const message of decodeSse(response)) {
@@ -104,6 +124,13 @@ class OpenAICompatibleModel implements Model {
         if (chunk.error !== undefined) {
           yield errorEvent(providerStreamError(chunk.error));
           return;
+        }
+        if (chunk.created !== undefined) {
+          providerCreatedAt = stableProviderCreatedAt(
+            providerCreatedAt,
+            chunk.created,
+            "OpenAI-compatible created",
+          );
         }
         // OpenAI-compatible providers may emit `usage: null` on intermediate
         // chunks before publishing the final usage object.
@@ -163,6 +190,7 @@ class OpenAICompatibleModel implements Model {
       type: "done" as const,
       ...(finishReason === undefined ? {} : { finishReason }),
       ...(usage === undefined ? {} : { usage }),
+      ...(providerCreatedAt === undefined ? {} : { providerCreatedAt }),
     });
   }
 }
@@ -177,7 +205,7 @@ function accumulateToolCalls(
   }
   for (const raw of value) {
     const delta = record(raw, "OpenAI-compatible Tool Call delta");
-    const index = nonNegativeInteger(delta.index, "Tool Call delta index");
+    const index = tokenCount(delta.index, "Tool Call delta index");
     const current = accumulators.get(index) ?? {
       id: "",
       name: "",
@@ -251,9 +279,35 @@ function parseUsage(value: unknown): ModelUsage {
     usage.prompt_tokens_details,
     "usage.prompt_tokens_details",
   );
-  const cachedInputTokens = details?.cached_tokens === undefined
+  const detailsCached = details?.cached_tokens === undefined
     ? undefined
     : tokenCount(details.cached_tokens, "usage.prompt_tokens_details.cached_tokens");
+  const nativeCached = usage.prompt_cache_hit_tokens === undefined
+    ? undefined
+    : tokenCount(usage.prompt_cache_hit_tokens, "usage.prompt_cache_hit_tokens");
+  if (
+    detailsCached !== undefined && nativeCached !== undefined &&
+    detailsCached !== nativeCached
+  ) {
+    throw new StreamParseError(
+      "OpenAI-compatible cached token fields must agree",
+    );
+  }
+  const cacheMiss = usage.prompt_cache_miss_tokens === undefined
+    ? undefined
+    : tokenCount(usage.prompt_cache_miss_tokens, "usage.prompt_cache_miss_tokens");
+  const cachedInputTokens = detailsCached ?? nativeCached ?? (
+    cacheMiss === undefined ? undefined : inputTokens - cacheMiss
+  );
+  if (
+    cachedInputTokens !== undefined &&
+    (cachedInputTokens < 0 || cachedInputTokens > inputTokens ||
+      (cacheMiss !== undefined && cachedInputTokens + cacheMiss !== inputTokens))
+  ) {
+    throw new StreamParseError(
+      "OpenAI-compatible cache hit and miss tokens must equal prompt tokens",
+    );
+  }
   const rawCacheWrite = details?.cache_creation_tokens ?? usage.cache_creation_input_tokens;
   const cacheWriteInputTokens = rawCacheWrite === undefined
     ? undefined
@@ -339,15 +393,6 @@ async function httpError(response: Response): Promise<ModelError> {
   };
 }
 
-function fetchError(error: unknown, signal: AbortSignal | undefined): ModelError {
-  if (signal?.aborted === true || isAbortError(error)) return abortedError(signal?.reason);
-  return {
-    code: "network_error",
-    message: "OpenAI-compatible network request failed",
-    retryable: true,
-  };
-}
-
 function requestError(error: unknown): ModelError {
   return {
     code: "invalid_request",
@@ -356,78 +401,4 @@ function requestError(error: unknown): ModelError {
       : "OpenAI-compatible request could not be mapped",
     retryable: false,
   };
-}
-
-function abortedError(reason: unknown): ModelError {
-  return {
-    code: "aborted",
-    message: reason instanceof Error
-      ? reason.message
-      : typeof reason === "string" && reason.length > 0
-        ? reason
-        : "Model request was aborted",
-    retryable: false,
-  };
-}
-
-function errorEvent(error: ModelError): ModelStreamEvent {
-  return Object.freeze({ type: "error" as const, error: Object.freeze(error) });
-}
-
-function contextOverflow(code: string, message: string): boolean {
-  return /context[_ -]length|context window|too many tokens|maximum context/iu.test(
-    `${code} ${message}`,
-  );
-}
-
-function safeProviderMessage(message: string): string {
-  return message.length <= 500 ? message : `${message.slice(0, 497)}...`;
-}
-
-function tokenCount(value: unknown, path: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new StreamParseError(`${path} must be a non-negative safe integer`);
-  }
-  return value as number;
-}
-
-function nonNegativeInteger(value: unknown, path: string): number {
-  return tokenCount(value, path);
-}
-
-function jsonRecord(value: string, path: string): Record<string, unknown> {
-  try {
-    return record(JSON.parse(value) as unknown, path);
-  } catch (error: unknown) {
-    if (error instanceof StreamParseError) throw error;
-    throw new StreamParseError(`${path} is malformed JSON`);
-  }
-}
-
-function optionalRecord(
-  value: unknown,
-  path: string,
-): Record<string, unknown> | undefined {
-  return value === undefined || value === null ? undefined : record(value, path);
-}
-
-function record(value: unknown, path: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new StreamParseError(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function freezeModelRef(model: { readonly provider: string; readonly model: string }) {
-  return Object.freeze({ provider: model.provider, model: model.model });
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
-class StreamParseError extends Error {}
-
-function isSignalAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
 }

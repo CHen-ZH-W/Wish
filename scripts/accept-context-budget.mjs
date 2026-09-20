@@ -9,6 +9,7 @@ const model = Object.freeze({ provider: "provider", model: "model" });
 function request() {
   return {
     model,
+    instructions: [{ role: "system", content: "stable" }],
     messages: [{ role: "user", content: "complete final request" }],
     tools: [{
       name: "lookup",
@@ -28,6 +29,7 @@ function evaluator(inputTokens, overrides = {}) {
     },
     counter: {
       count({ request: finalRequest }) {
+        assert.equal(finalRequest.instructions[0].content, "stable");
         assert.equal(finalRequest.messages[0].content, "complete final request");
         assert.equal(finalRequest.tools[0].inputSchemaJson, '{"type":"object"}');
         return { inputTokens, method: "fixture-request-tokenizer-v1" };

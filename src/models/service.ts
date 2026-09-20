@@ -19,6 +19,11 @@ import {
   ModelAdapterRegistry,
   type ModelAdapterRegistration,
 } from "./registry.js";
+import {
+  createDefaultModelPricingResolver,
+  type ModelPricingPolicy,
+  type ModelPricingPolicyRegistration,
+} from "./pricing.js";
 import { canonicalModelSelection } from "./selection.js";
 import { DomainSessionReasoningStore, SessionReasoningSelections, type SessionReasoningStore } from "./session-reasoning.js";
 import type {
@@ -71,6 +76,7 @@ export interface OpenModelsInput {
   readonly fetch?: ModelFetch;
   readonly usageEstimator?: UsageEstimator;
   readonly retry?: ConfiguredModelStackOptions["retry"];
+  readonly attemptLedger?: ConfiguredModelStackOptions["attemptLedger"];
 }
 
 /** Cordis owner of configuration, protocol registration, and request resources. */
@@ -79,6 +85,7 @@ export class Models extends Service {
   static readonly Config = Config;
 
   readonly registry = new ModelAdapterRegistry();
+  readonly pricing = createDefaultModelPricingResolver();
   readonly usageEstimator = new TokenizerUsageEstimator();
   private selection: {
     readonly signature: string;
@@ -103,6 +110,20 @@ export class Models extends Service {
       this.ctx.effect(() => () => {
         registration.unregister();
       }, `models.register(${JSON.stringify(registration.protocol)})`);
+    } catch (error: unknown) {
+      registration.unregister();
+      throw error;
+    }
+    return registration;
+  }
+
+  /** Register a Provider Pricing policy for exactly the calling plugin fiber lifetime. */
+  registerPricing(policy: ModelPricingPolicy): ModelPricingPolicyRegistration {
+    const registration = this.pricing.register(policy);
+    try {
+      this.ctx.effect(() => () => {
+        registration.unregister();
+      }, `models.registerPricing(${JSON.stringify(registration.provider)})`);
     } catch (error: unknown) {
       registration.unregister();
       throw error;
@@ -160,6 +181,7 @@ export class Models extends Service {
     const resources = createConfiguredModelResources({
       configuration,
       registry: this.registry,
+      pricing: this.pricing,
       usageEstimator: input.usageEstimator ?? this.usageEstimator,
       ...(preferences === undefined ? {} : {
         defaultModel: preferences.defaultModel,
@@ -170,6 +192,9 @@ export class Models extends Service {
       environment: input.environment ?? (() => this.ctx.launch.environment),
       credential: input.credential ?? (reference => credentials?.resolve(reference)),
       ...(input.retry === undefined ? {} : { retry: input.retry }),
+      ...(input.attemptLedger === undefined
+        ? {}
+        : { attemptLedger: input.attemptLedger }),
     });
     if (this.ctx.launch.surface !== "webui") return resources;
     const backend = this.ctx.get("storageBackend");

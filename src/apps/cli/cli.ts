@@ -265,10 +265,6 @@ class DefaultWishCli implements WishCli {
     const childId = requireDefined(args.childId, "Subagent child id");
     const childSessionId = requireDefined(args.childSessionId, "Subagent Session id");
     const childRunId = requireDefined(args.childRunId, "Subagent Run id");
-    const dataDirectory = resolve(
-      launchDirectory,
-      requireDefined(args.dataDirectory, "Subagent data directory"),
-    );
     const exchange = new FileSubagentExchange(resolve(
       launchDirectory,
       requireDefined(args.exchangeDataDirectory, "Subagent exchange data directory"),

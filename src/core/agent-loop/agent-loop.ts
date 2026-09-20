@@ -154,6 +154,7 @@ export class AgentLoop<
       });
       const request = {
         model,
+        instructions: freezeInstructions(environment.instructions ?? []),
         messages: memory.messages,
         tools: this.options.tools.listForSnapshot(toolSnapshot).map((tool) =>
           Object.freeze({
@@ -174,6 +175,11 @@ export class AgentLoop<
         ...(environment.request?.metadata === undefined
           ? {}
           : { metadata: environment.request.metadata }),
+        ...(environment.request?.invocationScope === undefined
+          ? {}
+          : { invocationScope: freezeInvocationScope(
+            environment.request.invocationScope,
+          ) }),
       };
       projection = await this.options.context.projectFromProviders({
         request,
@@ -537,6 +543,26 @@ function freezeMessage(message: ModelMessage): ModelMessage {
   });
 }
 
+function freezeInstructions(
+  instructions: AgentLoopStepEnvironment["instructions"],
+): AgentLoopStepEnvironment["instructions"] {
+  if (!Array.isArray(instructions)) {
+    throw new Error("AgentLoop instructions must be an array");
+  }
+  return Object.freeze(instructions.map((instruction, index) => {
+    if (instruction === null || typeof instruction !== "object") {
+      throw new Error(`AgentLoop instruction ${index + 1} must be an object`);
+    }
+    if (instruction.role !== "system" && instruction.role !== "developer") {
+      throw new Error(`AgentLoop instruction ${index + 1} has an invalid role`);
+    }
+    if (typeof instruction.content !== "string" || instruction.content.trim().length === 0) {
+      throw new Error(`AgentLoop instruction ${index + 1} must contain text`);
+    }
+    return Object.freeze({ role: instruction.role, content: instruction.content });
+  }));
+}
+
 function validateMemory(memory: AgentLoopMemory): AgentLoopMemory {
   if (memory.schemaVersion !== 1) throw new Error("Unknown AgentLoop memory schemaVersion");
   if (!Number.isSafeInteger(memory.currentUserMessageIndex)) {
@@ -594,7 +620,21 @@ function validateEnvironment<ContextInput, ToolContext>(
   ) {
     throw new Error("Model maxOutputTokens must be a positive safe integer");
   }
+  if (environment.request?.invocationScope !== undefined) {
+    freezeInvocationScope(environment.request.invocationScope);
+  }
   return environment;
+}
+
+function freezeInvocationScope(
+  scope: import("../model/types.js").ModelInvocationScope,
+): import("../model/types.js").ModelInvocationScope {
+  return Object.freeze({
+    sessionId: requireIdentifier(scope.sessionId, "Model invocation Session id"),
+    runId: requireIdentifier(scope.runId, "Model invocation Run id"),
+    userTurnId: requireIdentifier(scope.userTurnId, "Model invocation UserTurn id"),
+    stepId: requireIdentifier(scope.stepId, "Model invocation Step id"),
+  });
 }
 
 function freezeModelRef(model: ModelRef): ModelRef {

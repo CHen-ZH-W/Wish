@@ -11,6 +11,19 @@ import {
   AnthropicRequestError,
   mapAnthropicRequest,
 } from "./anthropic-messages-request.js";
+import {
+  abortedError,
+  contextOverflow,
+  errorEvent,
+  isSignalAborted,
+  jsonRecord,
+  networkError,
+  optionalRecord,
+  record,
+  safeProviderMessage,
+  StreamParseError,
+  tokenCount,
+} from "./shared.js";
 import { decodeSse } from "./sse.js";
 
 export const ANTHROPIC_MESSAGES_PROTOCOL = "anthropic-messages";
@@ -72,7 +85,11 @@ class AnthropicMessagesModel implements Model {
         ...(signal === undefined ? {} : { signal }),
       });
     } catch (error: unknown) {
-      yield errorEvent(fetchError(error, signal));
+      yield errorEvent(networkError(
+        error,
+        signal,
+        "Anthropic network request failed",
+      ));
       return;
     }
     if (!response.ok) {
@@ -371,15 +388,6 @@ function providerStreamError(value: unknown): ModelError {
     : { code: "provider_error", message, retryable: false };
 }
 
-function fetchError(error: unknown, signal: AbortSignal | undefined): ModelError {
-  if (signal?.aborted === true || isAbortError(error)) return abortedError(signal?.reason);
-  return {
-    code: "network_error",
-    message: "Anthropic network request failed",
-    retryable: true,
-  };
-}
-
 function requestError(error: unknown): ModelError {
   return {
     code: "invalid_request",
@@ -389,73 +397,6 @@ function requestError(error: unknown): ModelError {
     retryable: false,
   };
 }
-
-function abortedError(reason: unknown): ModelError {
-  return {
-    code: "aborted",
-    message: reason instanceof Error
-      ? reason.message
-      : typeof reason === "string" && reason.length > 0
-        ? reason
-        : "Model request was aborted",
-    retryable: false,
-  };
-}
-
-function errorEvent(error: ModelError): ModelStreamEvent {
-  return Object.freeze({ type: "error" as const, error: Object.freeze(error) });
-}
-
 function requireStarted(started: boolean, type: string | undefined): void {
   if (!started) throw new StreamParseError(`Anthropic emitted ${type ?? "an event"} before start`);
-}
-
-function jsonRecord(value: string, path: string): Record<string, unknown> {
-  try {
-    return record(JSON.parse(value) as unknown, path);
-  } catch (error: unknown) {
-    if (error instanceof StreamParseError) throw error;
-    throw new StreamParseError(`${path} is malformed JSON`);
-  }
-}
-
-function optionalRecord(
-  value: unknown,
-  path: string,
-): Record<string, unknown> | undefined {
-  return value === undefined || value === null ? undefined : record(value, path);
-}
-
-function record(value: unknown, path: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new StreamParseError(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function tokenCount(value: unknown, path: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new StreamParseError(`${path} must be a non-negative safe integer`);
-  }
-  return value as number;
-}
-
-function contextOverflow(code: string, message: string): boolean {
-  return /context[_ -]length|context window|too many tokens|maximum context/iu.test(
-    `${code} ${message}`,
-  );
-}
-
-function safeProviderMessage(message: string): string {
-  return message.length <= 500 ? message : `${message.slice(0, 497)}...`;
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
-class StreamParseError extends Error {}
-
-function isSignalAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
 }

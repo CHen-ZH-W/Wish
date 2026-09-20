@@ -12,6 +12,7 @@ const model = Object.freeze({ provider: "provider", model: "model" });
 function request() {
   return {
     model: { ...model },
+    instructions: [{ role: "system", content: "stable instruction" }],
     messages: [
       {
         role: "assistant",
@@ -37,6 +38,7 @@ function request() {
       description: "Lookup a value",
       inputSchemaJson: '{"type":"object","properties":{"query":{"type":"string"}}}',
     }],
+    reasoningEffort: "high",
     maxOutputTokens: 512,
     metadata: { trace: { id: "trace-1" } },
   };
@@ -49,6 +51,7 @@ test("counts one immutable complete request for an exact model identity", async 
     method: "fixture-request-tokenizer-v1",
     count(input) {
       tokenizerInput = input;
+      assert.equal(input.request.instructions[0].content, "stable instruction");
       assert.equal(input.request.messages[0].reasoningContent, "reasoning");
       assert.equal(
         input.request.messages[0].toolCalls[0].argumentsJson,
@@ -56,6 +59,7 @@ test("counts one immutable complete request for an exact model identity", async 
       );
       assert.equal(input.request.messages[1].contentParts[0].type, "image_url");
       assert.match(input.request.tools[0].inputSchemaJson, /properties/u);
+      assert.equal(input.request.reasoningEffort, "high");
       return 73;
     },
   });
@@ -63,6 +67,7 @@ test("counts one immutable complete request for an exact model identity", async 
   const count = await counter.count({ request: source });
 
   source.messages[0].content = "mutated";
+  source.instructions[0].content = "mutated";
   source.messages[1].contentParts[0].imageUrl.url = "mutated";
   source.tools[0].inputSchemaJson = "{}";
   assert.deepEqual(count, {
@@ -70,11 +75,13 @@ test("counts one immutable complete request for an exact model identity", async 
     method: "fixture-request-tokenizer-v1",
   });
   assert.equal(tokenizerInput.request.messages[0].content, "answer");
+  assert.equal(tokenizerInput.request.instructions[0].content, "stable instruction");
   assert.equal(
     tokenizerInput.request.messages[1].contentParts[0].imageUrl.url,
     "data:image/png;base64,YQ==",
   );
   assert.match(tokenizerInput.request.tools[0].inputSchemaJson, /properties/u);
+  assert.equal(tokenizerInput.request.reasoningEffort, "high");
   assert.equal(Object.isFrozen(tokenizerInput.request), true);
   assert.equal(Object.isFrozen(tokenizerInput.request.messages), true);
   assert.equal(Object.isFrozen(tokenizerInput.request.messages[1].contentParts), true);
@@ -203,8 +210,8 @@ test("configured counter uses Anthropic's exact endpoint and current credentials
   });
   const anthropicRequest = {
     model: { provider: "anthropic", model: "claude-test" },
+    instructions: [{ role: "developer", content: "Follow the contract" }],
     messages: [
-      { role: "developer", content: "Follow the contract" },
       { role: "user", content: "question" },
       {
         role: "assistant",
@@ -281,6 +288,7 @@ test("configured Anthropic counter reports unavailable on Provider failure", asy
   assert.equal(await counter.count({
     request: {
       model: { provider: "anthropic", model: "claude-test" },
+      instructions: [],
       messages: [{ role: "user", content: "hello" }],
       tools: [],
     },

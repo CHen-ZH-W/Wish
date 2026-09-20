@@ -56,6 +56,7 @@ const loop = new AgentLoop<Configuration, Payload, ContextInput, ToolContext>({
     resolve(input) {
       return {
         model: { provider: "provider", model: input.definition.configuration?.model ?? "default" },
+        instructions: [],
         context: {
           providers: [],
           input: { conversationId: input.snapshot.run.scope },

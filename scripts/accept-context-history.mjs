@@ -160,7 +160,7 @@ test("selects the latest checkpoint, exact covered user text, and recent history
   ];
 
   const selection = policy.select({
-    request: { model, messages: [{ role: "user", content: "current" }], tools: [] },
+    request: { model, instructions: [], messages: [{ role: "user", content: "current" }], tools: [] },
     items,
   });
 
@@ -181,7 +181,7 @@ test("selects the latest checkpoint, exact covered user text, and recent history
 
 test("rejects duplicate sequence, backwards checkpoints, and split Tool units", () => {
   const policy = new LatestCheckpointHistoryPolicy();
-  const request = { model, messages: [{ role: "user", content: "current" }], tools: [] };
+  const request = { model, instructions: [], messages: [{ role: "user", content: "current" }], tools: [] };
 
   assert.throws(() => policy.select({
     request,

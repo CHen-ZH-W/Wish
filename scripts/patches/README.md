@@ -26,7 +26,7 @@ explicitly reviewed Step-local owners; it is not a general resource/state migrat
 `apply-cordis-hmr-patch.mjs` uses the existing `diff` dependency, validates all target hashes before
 writing, and is idempotent across clean or partially applied installs. No network or Git executable
 is needed at install time. `postinstall`, `prebuild`, and `pretypecheck` invoke it. Keep the patch's
-coordination marker intact: Boot refuses to start without `Hmr.coordinationVersion === 2`, even
+coordination marker intact: Boot refuses to start without `Hmr.coordinationVersion === 3`, even
 when dependencies were installed with lifecycle scripts disabled. Keep the upstream
 version pinned; do not update hashes to bypass a mismatch. Review source changes and regenerate
 runtime/types patches together when rebasing. The runtime artifact in this patch was bundled with

@@ -4,6 +4,7 @@ import type { ContextInput } from "./types.js";
 export interface ContextObservation {
   readonly sessionId: string; readonly runId: string; readonly userTurnId: string; readonly stepId: string; readonly observedAt: string;
   readonly status: ContextProjection["status"]; readonly model: { readonly provider: string; readonly model: string };
+  readonly instructions: readonly { readonly index: number; readonly role: string; readonly chars: number }[];
   readonly providers: readonly { readonly id: string; readonly items: readonly { readonly id: string; readonly kind: string; readonly placement: string; readonly included: boolean }[] }[];
   readonly messages: readonly { readonly index: number; readonly role: string; readonly chars: number; readonly toolNames: readonly string[] }[];
   readonly tools: readonly string[]; readonly budget: ContextProjection["budget"];
@@ -32,6 +33,7 @@ export class ContextObservations {
     const key = `${input.sessionId}/${input.runId}/${input.stepId}`;
     const observation = { sessionId: input.sessionId, runId: input.runId, userTurnId: input.userTurnId, stepId: input.stepId, observedAt: new Date().toISOString(), status: projection.status,
       model: request.model,
+      instructions: request.instructions.map((instruction, index) => ({ index, role: instruction.role, chars: instruction.content.length })),
       providers: projection.providerGroups.map(group => ({ id: group.providerId, items: group.items.map(item => ({ id: item.id, kind: item.kind, placement: item.placement, included: included.has(item.id) })) })),
       messages: request.messages.map((message, index) => ({ index, role: message.role, chars: message.content.length, toolNames: (message.toolCalls ?? []).map(call => call.name) })),
       tools: request.tools.map(tool => tool.name), budget: { status: projection.budget.status,

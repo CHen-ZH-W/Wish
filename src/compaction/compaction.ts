@@ -45,6 +45,9 @@ export class SessionCompactor implements ContextOverflowCompactor {
 
     const summary = await this.options.summarizer.summarize({
       oldEntries: planned.plan.oldEntries,
+      ...(input.invocationScope === undefined
+        ? {}
+        : { invocationScope: input.invocationScope }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     throwIfAborted(input.signal);

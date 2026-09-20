@@ -1,6 +1,8 @@
 import type { AgentDefinition, AgentInputSource } from "../agent/types.js";
 import type { ContextProvider } from "../context/context.js";
 import type {
+  ModelInstruction,
+  ModelInvocationScope,
   ModelMessage,
   ModelMetadata,
   ModelOutput,
@@ -74,6 +76,8 @@ export interface AgentLoopRequestOptions {
   readonly maxOutputTokens?: number;
   readonly reasoningEffort?: string;
   readonly metadata?: ModelMetadata;
+  /** Host-only correlation supplied by composition, never by model configuration. */
+  readonly invocationScope?: ModelInvocationScope;
 }
 
 /** Typed view resolved from the immutable Runtime Step snapshot. */
@@ -82,6 +86,8 @@ export interface AgentLoopStepEnvironment<
   ToolContext = unknown,
 > {
   readonly model: ModelRef;
+  /** Stable instructions resolved for this exact immutable Step. */
+  readonly instructions: readonly ModelInstruction[];
   readonly context: AgentLoopContextEnvironment<ContextInput>;
   readonly tools: AgentLoopToolEnvironment<ToolContext>;
   readonly request?: AgentLoopRequestOptions;

@@ -247,6 +247,7 @@ test("DeepSeek thinking Tool call replays complete reasoning and streamed usage 
       requests.push(body);
       assert.equal(body.model, "deepseek-flash");
       assert.deepEqual(body.thinking, { type: "enabled" });
+      assert.equal(body.reasoning_effort, "low");
       assert.deepEqual(body.stream_options, { include_usage: true });
       assert.equal(body.tools[0].function.name, "sum");
       if (requests.length === 1) {
@@ -284,6 +285,7 @@ test("DeepSeek thinking Tool call replays complete reasoning and streamed usage 
           model: stack.configuredModel.getDefaultModel(),
           context: { providers: [], input: {} },
           tools: { context: {}, authorityVersion: "authority-1" },
+          request: { reasoningEffort: "low" },
         };
       },
     }),

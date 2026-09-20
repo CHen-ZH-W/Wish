@@ -9,11 +9,12 @@ test("Context observation uses actual projection order, contains no prompt bodie
   const projector = new ObservedContextProjector({}, observations.record);
   const input = { sessionId: "s", runId: "r", userTurnId: "turn", stepId: "step" };
   const projection = await projector.projectFromProviders({ providerInput: input,
-    request: { model: { provider: "fixture", model: "m" }, messages: [{ role: "user", content: "PRIVATE USER BODY" }], tools: [] }, currentUserMessageIndex: 0,
+    request: { model: { provider: "fixture", model: "m" }, instructions: [{ role: "system", content: "PRIVATE STABLE BODY" }], messages: [{ role: "user", content: "PRIVATE USER BODY" }], tools: [] }, currentUserMessageIndex: 0,
     providers: [{ id: "private-provider", provide: () => [{ id: "instructions", kind: "instruction", placement: "stable_prefix", message: { role: "developer", content: "PRIVATE INSTRUCTION BODY" } }] }],
   });
   assert.equal(projection.request.messages[0].content, "PRIVATE INSTRUCTION BODY");
   const [view] = observations.list("s"); assert.equal(view.budget.status, "unknown");
+  assert.deepEqual(view.instructions, [{ index: 0, role: "system", chars: 19 }]);
   assert.deepEqual(view.messages.map(item => item.role), ["developer", "user"]); assert.equal(view.providers[0].items[0].included, true);
   assert.equal(JSON.stringify(view).includes("PRIVATE"), false); assert.deepEqual(observations.list("other"), []); assert.ok(Object.isFrozen(view.messages));
   for (let i = 0; i < 120; i++) observations.record({ ...input, stepId: String(i) }, projection);

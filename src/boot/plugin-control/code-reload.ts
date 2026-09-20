@@ -57,7 +57,7 @@ class CodeReloadCoordinator implements CodeReloadInspection {
 
   constructor(private readonly root: Context, private readonly inspection: PluginInspection) {
     const coordinator = this;
-    root.on("internal/config", function (config, next) {
+    root.on("internal/config", function (_config, next) {
       const value = next();
       // Managed config has one owner. Even an explicitly addressed native HMR
       // entry must not refresh Include trees outside that owner's transaction.

@@ -11,6 +11,21 @@ import {
   mapOpenAIResponsesRequest,
   OpenAIResponsesRequestError,
 } from "./openai-responses-request.js";
+import {
+  abortedError,
+  contextOverflow,
+  errorEvent,
+  freezeModelRef,
+  isSignalAborted,
+  jsonRecord,
+  networkError,
+  optionalRecord,
+  record,
+  safeProviderMessage,
+  stableProviderCreatedAt,
+  StreamParseError,
+  tokenCount,
+} from "./shared.js";
 import { decodeSse } from "./sse.js";
 
 export const OPENAI_RESPONSES_PROTOCOL = "openai-responses";
@@ -63,7 +78,11 @@ class OpenAIResponsesModel implements Model {
         ...(signal === undefined ? {} : { signal }),
       });
     } catch (error: unknown) {
-      yield errorEvent(fetchError(error, signal));
+      yield errorEvent(networkError(
+        error,
+        signal,
+        "OpenAI Responses network request failed",
+      ));
       return;
     }
     if (!response.ok) {
@@ -95,12 +114,27 @@ class OpenAIResponsesModel implements Model {
     let terminal = false;
     let finishReason: string | undefined;
     let usage: ModelUsage | undefined;
+    let providerCreatedAt: number | undefined;
     try {
       for await (const sse of decodeSse(response)) {
         if (sse.data === "[DONE]") break;
         const event = jsonRecord(sse.data, "OpenAI Responses SSE data");
         const type = typeof event.type === "string" ? event.type : sse.event;
         switch (type) {
+          case "response.created": {
+            const created = record(
+              event.response,
+              "OpenAI Responses created response",
+            );
+            if (created.created_at !== undefined) {
+              providerCreatedAt = stableProviderCreatedAt(
+                providerCreatedAt,
+                created.created_at,
+                "OpenAI Responses created_at",
+              );
+            }
+            break;
+          }
           case "response.output_item.added": {
             const item = record(event.item, "OpenAI Responses output item");
             if (item.type === "function_call") {
@@ -214,6 +248,13 @@ class OpenAIResponsesModel implements Model {
             usage = completed.usage === undefined || completed.usage === null
               ? undefined
               : parseUsage(completed.usage);
+            if (completed.created_at !== undefined) {
+              providerCreatedAt = stableProviderCreatedAt(
+                providerCreatedAt,
+                completed.created_at,
+                "OpenAI Responses created_at",
+              );
+            }
             finishReason = mapFinishReason(completed, emittedToolCalls > 0);
             terminal = true;
             break;
@@ -252,6 +293,7 @@ class OpenAIResponsesModel implements Model {
       type: "done" as const,
       ...(finishReason === undefined ? {} : { finishReason }),
       ...(usage === undefined ? {} : { usage }),
+      ...(providerCreatedAt === undefined ? {} : { providerCreatedAt }),
     });
   }
 }
@@ -509,15 +551,6 @@ async function httpError(response: Response): Promise<ModelError> {
   };
 }
 
-function fetchError(error: unknown, signal: AbortSignal | undefined): ModelError {
-  if (signal?.aborted === true || isAbortError(error)) return abortedError(signal?.reason);
-  return {
-    code: "network_error",
-    message: "OpenAI Responses network request failed",
-    retryable: true,
-  };
-}
-
 function requestError(error: unknown): ModelError {
   return {
     code: "invalid_request",
@@ -527,67 +560,10 @@ function requestError(error: unknown): ModelError {
     retryable: false,
   };
 }
-
-function abortedError(reason: unknown): ModelError {
-  return {
-    code: "aborted",
-    message: reason instanceof Error
-      ? reason.message
-      : typeof reason === "string" && reason.length > 0
-        ? reason
-        : "Model request was aborted",
-    retryable: false,
-  };
-}
-
-function errorEvent(error: ModelError): ModelStreamEvent {
-  return Object.freeze({ type: "error" as const, error: Object.freeze(error) });
-}
-
-function contextOverflow(code: string, message: string): boolean {
-  return /context[_ -]length|context window|too many tokens|maximum context/iu.test(
-    `${code} ${message}`,
-  );
-}
-
-function safeProviderMessage(message: string): string {
-  return message.length <= 500 ? message : `${message.slice(0, 497)}...`;
-}
-
-function tokenCount(value: unknown, path: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new StreamParseError(`${path} must be a non-negative safe integer`);
-  }
-  return value as number;
-}
-
-function jsonRecord(value: string, path: string): Record<string, unknown> {
-  try {
-    return record(JSON.parse(value) as unknown, path);
-  } catch (error: unknown) {
-    if (error instanceof StreamParseError) throw error;
-    throw new StreamParseError(`${path} is malformed JSON`);
-  }
-}
-
 function optionalArray(value: unknown, path: string): readonly unknown[] {
   if (value === undefined || value === null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new StreamParseError(`${path} must be an array`);
   return value;
-}
-
-function optionalRecord(
-  value: unknown,
-  path: string,
-): Record<string, unknown> | undefined {
-  return value === undefined || value === null ? undefined : record(value, path);
-}
-
-function record(value: unknown, path: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new StreamParseError(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
 }
 
 function requiredString(
@@ -600,17 +576,3 @@ function requiredString(
   }
   return value;
 }
-
-function freezeModelRef(model: { readonly provider: string; readonly model: string }) {
-  return Object.freeze({ provider: model.provider, model: model.model });
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
-function isSignalAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
-class StreamParseError extends Error {}

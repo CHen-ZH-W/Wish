@@ -26,7 +26,6 @@ import {
   type ContextConfiguration,
   type ContextHistorySource,
   type ContextInput,
-  type ContextInstruction,
   type ContextProviderId,
   type ContextSessionId,
   type ContextToolResultAdmissionConfiguration,
@@ -51,7 +50,6 @@ export interface ContextBundleConfigurationInput {
 export interface ContextBundleOptions {
   readonly observe?: ContextObservationListener;
   readonly history: ContextHistorySource;
-  readonly agentInstructions: readonly ContextInstruction[];
   readonly archive: ToolResultArchivePort;
   readonly models: ModelContextWindowSource;
   readonly counter: ModelInputTokenCounter;
@@ -109,9 +107,7 @@ export function createContextBundle(options: ContextBundleOptions): ContextBundl
     reservedOutputTokens: options.configuration.reservedOutputTokens,
   });
   const fixedProviders: readonly ContextProvider<ContextInput>[] = [
-    new InstructionsContextProvider({
-      agentInstructions: options.agentInstructions,
-    }),
+    new InstructionsContextProvider(),
     new HistoryContextProvider({ source: options.history }),
     new StateContextProvider(),
     ...snapshotAdditionalProviders(options.additionalProviders),

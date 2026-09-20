@@ -12,10 +12,13 @@ Cordis Models service
   ← OpenAI Responses Adapter plugin
   ← Anthropic Messages Adapter plugin
   → Models configuration
-  → ConfiguredModel
-  → UsageResolvingModel
+core/agent-loop.AgentLoop
   → core/model.RetryingModel
-  → core/agent-loop.AgentLoop
+  → AttemptRecordingModel
+      → modelAttemptLedger → Storage Journal
+  → UsageResolvingModel
+  → ConfiguredModel
+  → protocol Adapter
 ```
 
 - `types.ts`：公开的 Provider、Model、兼容性、价格和 Adapter DTO。
@@ -36,6 +39,8 @@ Cordis Models service
 - `providers/`：OpenAI Responses、OpenAI Chat Completions-compatible 与
   Anthropic Messages 转换。
 - `usage.ts`：按完整模型身份注册 tokenizer、补齐缺失 usage、计算费用。
+- `pricing.ts`：解析 Provider/model/时点/币种对应的不可变 quote。
+- `pricing/`：记录每个 Provider attempt，并通过独立 Port 把领域事件接到 Storage Journal。
 - `input-tokens.ts`：按完整模型身份注册 request-only tokenizer，为 Context 提供调用
   前的输入 Token 计数。
 - `providers/anthropic-messages-tokens.ts`：调用 Anthropic Messages 官方计数端点，
@@ -51,6 +56,11 @@ Provider 不发布 Runtime event、不执行 Tool、不聚合 `ModelOutput`，�
 或 fallback。`ConfiguredModel` 同样不做 retry；`createConfiguredModelStack` 只按上图
 固定顺序组合现有装饰器。
 
+Core 的 `ModelRequest` 把输入分成三个独立通道：稳定的 `instructions`、按顺序排列的
+`messages`、以及确定的 `tools` 快照。Adapter 负责按目标协议映射：OpenAI-compatible
+把 instructions 前置成 system/developer message，OpenAI Responses 前置成 input item，
+Anthropic 则映射到顶层 `system`。三种协议的 Tool Schema 都保持顶层独立字段。
+
 ## 配置
 
 没有提供 JSON 时，Wish 使用提交在仓库中的 generated defaults。当前快照从
@@ -64,7 +74,8 @@ Provider 定义决定协议、endpoint 和鉴权；远端模型源只能提供�
 当前默认选择 `deepseek/deepseek-flash`。旧 `deepseek-v4-flash` 与
 `deepseek-v4-flash-vision-exp` 保留为已退役兼容名；已保存的旧选择在实际使用时指向新版
 Flash，不静默改写原设置。DeepSeek 的峰谷价格和 OpenRouter 的分段价格都不会压扁成
-失真的静态价格，因此价格未知。generated 元数据不等于当前账号已经可以调用。
+失真的静态价格：DeepSeek 由内置动态 Pricing Policy 解析；OpenRouter 的分段价格在没有
+对应 Provider Policy 时仍保持未知。generated 元数据不等于当前账号已经可以调用。
 
 普通 `npm run build` 不访问网络。显式刷新和校验 generated 文件：
 
@@ -215,7 +226,10 @@ auth、developer authority、价格和引用都会在加载阶段失败。
   tool_use 增量 JSON、cache read/create usage 和 Messages SSE。
 
 OpenAI-compatible SSE 的中间 chunk 可以携带 `usage: null`；它按缺失 usage 处理，只有
-实际 usage 对象才会更新最终完成事件的统计。
+实际 usage 对象才会更新最终完成事件的统计。缓存命中优先读取标准
+`prompt_tokens_details.cached_tokens`，缺失时兼容 DeepSeek 顶层
+`prompt_cache_hit_tokens`，只有 miss 时可由 `prompt_tokens - prompt_cache_miss_tokens`
+恢复；多个字段同时存在却不一致时拒绝该 usage，避免静默产生错误账单。
 
 新协议插件注入 `models`，再调用 `ctx.models.register(protocol, factory)`；注册 effect
 属于调用插件 fiber，所以 stable-id disable、reload、Models service 消失和 Root dispose
@@ -238,10 +252,34 @@ Provider usage 优先。完成事件没有 usage 时，`UsageResolvingModel` 查
 保留 usage 缺失，不伪造 token。Tokenizer 接收最终 Core `ModelRequest` 和聚合视图，
 因此实现必须计算消息、Tool schema、Tool Call、图片、reasoning 与正文。
 
-`calculateModelCost` 使用实际完成模型的 price version/currency，分别计算 uncached
-input、cache read、cache write 和 output。缓存 usage 或对应价格未知时返回
-`status: "unavailable"`，但不影响模型结果。Models 不负责 Run/UserTurn 归因、跨
-Step 指标持久化或 UI 展示。
+`pricing.ts` 先按一次实际 Provider 请求解析不可变 `ModelPriceQuote`，再由
+`calculateModelCost` 分别计算 uncached input、cache read、cache write 和 output。
+静态模型价格解析为 `flat` quote；DeepSeek Policy 共享工作日 UTC 峰谷窗口，但按
+Flash/Pro、USD/CNY 选择不同费率，并把旧 Flash 兼容名归到当前 Flash 计费模型。
+OpenAI-compatible `created` 与 OpenAI Responses `created_at` 会统一为 Unix 毫秒；
+Provider 创建时间存在时优先作为时段依据，否则使用请求开始时间；quote 固化
+requested/billed model、price version、period、currency、时点和 time basis，不执行隐式
+汇率换算。缓存 usage、适用价格或币种未知时费用返回 `status: "unavailable"`，但不影响
+模型结果。
+
+`ConfiguredModel.getPriceQuote()` 暴露按请求尝试解析价格的 Host API。重试、Tool 后续
+Step 和 fallback 必须分别取 quote，不能在聚合后的 UserTurn usage 上倒推一个时段或
+模型。`Models.registerPricing()` 允许 Provider 插件按自身 Cordis fiber 生命周期注册
+动态 Policy；未注册动态 Policy 的模型仍使用其配置中的静态价格。
+
+`models/pricing/` 是同一 Pricing 能力的 durable 部分，不是第二套定价模块：
+`AttemptRecordingModel` 位于 `RetryingModel` 的 delegate 边界，因此每次 retry、fallback、
+Tool 后续 Step 和压缩摘要请求都会生成独立 attempt。AgentLoop 只向 Host 请求携带
+`sessionId/runId/userTurnId/stepId`，协议 Adapter 不会把这些标识发送给 Provider；recorder
+另行分配 `attemptId`，先持久化 started，再在终态写入原始 usage、完整 quote 和 cost。
+
+默认 `model-attempt-ledger-storage` Provider 使用 Storage Journal namespace
+`models/pricing/attempts/v1`，要求 atomic batch + fsync，并由 Cordis lease 约束 Backend
+代次。启动恢复会把只有 started、没有终态的旧 attempt 标记为 `interrupted`；Journal 中
+已经固化的 `priceVersion`、period、pricedAt、单价和 cost 不会随以后 Policy 更新而重算。
+Session transcript 仍只保存会话事实，账单通过稳定 ID 关联而不写入消息。当前没有
+Run/UserTurn 聚合报表或 UI 展示。默认记账币种是 USD；部署可用
+`WISH_MODEL_PRICING_CURRENCY=CNY` 选择 DeepSeek 的官方人民币价表，不做汇率换算。
 
 ## 请求前输入 Token
 
@@ -261,8 +299,8 @@ Step 指标持久化或 UI 展示。
 
 OpenAI Responses 与 Chat Completions 当前没有注册“精确”本地计数器。其消息与 Tool
 开销会随模型和协议实现变化；在没有经过版本固定和校准的算法前，Context 保持
-`unknown`，不能把字符数或通用 tokenizer 估算标记为预算事实。未来可以按精确
-`provider/model` 另行注册经过验证的 `ModelRequestTokenizer`。
+`unknown`，不能把字符数或通用 tokenizer 估算标记为预算事实。只有按精确
+`provider/model` 注册并经过验证的 `ModelRequestTokenizer` 才能提供该预算事实。
 
 模型窗口由 `ConfiguredModel.getContextWindowTokens()` 从已经加载、校验的
 `ModelSpec` 读取。WebUI 可以按完整 `provider/model` 保存 1K–10M 的用户覆盖；Context 在下一次

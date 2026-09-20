@@ -13,7 +13,6 @@ import {
   type ContextBundle,
   type ContextBundleConfigurationInput,
 } from "./context.js";
-import type { ContextInstruction } from "./types.js";
 import type { ContextInput } from "./types.js";
 import { ContextObservations, type ContextObservationListener } from "./observation.js";
 
@@ -29,7 +28,6 @@ export const Config: s<Config> = s.object({
 export interface OpenContextInput {
   readonly observe?: ContextObservationListener;
   readonly dataDirectory: string;
-  readonly agentInstructions: readonly ContextInstruction[];
   readonly models: ModelDependencies;
   readonly configuration: ContextBundleConfigurationInput;
   /** Explicit standalone additions; product modules use registerProvider(). */
@@ -61,7 +59,6 @@ export function createContextResources(
   return createContextBundle({
     ...(input.observe ? { observe: input.observe } : {}),
     history: input.sessions.history.context,
-    agentInstructions: input.agentInstructions,
     archive: input.archive,
     models: input.models.configuredModel,
     counter: input.models.requestCounter,

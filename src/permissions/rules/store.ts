@@ -14,7 +14,6 @@ import {
   type ApprovalRuleRecord,
   type ApprovalRuleStore,
   type RememberApprovalRuleRequest,
-  type RetainedApprovalRuleScope,
 } from "./types.js";
 
 const APPROVAL_RULE_DOMAIN_ID = "permissions/approval-rules";

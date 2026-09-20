@@ -14,7 +14,9 @@ export function mapAnthropicRequest(
   readonly body: Readonly<Record<string, unknown>>;
   readonly authorityDegraded: boolean;
 } {
-  const hasDeveloper = request.messages.some((message) => message.role === "developer");
+  const instructions = request.instructions ?? [];
+  const hasDeveloper = instructions.some((instruction) => instruction.role === "developer") ||
+    request.messages.some((message) => message.role === "developer");
   if (hasDeveloper && input.model.developerRoleMode !== "system-fallback") {
     throw new AnthropicRequestError(
       "Anthropic developer messages require explicit system-fallback configuration",
@@ -25,6 +27,9 @@ export function mapAnthropicRequest(
     role: "user" | "assistant";
     content: Array<Readonly<Record<string, unknown>>>;
   }> = [];
+  for (const instruction of instructions) {
+    system.push(Object.freeze({ type: "text", text: instruction.content }));
+  }
   for (const message of request.messages) {
     if (message.role === "system" || message.role === "developer") {
       if (message.content.length > 0) {

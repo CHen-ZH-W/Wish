@@ -10,6 +10,7 @@ import type { OutputEvent } from "../src/core/events/event.js";
 
 const request: ModelRequest = {
   model: { provider: "provider", model: "model" },
+  instructions: [{ role: "system", content: "Be exact" }],
   messages: [{ role: "user", content: "hello" }],
   tools: [{
     name: "lookup",
@@ -22,7 +23,7 @@ const adapter: Model = {
   async *stream(input): AsyncIterable<ModelStreamEvent> {
     yield { type: "start", model: input.model };
     yield { type: "text_delta", text: "done" };
-    yield { type: "done", finishReason: "stop" };
+    yield { type: "done", finishReason: "stop", providerCreatedAt: 1_789_963_200_000 };
   },
 };
 

@@ -73,6 +73,7 @@ sessions <- sessionPersistence
 storage <- file storage backend (KV / Blob / Journal) -> storageBackend
 runtimeLifecycle <- Journal Runtime Provider <- storageBackend
 modelCatalogPersistence <- Storage Domain Provider <- storageBackend
+modelAttemptLedger <- Pricing Journal Provider <- storageBackend
 toolResultArchive <- Blob archive provider <- storageBackend
 toolOutputArtifacts <- Blob artifact provider <- storageBackend
 workspace <- local workspace provider
@@ -95,7 +96,7 @@ coordinator <- Run-keyed Storage Domain + Permissions policy + Context provider 
 tasks <- Session-keyed versioned graph Storage Domain
 workflow <- Run snapshot + Attempt ledger Storage Domain
 workflowScheduler <- workflow + tasks + plan + subagents + current permission/workspace checks
-models <- model adapter plugins
+models <- model adapter plugins + modelAttemptLedger
 contextEngine + compaction
 tools <- read/write/edit consumers <- filesystem
       <- grep consumer <- filesystemSearch
@@ -130,6 +131,9 @@ Boot 不拥有具体 UI。业务 surface 缺席或 pending 时管理面仍可供
 - SessionPersistence：可替换 Session Store factory；Sessions：数据目录；
 - Storage：具名 Backend 注册；File Provider：Backend ID、显式存储根目录与 Journal torn-tail 策略；
 - RuntimeLifecycle：绑定的 Storage Backend ID；业务事件格式和恢复分类仍归 Runtime；
+- ModelAttemptLedger：绑定的 Storage Backend ID 与记账币种（默认 USD，
+  `WISH_MODEL_PRICING_CURRENCY` 可覆盖）；attempt、quote、cost
+  事件格式及恢复语义仍归 Models/Pricing；
 - ToolResultArchive：绑定的 Storage Backend ID；
 - ToolOutputArtifacts：绑定的 Blob Backend ID；
 - Workspace：instruction 文件名、repository markers 与读取字节上限；

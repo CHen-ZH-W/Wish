@@ -40,6 +40,7 @@ export class ModelCompactionSummarizer implements CompactionSummarizer {
       this.summaryModel,
       this.maxOutputTokens,
       input.oldEntries,
+      input.invocationScope,
     );
     let started = false;
     let terminal = false;
@@ -126,8 +127,9 @@ function createSummaryRequest(
   model: ModelRef,
   maxOutputTokens: number,
   oldEntries: readonly ContextHistoryRecord[],
+  invocationScope: import("../core/model/model.js").ModelInvocationScope | undefined,
 ): ModelRequest {
-  const messages: readonly ModelMessage[] = Object.freeze([
+  const instructions = Object.freeze([
     Object.freeze({
       role: "developer" as const,
       content: [
@@ -141,6 +143,8 @@ function createSummaryRequest(
         "Return only the summary text. Do not call tools.",
       ].join("\n"),
     }),
+  ]);
+  const messages: readonly ModelMessage[] = Object.freeze([
     Object.freeze({
       role: "user" as const,
       content: renderCompactionTranscript(oldEntries),
@@ -148,9 +152,13 @@ function createSummaryRequest(
   ]);
   return Object.freeze({
     model,
+    instructions,
     messages,
     tools: Object.freeze([]),
     maxOutputTokens,
+    ...(invocationScope === undefined
+      ? {}
+      : { invocationScope: Object.freeze({ ...invocationScope }) }),
   });
 }
 

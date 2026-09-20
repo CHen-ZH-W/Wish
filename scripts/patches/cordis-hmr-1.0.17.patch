@@ -134,7 +134,24 @@
      // '    at HMR.partialReload (<anonymous>)',
    ]
  
-@@ -495,53 +530,72 @@
+@@ -403,2 +403,3 @@
+     const pending = new Map<ModuleJob, Plugin>()
+     const reloads = new Map<Plugin, Reload>()
++    const reloadDependencies: Set<string>[] = []
+@@ -437 +438 @@
+-      dependencies.forEach(dep => this.accepted.add(dep))
++      reloadDependencies.push(new Set(dependencies))
+@@ -443 +444,8 @@
+-
++
++    // Select every reload root against the original change set. Expanding the
++    // cache-clear set while selecting makes later, unrelated plugins match a
++    // dependency that merely happens to be shared with an earlier root.
++    for (const dependencies of reloadDependencies) {
++      dependencies.forEach(dep => this.accepted.add(dep))
++    }
++
+@@ -495,53 +537,72 @@
          attempts[filename] = this.ctx.loader.unwrapExports(await this.ctx.loader.import(filename, this.getOuterStack))
        }
      } catch (e) {
@@ -245,7 +262,7 @@
      }
  
      this.ctx.emit('hmr/reload', reloads)
-@@ -554,8 +608,12 @@
+@@ -554,8 +615,12 @@
      base?: string
      root: string[]
      debounce: number
@@ -258,7 +275,7 @@
  
    export const Config: z<Config> = z.object({
      base: z.string(),
-@@ -566,8 +624,10 @@
+@@ -566,8 +631,10 @@
        'cache',
        'data',
      ]),
@@ -272,7 +289,7 @@
 ===================================================================
 --- a/lib/index.js
 +++ b/lib/index.js
-@@ -1,452 +1,535 @@
+@@ -1,452 +1,542 @@
 -import { createRequire } from "node:module";
 +// node_modules/@deepseek-ai/cordis-plugin-hmr/src/index.ts
  import { Service } from "@deepseek-ai/cordis";
@@ -1079,6 +1096,7 @@
 +    await this.analyzeChanges();
 +    const pending = /* @__PURE__ */ new Map();
 +    const reloads = /* @__PURE__ */ new Map();
++    const reloadDependencies = [];
 +    const nameMap = /* @__PURE__ */ Object.create(null);
 +    for (const entry of this.ctx.loader.entries()) {
 +      (nameMap[entry.parent.tree.ctx.baseUrl] ??= /* @__PURE__ */ new Set()).add(entry.options.name);
@@ -1103,11 +1121,17 @@
 +      const dependencies = [...await loadDependencies(job, this.declined)];
 +      this.declined.add(job.url);
 +      if (!dependencies.some((dep) => this.accepted.has(dep))) continue;
-+      dependencies.forEach((dep) => this.accepted.add(dep));
++      reloadDependencies.push(new Set(dependencies));
 +      reloads.set(plugin, {
 +        filename: job.url,
 +        runtime: this.ctx.registry.get(plugin)
 +      });
++    }
++    // Select every reload root against the original change set. Expanding the
++    // cache-clear set while selecting makes later, unrelated plugins match a
++    // dependency that merely happens to be shared with an earlier root.
++    for (const dependencies of reloadDependencies) {
++      dependencies.forEach((dep) => this.accepted.add(dep));
 +    }
 +    const esmBackup = /* @__PURE__ */ Object.create(null);
 +    const cjsBackup = /* @__PURE__ */ Object.create(null);

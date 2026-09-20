@@ -97,7 +97,6 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
     await dynamicContext.await();
     const context = root.contextEngine.open({
       dataDirectory: join(directory, "state"),
-      agentInstructions: [],
       models,
       configuration: { reservedOutputTokens: 256 },
     });
@@ -123,7 +122,6 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
     await dynamicContext.dispose();
     const withoutDynamic = root.contextEngine.open({
       dataDirectory: join(directory, "state"),
-      agentInstructions: [],
       models,
       configuration: { reservedOutputTokens: 256 },
     });

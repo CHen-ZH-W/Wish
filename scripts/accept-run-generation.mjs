@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -379,7 +379,13 @@ test("Loader stable-id update safely replaces a WebUI graph with an active model
   let providerCloses = 0;
   let booted;
   try {
-    await copyFile(join(repositoryRoot, "config", "cordis.yml"), configurationFile);
+    await writeFile(
+      configurationFile,
+      // This copied profile lives directly under /tmp. Keep HMR inside the
+      // fixture instead of watching every sibling directory under /tmp.
+      (await readFile(join(repositoryRoot, "config", "cordis.yml"), "utf8"))
+        .replace("base: '..'", "base: '.'"),
+    );
     const providerAddress = await listen(provider);
     const webPort = await reservePort();
     booted = await bootstrap({

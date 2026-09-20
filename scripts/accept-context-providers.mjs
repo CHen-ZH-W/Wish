@@ -39,56 +39,40 @@ function contextInput(overrides = {}) {
   };
 }
 
-test("projects Agent then workspace instructions as a stable prefix", () => {
-  const configured = [
-    {
-      id: "identity",
-      authority: "system",
-      content: "Agent identity",
-      metadata: "ignored",
-    },
-    {
-      id: "behavior",
-      authority: "developer",
-      content: "Agent behavior",
-    },
-  ];
-  const provider = new InstructionsContextProvider({
-    agentInstructions: configured,
-  });
-  configured[0].content = "mutated after construction";
+test("projects workspace instructions before the current user", () => {
+  const provider = new InstructionsContextProvider();
 
   const first = provider.provide(contextInput());
   const second = provider.provide(contextInput());
 
   assert.deepEqual(first, second);
   assert.deepEqual(first.map((item) => item.id), [
-    "instructions:agent:identity",
-    "instructions:agent:behavior",
     "instructions:workspace:workspace-rules",
   ]);
   assert.deepEqual(first.map((item) => item.message), [
-    { role: "system", content: "Agent identity" },
-    { role: "developer", content: "Agent behavior" },
     { role: "developer", content: "Workspace rules" },
   ]);
   assert.equal(first.every((item) => item.kind === "instruction"), true);
-  assert.equal(first.every((item) => item.placement === "stable_prefix"), true);
+  assert.equal(first.every((item) => item.placement === "before_current_user"), true);
   assert.equal(Object.isFrozen(first), true);
   assert.equal(Object.isFrozen(first[0].message), true);
 });
 
 test("rejects ambiguous instruction ids, authority, and content", () => {
-  assert.throws(() => new InstructionsContextProvider({
-    agentInstructions: [
-      { id: "same", authority: "developer", content: "one" },
-      { id: "same", authority: "developer", content: "two" },
-    ],
-  }), /Duplicate agent instructions id/u);
+  const provider = new InstructionsContextProvider();
+  assert.throws(() => provider.provide(contextInput({
+    workspace: {
+      cwd: "/workspace",
+      fingerprint: "workspace:duplicate",
+      revision: "workspace-revision:duplicate",
+      instructions: [
+        { id: "same", authority: "developer", content: "one" },
+        { id: "same", authority: "developer", content: "two" },
+      ],
+    },
+  })), /Duplicate workspace instructions id/u);
 
-  const invalidAuthority = new InstructionsContextProvider({
-    agentInstructions: [],
-  });
+  const invalidAuthority = new InstructionsContextProvider();
   assert.throws(() => invalidAuthority.provide(contextInput({
     workspace: {
       cwd: "/workspace",
@@ -98,9 +82,14 @@ test("rejects ambiguous instruction ids, authority, and content", () => {
     },
   })), /authority must be system or developer/u);
 
-  assert.throws(() => new InstructionsContextProvider({
-    agentInstructions: [{ id: "empty", authority: "developer", content: "  " }],
-  }), /content must be a non-empty string/u);
+  assert.throws(() => provider.provide(contextInput({
+    workspace: {
+      cwd: "/workspace",
+      fingerprint: "workspace:empty",
+      revision: "workspace-revision:empty",
+      instructions: [{ id: "empty", authority: "developer", content: "  " }],
+    },
+  })), /content must be a non-empty string/u);
 });
 
 test("renders a fresh explicit State item for every Step", () => {
@@ -146,11 +135,7 @@ test("propagates abort without producing partial instruction or state items", ()
   const reason = new Error("stop providers");
   const controller = new AbortController();
   controller.abort(reason);
-  const instructions = new InstructionsContextProvider({
-    agentInstructions: [
-      { id: "identity", authority: "system", content: "identity" },
-    ],
-  });
+  const instructions = new InstructionsContextProvider();
 
   assert.throws(() => instructions.provide(contextInput(), controller.signal), reason);
   assert.throws(
@@ -159,37 +144,36 @@ test("propagates abort without producing partial instruction or state items", ()
   );
 });
 
-test("integrates stable instructions and dynamic state around the current user", async () => {
+test("keeps model instructions separate and projects workspace plus state before the current user", async () => {
   const providers = [
-    new InstructionsContextProvider({
-      agentInstructions: [
-        { id: "identity", authority: "system", content: "Agent identity" },
-      ],
-    }),
+    new InstructionsContextProvider(),
     new StateContextProvider(),
   ];
   const projection = await new ContextProjector().projectFromProviders({
     request: {
       model,
+      instructions: [{ role: "system", content: "Agent identity" }],
       messages: [
-        { role: "system", content: "Core system" },
         { role: "user", content: "Current request" },
       ],
       tools: [],
     },
     providers,
     providerInput: contextInput(),
-    currentUserMessageIndex: 1,
+    currentUserMessageIndex: 0,
   });
 
   assert.equal(projection.status, "ready");
+  assert.deepEqual(projection.request.instructions, [
+    { role: "system", content: "Agent identity" },
+  ]);
   assert.deepEqual(
-    projection.request.messages.slice(0, 3).map((message) => message.content),
-    ["Core system", "Agent identity", "Workspace rules"],
+    projection.request.messages.slice(0, 1).map((message) => message.content),
+    ["Workspace rules"],
   );
   assert.match(
-    projection.request.messages[3].content,
+    projection.request.messages[1].content,
     /Current execution state for this Step/u,
   );
-  assert.equal(projection.request.messages[4].content, "Current request");
+  assert.equal(projection.request.messages[2].content, "Current request");
 });

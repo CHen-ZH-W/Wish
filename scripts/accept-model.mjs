@@ -9,6 +9,7 @@ const fallback = Object.freeze({ provider: "provider-b", model: "model-b" });
 function request(model = primary) {
   return {
     model,
+    instructions: [],
     messages: [{ role: "user", content: "hello" }],
     tools: [],
     metadata: { runId: "run-1" },

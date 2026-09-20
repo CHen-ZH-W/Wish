@@ -25,12 +25,10 @@ import type {
 } from "./runtime-service.js";
 
 const DEFAULT_AGENT_ID = "wish";
-const DEFAULT_AGENT_INSTRUCTION =
-  "You are Wish, a coding agent. Work carefully within the provided workspace and report results truthfully.";
-
 /** Loader-owned definition of the default Wish Agent. */
 export interface Config {
   readonly agentId?: string;
+  /** Deployment or Agent-specific addition appended after Wish base instructions. */
   readonly agentInstructions?: string;
   readonly permissionProfile?: PermissionProfile;
   readonly availableTools?: string[] | undefined;
@@ -98,9 +96,9 @@ export class Agents extends Service {
       config.agentId ?? DEFAULT_AGENT_ID,
       "Wish Agent id",
     );
-    this.agentInstructions = createInstructions(
-      config.agentInstructions ?? DEFAULT_AGENT_INSTRUCTION,
-    );
+    this.agentInstructions = config.agentInstructions === undefined
+      ? Object.freeze([])
+      : createInstructions(config.agentInstructions);
     this.permissions = snapshotPermissions(config);
     this.definition = Object.freeze({
       id: this.agentId,
@@ -181,7 +179,7 @@ function uniqueCapabilities(
 function createInstructions(content: string): readonly ContextInstruction[] {
   const normalized = requireText(content, "Wish Agent instructions");
   return Object.freeze([Object.freeze({
-    id: "wish-agent-base",
+    id: "wish-agent-addition",
     authority: "system" as const,
     content: normalized,
   })]);

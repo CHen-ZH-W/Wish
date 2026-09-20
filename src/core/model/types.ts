@@ -42,6 +42,12 @@ export interface ModelMessage {
   readonly reasoningContent?: string;
 }
 
+/** Stable application instructions kept separate from conversation history. */
+export interface ModelInstruction {
+  readonly role: "system" | "developer";
+  readonly content: string;
+}
+
 /** Provider-neutral tool view. Runtime execution remains owned by Tools. */
 export interface ModelToolDefinition {
   readonly name: string;
@@ -51,9 +57,18 @@ export interface ModelToolDefinition {
 
 export type ModelMetadata = Readonly<Record<string, unknown>>;
 
+/** Host-only ownership scope; protocol Adapters must not send it to Providers. */
+export interface ModelInvocationScope {
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly userTurnId: string;
+  readonly stepId: string;
+}
+
 /** Complete input for one model stream attempt. */
 export interface ModelRequest {
   readonly model: ModelRef;
+  readonly instructions: readonly ModelInstruction[];
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ModelToolDefinition[];
   /** Model-owned, validated selection fixed when a Run starts. */
@@ -61,6 +76,8 @@ export interface ModelRequest {
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
   readonly metadata?: ModelMetadata;
+  /** Durable correlation for one Step; retries receive distinct attempt ids downstream. */
+  readonly invocationScope?: ModelInvocationScope;
 }
 
 export interface ModelToolCall {
@@ -135,6 +152,8 @@ export type ModelStreamEvent =
       readonly type: "done";
       readonly finishReason?: string;
       readonly usage?: ModelUsage;
+      /** Provider-reported response creation time, normalized to Unix milliseconds. */
+      readonly providerCreatedAt?: number;
     }
   | {
       readonly type: "error";

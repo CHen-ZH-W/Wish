@@ -158,11 +158,11 @@ test("summarizes one complete oldEntries prefix and appends one checkpoint", asy
   assert.deepEqual(summaryRequests[0].model, summaryModel);
   assert.equal(summaryRequests[0].maxOutputTokens, 256);
   assert.deepEqual(summaryRequests[0].tools, []);
-  assert.deepEqual(summaryRequests[0].messages.map((message) => message.role), [
+  assert.deepEqual(summaryRequests[0].instructions.map((instruction) => instruction.role), [
     "developer",
-    "user",
   ]);
-  const transcript = summaryRequests[0].messages[1].content;
+  assert.deepEqual(summaryRequests[0].messages.map((message) => message.role), ["user"]);
+  const transcript = summaryRequests[0].messages[0].content;
   assert.match(transcript, /keep this exact old request/u);
   assert.match(transcript, /calling tool/u);
   assert.match(transcript, /tool output/u);
@@ -192,7 +192,7 @@ test("summarizes one complete oldEntries prefix and appends one checkpoint", asy
     },
   });
   const selected = new LatestCheckpointHistoryPolicy().select({
-    request: { model: agentModel, messages: [], tools: [] },
+    request: { model: agentModel, instructions: [], messages: [], tools: [] },
     items,
   });
   assert.deepEqual(selected.items.map((item) => item.message.content), [
@@ -592,9 +592,6 @@ test("recovers a real AgentLoop projection through one append-only checkpoint", 
   };
   const context = createContextBundle({
     history: { read: () => session.state.records },
-    agentInstructions: [
-      { id: "agent", authority: "system", content: "Be exact." },
-    ],
     archive: {
       archive: () => {
         throw new Error("No Tool Result expected");

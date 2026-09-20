@@ -387,7 +387,16 @@ export const GENERATED_MODELS = {
         "image": true
       },
       "reasoning": true,
-      "reasoningControl": { "format": "deepseek-chat", "efforts": ["none", "low", "high", "max"], "defaultEffort": "high" },
+      "reasoningControl": {
+        "format": "deepseek-chat",
+        "efforts": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ],
+        "defaultEffort": "high"
+      },
       "toolCalling": true,
       "developerRole": false
     },
@@ -402,7 +411,16 @@ export const GENERATED_MODELS = {
         "image": true
       },
       "reasoning": true,
-      "reasoningControl": { "format": "deepseek-chat", "efforts": ["none", "low", "high", "max"], "defaultEffort": "high" },
+      "reasoningControl": {
+        "format": "deepseek-chat",
+        "efforts": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ],
+        "defaultEffort": "high"
+      },
       "toolCalling": true,
       "developerRole": false
     },
@@ -417,7 +435,16 @@ export const GENERATED_MODELS = {
         "image": true
       },
       "reasoning": true,
-      "reasoningControl": { "format": "deepseek-chat", "efforts": ["none", "low", "high", "max"], "defaultEffort": "high" },
+      "reasoningControl": {
+        "format": "deepseek-chat",
+        "efforts": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ],
+        "defaultEffort": "high"
+      },
       "toolCalling": true,
       "developerRole": false
     },
@@ -432,36 +459,24 @@ export const GENERATED_MODELS = {
         "image": false
       },
       "reasoning": true,
-      "reasoningControl": { "format": "deepseek-chat", "efforts": ["none", "low", "high", "max"], "defaultEffort": "high" },
+      "reasoningControl": {
+        "format": "deepseek-chat",
+        "efforts": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ],
+        "defaultEffort": "high"
+      },
       "toolCalling": true,
       "developerRole": false
     }
   ],
   "fireworks": [
     {
-      "id": "accounts/fireworks/models/deepseek-v4-flash-0731",
-      "name": "DeepSeek V4 Flash 0731",
-      "status": "active",
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 384000,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "models.dev:2026-07-31",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.22,
-        "cachedInputPerMillionTokens": 0.007,
-        "outputPerMillionTokens": 0.66
-      }
-    },
-    {
-      "id": "accounts/fireworks/models/deepseek-v4-flash-vision-exp",
-      "name": "DeepSeek V4 Flash Vision Exp",
+      "id": "accounts/fireworks/models/deepseek-v4p1-flash",
+      "name": "DeepSeek V4.1 Flash",
       "status": "active",
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 384000,
@@ -473,7 +488,7 @@ export const GENERATED_MODELS = {
       "toolCalling": true,
       "developerRole": false,
       "price": {
-        "version": "models.dev:2026-08-21",
+        "version": "models.dev:2026-09-10",
         "currency": "USD",
         "inputPerMillionTokens": 0.22,
         "cachedInputPerMillionTokens": 0.007,
@@ -481,53 +496,11 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "accounts/fireworks/models/deepseek-v4-pro-0813",
-      "name": "DeepSeek V4 Pro 0813",
-      "status": "active",
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 384000,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "models.dev:2026-08-22",
-        "currency": "USD",
-        "inputPerMillionTokens": 1.32,
-        "cachedInputPerMillionTokens": 0.044,
-        "outputPerMillionTokens": 3.96
-      }
-    },
-    {
-      "id": "accounts/fireworks/models/glm-5p2",
-      "name": "GLM 5.2",
-      "status": "active",
-      "contextWindowTokens": 1048575,
-      "maxOutputTokens": 131072,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "models.dev:2026-06-16",
-        "currency": "USD",
-        "inputPerMillionTokens": 1.4,
-        "cachedInputPerMillionTokens": 0.14,
-        "outputPerMillionTokens": 4.4
-      }
-    },
-    {
       "id": "accounts/fireworks/models/glm-5p3",
       "name": "GLM 5.3",
       "status": "active",
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 131072,
+      "contextWindowTokens": 1048573,
+      "maxOutputTokens": 262144,
       "input": {
         "text": true,
         "image": false
@@ -536,7 +509,7 @@ export const GENERATED_MODELS = {
       "toolCalling": true,
       "developerRole": false,
       "price": {
-        "version": "models.dev:2026-09-04",
+        "version": "models.dev:2026-09-07",
         "currency": "USD",
         "inputPerMillionTokens": 1.4,
         "cachedInputPerMillionTokens": 0.26,
@@ -547,7 +520,7 @@ export const GENERATED_MODELS = {
       "id": "accounts/fireworks/models/glm-5p3-flash",
       "name": "GLM 5.3 Flash",
       "status": "active",
-      "contextWindowTokens": 1000000,
+      "contextWindowTokens": 1048573,
       "maxOutputTokens": 131072,
       "input": {
         "text": true,
@@ -557,7 +530,7 @@ export const GENERATED_MODELS = {
       "toolCalling": true,
       "developerRole": false,
       "price": {
-        "version": "models.dev:2026-09-04",
+        "version": "models.dev:2026-09-07",
         "currency": "USD",
         "inputPerMillionTokens": 0.15,
         "cachedInputPerMillionTokens": 0.03,
@@ -607,48 +580,6 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "accounts/fireworks/models/kimi-k2p6",
-      "name": "Kimi K2.6",
-      "status": "active",
-      "contextWindowTokens": 262000,
-      "maxOutputTokens": 262000,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "models.dev:2026-04-17",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.95,
-        "cachedInputPerMillionTokens": 0.16,
-        "outputPerMillionTokens": 4
-      }
-    },
-    {
-      "id": "accounts/fireworks/models/kimi-k2p7-code",
-      "name": "Kimi K2.7 Code",
-      "status": "active",
-      "contextWindowTokens": 262000,
-      "maxOutputTokens": 262000,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "models.dev:2026-06-16",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.95,
-        "cachedInputPerMillionTokens": 0.19,
-        "outputPerMillionTokens": 4
-      }
-    },
-    {
       "id": "accounts/fireworks/models/kimi-k3",
       "name": "Kimi K3",
       "status": "active",
@@ -680,7 +611,7 @@ export const GENERATED_MODELS = {
       "maxOutputTokens": 512000,
       "input": {
         "text": true,
-        "image": true
+        "image": false
       },
       "reasoning": true,
       "toolCalling": true,
@@ -691,27 +622,6 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 0.3,
         "cachedInputPerMillionTokens": 0.06,
         "outputPerMillionTokens": 1.2
-      }
-    },
-    {
-      "id": "accounts/fireworks/models/muse-glimmer-30b",
-      "name": "Muse Glimmer 30B",
-      "status": "active",
-      "contextWindowTokens": 131072,
-      "maxOutputTokens": 131072,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "models.dev:2026-08-10",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.35,
-        "cachedInputPerMillionTokens": 0.04,
-        "outputPerMillionTokens": 1.5
       }
     },
     {
@@ -731,7 +641,7 @@ export const GENERATED_MODELS = {
         "version": "models.dev:2026-06-04",
         "currency": "USD",
         "inputPerMillionTokens": 0.6,
-        "cachedInputPerMillionTokens": 0.119,
+        "cachedInputPerMillionTokens": 0.12,
         "outputPerMillionTokens": 2.4
       }
     },
@@ -806,7 +716,7 @@ export const GENERATED_MODELS = {
       "maxOutputTokens": 131072,
       "input": {
         "text": true,
-        "image": false
+        "image": true
       },
       "reasoning": true,
       "toolCalling": true,
@@ -817,6 +727,48 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 2,
         "cachedInputPerMillionTokens": 0.25,
         "outputPerMillionTokens": 6
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/deepseek-flash-latest",
+      "name": "DeepSeek Flash Latest",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 384000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-10",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.22,
+        "cachedInputPerMillionTokens": 0.007,
+        "outputPerMillionTokens": 0.66
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/deepseek-pro-latest",
+      "name": "DeepSeek Pro Latest",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 384000,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-08-22",
+        "currency": "USD",
+        "inputPerMillionTokens": 1.32,
+        "cachedInputPerMillionTokens": 0.044,
+        "outputPerMillionTokens": 3.96
       }
     },
     {
@@ -841,6 +793,114 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "accounts/fireworks/routers/glm-5p3-fast",
+      "name": "GLM 5.3 Fast",
+      "status": "active",
+      "contextWindowTokens": 1048572,
+      "maxOutputTokens": 262144,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-07",
+        "currency": "USD",
+        "inputPerMillionTokens": 2.1,
+        "cachedInputPerMillionTokens": 0.39,
+        "outputPerMillionTokens": 6.6
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/glm-fast-latest",
+      "name": "GLM 5.3 Fast (Latest)",
+      "status": "active",
+      "contextWindowTokens": 1048572,
+      "maxOutputTokens": 262144,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-15",
+        "currency": "USD",
+        "inputPerMillionTokens": 2.1,
+        "cachedInputPerMillionTokens": 0.39,
+        "outputPerMillionTokens": 6.6
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/glm-flash-latest",
+      "name": "GLM Flash Latest (GLM 5.3 Flash)",
+      "status": "active",
+      "contextWindowTokens": 1048573,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-15",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.03,
+        "outputPerMillionTokens": 0.5
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/glm-latest",
+      "name": "GLM Latest",
+      "status": "active",
+      "contextWindowTokens": 1048573,
+      "maxOutputTokens": 262144,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-15",
+        "currency": "USD",
+        "inputPerMillionTokens": 1.4,
+        "cachedInputPerMillionTokens": 0.26,
+        "outputPerMillionTokens": 4.4
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/kimi-fast-latest",
+      "name": "Kimi Fast Latest",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-15",
+        "currency": "USD",
+        "inputPerMillionTokens": 4.5,
+        "cachedInputPerMillionTokens": 0.45,
+        "outputPerMillionTokens": 22.5
+      },
+      "request": {
+        "supportsTemperature": false
+      }
+    },
+    {
       "id": "accounts/fireworks/routers/kimi-k3-fast",
       "name": "Kimi K3 Fast",
       "status": "active",
@@ -862,6 +922,72 @@ export const GENERATED_MODELS = {
       },
       "request": {
         "supportsTemperature": false
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/kimi-latest",
+      "name": "Kimi Latest",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-15",
+        "currency": "USD",
+        "inputPerMillionTokens": 3,
+        "cachedInputPerMillionTokens": 0.3,
+        "outputPerMillionTokens": 15
+      },
+      "request": {
+        "supportsTemperature": false
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/minimax-latest",
+      "name": "MiniMax Latest",
+      "status": "active",
+      "contextWindowTokens": 512000,
+      "maxOutputTokens": 512000,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-15",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.3,
+        "cachedInputPerMillionTokens": 0.06,
+        "outputPerMillionTokens": 1.2
+      }
+    },
+    {
+      "id": "accounts/fireworks/routers/qwen-max-latest",
+      "name": "Qwen Max Latest (Qwen3.8 Max)",
+      "status": "active",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-16",
+        "currency": "USD",
+        "inputPerMillionTokens": 2,
+        "cachedInputPerMillionTokens": 0.25,
+        "outputPerMillionTokens": 6
       }
     }
   ],
@@ -1185,7 +1311,7 @@ export const GENERATED_MODELS = {
       "toolCalling": true,
       "developerRole": false,
       "price": {
-        "version": "models.dev:2026-08-21",
+        "version": "models.dev:2026-09-01",
         "currency": "USD",
         "inputPerMillionTokens": 0.44,
         "outputPerMillionTokens": 1.32
@@ -1230,6 +1356,86 @@ export const GENERATED_MODELS = {
         "currency": "USD",
         "inputPerMillionTokens": 1.32,
         "outputPerMillionTokens": 3.96
+      }
+    },
+    {
+      "id": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "name": "DeepSeek V4.1 Flash",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 384000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-10",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.3,
+        "outputPerMillionTokens": 1.2
+      }
+    },
+    {
+      "id": "google/gemma-3-12b-it",
+      "name": "Gemma 3 12B IT",
+      "status": "active",
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2025-03-12",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.05,
+        "outputPerMillionTokens": 0.15
+      }
+    },
+    {
+      "id": "google/gemma-3-27b-it",
+      "name": "Gemma 3 27B IT",
+      "status": "active",
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2025-03-12",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.08,
+        "outputPerMillionTokens": 0.16
+      }
+    },
+    {
+      "id": "google/gemma-3-4b-it",
+      "name": "Gemma 3 4B IT",
+      "status": "active",
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2025-03-12",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.05,
+        "outputPerMillionTokens": 0.1
       }
     },
     {
@@ -3639,7 +3845,7 @@ export const GENERATED_MODELS = {
       "toolCalling": true,
       "developerRole": false,
       "price": {
-        "version": "models.dev:2026-08-21",
+        "version": "models.dev:2026-09-01",
         "currency": "USD",
         "inputPerMillionTokens": 0.14,
         "cachedInputPerMillionTokens": 0.028,
@@ -3665,6 +3871,27 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 1.74,
         "cachedInputPerMillionTokens": 0.145,
         "outputPerMillionTokens": 3.84
+      }
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 384000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-10",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.3,
+        "cachedInputPerMillionTokens": 0.006,
+        "outputPerMillionTokens": 1.2
       }
     },
     {
@@ -4027,9 +4254,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "models.dev:2026-07-31",
         "currency": "USD",
-        "inputPerMillionTokens": 0.22,
-        "cachedInputPerMillionTokens": 0.007,
-        "outputPerMillionTokens": 0.66
+        "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.003,
+        "outputPerMillionTokens": 0.6
       }
     },
     {
@@ -4046,11 +4273,11 @@ export const GENERATED_MODELS = {
       "toolCalling": true,
       "developerRole": false,
       "price": {
-        "version": "models.dev:2026-08-21",
+        "version": "models.dev:2026-09-01",
         "currency": "USD",
-        "inputPerMillionTokens": 0.22,
-        "cachedInputPerMillionTokens": 0.007,
-        "outputPerMillionTokens": 0.66
+        "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.003,
+        "outputPerMillionTokens": 0.6
       }
     },
     {
@@ -4072,6 +4299,27 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 0.66,
         "cachedInputPerMillionTokens": 0.022,
         "outputPerMillionTokens": 1.98
+      }
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 384000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "models.dev:2026-09-10",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.003,
+        "outputPerMillionTokens": 0.6
       }
     },
     {
@@ -4139,7 +4387,7 @@ export const GENERATED_MODELS = {
     },
     {
       "id": "glm-5.3-flash",
-      "name": "GLM-5.3-Flash (2x usage)",
+      "name": "GLM-5.3-Flash",
       "status": "active",
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 131072,
@@ -4153,9 +4401,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "models.dev:2026-08-26",
         "currency": "USD",
-        "inputPerMillionTokens": 0.075,
-        "cachedInputPerMillionTokens": 0.015,
-        "outputPerMillionTokens": 0.25
+        "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.03,
+        "outputPerMillionTokens": 0.5
       }
     },
     {
@@ -4330,27 +4578,6 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 0.435,
         "cachedInputPerMillionTokens": 0.003625,
         "outputPerMillionTokens": 0.87
-      }
-    },
-    {
-      "id": "omen-alpha",
-      "name": "Omen Alpha",
-      "status": "active",
-      "contextWindowTokens": 500000,
-      "maxOutputTokens": 128000,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "models.dev:2026-09-04",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.2,
-        "cachedInputPerMillionTokens": 0.04,
-        "outputPerMillionTokens": 0.66
       }
     },
     {
@@ -5214,7 +5441,7 @@ export const GENERATED_MODELS = {
     },
     {
       "id": "anthropic/claude-opus-5",
-      "name": "Claude Opus 5",
+      "name": "Anthropic: Claude Opus 5",
       "status": "active",
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 128000,
@@ -5245,7 +5472,7 @@ export const GENERATED_MODELS = {
     },
     {
       "id": "anthropic/claude-opus-5:batch",
-      "name": "Claude Opus 5 (batch)",
+      "name": "Anthropic: Claude Opus 5 (batch)",
       "status": "active",
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 128000,
@@ -5771,7 +5998,7 @@ export const GENERATED_MODELS = {
       "name": "DeepSeek: DeepSeek V3.1",
       "status": "active",
       "contextWindowTokens": 163840,
-      "maxOutputTokens": 144900,
+      "maxOutputTokens": 32768,
       "input": {
         "text": true,
         "image": false
@@ -5782,9 +6009,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.55,
-        "cachedInputPerMillionTokens": 0.55,
-        "outputPerMillionTokens": 1.65
+        "inputPerMillionTokens": 0.25,
+        "cachedInputPerMillionTokens": 0.13,
+        "outputPerMillionTokens": 0.95
       },
       "request": {
         "supportsTemperature": true,
@@ -5960,9 +6187,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.088606,
-        "cachedInputPerMillionTokens": 0.0177212,
-        "outputPerMillionTokens": 0.177212
+        "inputPerMillionTokens": 0.03668,
+        "cachedInputPerMillionTokens": 0.007336,
+        "outputPerMillionTokens": 0.07336
       },
       "request": {
         "supportsTemperature": true,
@@ -5979,7 +6206,7 @@ export const GENERATED_MODELS = {
       "name": "DeepSeek: DeepSeek V4 Flash 0731",
       "status": "active",
       "contextWindowTokens": 1310720,
-      "maxOutputTokens": 131072,
+      "maxOutputTokens": 943718,
       "input": {
         "text": true,
         "image": false
@@ -5990,9 +6217,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.14,
-        "cachedInputPerMillionTokens": 0.028,
-        "outputPerMillionTokens": 0.28
+        "inputPerMillionTokens": 0.04,
+        "cachedInputPerMillionTokens": 0.016,
+        "outputPerMillionTokens": 0.08
       },
       "request": {
         "supportsTemperature": true,
@@ -6020,9 +6247,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.14,
-        "cachedInputPerMillionTokens": 0.03,
-        "outputPerMillionTokens": 0.28
+        "inputPerMillionTokens": 0.11,
+        "cachedInputPerMillionTokens": 0.0035,
+        "outputPerMillionTokens": 0.33
       },
       "request": {
         "supportsTemperature": true,
@@ -6039,7 +6266,7 @@ export const GENERATED_MODELS = {
       "name": "DeepSeek: DeepSeek V4 Flash Vision Exp",
       "status": "active",
       "contextWindowTokens": 1048576,
-      "maxOutputTokens": 384000,
+      "maxOutputTokens": 262144,
       "input": {
         "text": true,
         "image": true
@@ -6047,6 +6274,43 @@ export const GENERATED_MODELS = {
       "reasoning": true,
       "toolCalling": true,
       "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.2156,
+        "cachedInputPerMillionTokens": 0.00686,
+        "outputPerMillionTokens": 0.6468
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-vision-exp:batch",
+      "name": "DeepSeek: DeepSeek V4 Flash Vision Exp (batch)",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 943718,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.11,
+        "cachedInputPerMillionTokens": 0.0035,
+        "outputPerMillionTokens": 0.33
+      },
       "request": {
         "supportsTemperature": true,
         "maxTokensField": "max_tokens",
@@ -6073,9 +6337,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.95526,
-        "cachedInputPerMillionTokens": 0.079605,
-        "outputPerMillionTokens": 1.91052
+        "inputPerMillionTokens": 0.422298,
+        "cachedInputPerMillionTokens": 0.0351915,
+        "outputPerMillionTokens": 0.844596
       },
       "request": {
         "supportsTemperature": true,
@@ -6100,13 +6364,6 @@ export const GENERATED_MODELS = {
       "reasoning": true,
       "toolCalling": true,
       "developerRole": false,
-      "price": {
-        "version": "openrouter:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 1.0494,
-        "cachedInputPerMillionTokens": 0.03498,
-        "outputPerMillionTokens": 3.1482
-      },
       "request": {
         "supportsTemperature": true,
         "maxTokensField": "max_tokens",
@@ -6133,10 +6390,33 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 1.32,
-        "cachedInputPerMillionTokens": 0.13,
-        "outputPerMillionTokens": 3.96
+        "inputPerMillionTokens": 0.66,
+        "cachedInputPerMillionTokens": 0.022,
+        "outputPerMillionTokens": 1.98
       },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "name": "DeepSeek: DeepSeek V4.1 Flash",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 384000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
       "request": {
         "supportsTemperature": true,
         "maxTokensField": "max_tokens",
@@ -6327,29 +6607,6 @@ export const GENERATED_MODELS = {
       "status": "active",
       "contextWindowTokens": 1048576,
       "maxOutputTokens": 65536,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "request": {
-        "supportsTemperature": true,
-        "maxTokensField": "max_tokens",
-        "extraBody": {
-          "reasoning": {
-            "effort": "high"
-          }
-        }
-      }
-    },
-    {
-      "id": "google/gemini-2.5-pro-preview-05-06",
-      "name": "Google: Gemini 2.5 Pro Preview 05-06",
-      "status": "active",
-      "contextWindowTokens": 1048576,
-      "maxOutputTokens": 65535,
       "input": {
         "text": true,
         "image": true
@@ -7003,7 +7260,7 @@ export const GENERATED_MODELS = {
       "id": "google/gemma-4-26b-a4b-it",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 16384,
+      "maxOutputTokens": 235929,
       "input": {
         "text": true,
         "image": true
@@ -7014,8 +7271,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.07,
-        "outputPerMillionTokens": 0.34
+        "inputPerMillionTokens": 0.09,
+        "cachedInputPerMillionTokens": 0.05,
+        "outputPerMillionTokens": 0.3
       },
       "request": {
         "supportsTemperature": true,
@@ -7087,35 +7345,6 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "google/gemma-4-31b-it:batch",
-      "name": "Google: Gemma 4 31B (batch)",
-      "status": "active",
-      "contextWindowTokens": 262144,
-      "maxOutputTokens": 235929,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "openrouter:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.39,
-        "outputPerMillionTokens": 0.97
-      },
-      "request": {
-        "supportsTemperature": true,
-        "maxTokensField": "max_tokens",
-        "extraBody": {
-          "reasoning": {
-            "effort": "high"
-          }
-        }
-      }
-    },
-    {
       "id": "google/gemma-4-31b-it:free",
       "name": "Google: Gemma 4 31B (free)",
       "status": "active",
@@ -7160,9 +7389,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.1,
-        "cachedInputPerMillionTokens": 0.05,
-        "outputPerMillionTokens": 0.15
+        "inputPerMillionTokens": 0.06,
+        "cachedInputPerMillionTokens": 0.015,
+        "outputPerMillionTokens": 0.25
       },
       "request": {
         "supportsTemperature": true,
@@ -7205,8 +7434,8 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "inception/mercury-2.5-preview",
-      "name": "Inception: Mercury 2.5 Preview",
+      "id": "inception/mercury-2.5",
+      "name": "Inception: Mercury 2.5",
       "status": "active",
       "contextWindowTokens": 260000,
       "maxOutputTokens": 65536,
@@ -7332,6 +7561,65 @@ export const GENERATED_MODELS = {
       "input": {
         "text": true,
         "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0,
+        "outputPerMillionTokens": 0
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-vl",
+      "name": "inclusionAI: Ling 3.0 Flash VL",
+      "status": "active",
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 32768,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.06,
+        "cachedInputPerMillionTokens": 0.012,
+        "outputPerMillionTokens": 0.18
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-vl:free",
+      "name": "inclusionAI: Ling 3.0 Flash VL (free)",
+      "status": "active",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 32768,
+      "input": {
+        "text": true,
+        "image": true
       },
       "reasoning": true,
       "toolCalling": true,
@@ -7539,7 +7827,7 @@ export const GENERATED_MODELS = {
       "name": "Meta: Llama 4 Maverick",
       "status": "active",
       "contextWindowTokens": 1048576,
-      "maxOutputTokens": 115200,
+      "maxOutputTokens": 16384,
       "input": {
         "text": true,
         "image": true
@@ -7550,8 +7838,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.2,
-        "outputPerMillionTokens": 0.696
+        "inputPerMillionTokens": 0.1875,
+        "outputPerMillionTokens": 0.6525
       },
       "request": {
         "supportsTemperature": true,
@@ -7587,7 +7875,7 @@ export const GENERATED_MODELS = {
       "name": "Meta: Muse Glimmer 30B",
       "status": "active",
       "contextWindowTokens": 131072,
-      "maxOutputTokens": 117964,
+      "maxOutputTokens": 16384,
       "input": {
         "text": true,
         "image": true
@@ -7600,7 +7888,7 @@ export const GENERATED_MODELS = {
         "currency": "USD",
         "inputPerMillionTokens": 0.3,
         "cachedInputPerMillionTokens": 0.04,
-        "outputPerMillionTokens": 1.1
+        "outputPerMillionTokens": 1.2
       },
       "request": {
         "supportsTemperature": true,
@@ -7628,9 +7916,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.35,
-        "cachedInputPerMillionTokens": 0.04,
-        "outputPerMillionTokens": 1.5
+        "inputPerMillionTokens": 0.175,
+        "cachedInputPerMillionTokens": 0.02,
+        "outputPerMillionTokens": 0.75
       },
       "request": {
         "supportsTemperature": true,
@@ -7808,7 +8096,7 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.55,
+        "inputPerMillionTokens": 0.4,
         "outputPerMillionTokens": 2.2
       },
       "request": {
@@ -7941,35 +8229,6 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "minimax/minimax-m2.7:free",
-      "name": "MiniMax: MiniMax M2.7 (free)",
-      "status": "active",
-      "contextWindowTokens": 196608,
-      "maxOutputTokens": 176947,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "openrouter:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0,
-        "outputPerMillionTokens": 0
-      },
-      "request": {
-        "supportsTemperature": true,
-        "maxTokensField": "max_tokens",
-        "extraBody": {
-          "reasoning": {
-            "effort": "high"
-          }
-        }
-      }
-    },
-    {
       "id": "minimax/minimax-m3",
       "name": "MiniMax: MiniMax M3",
       "status": "active",
@@ -8030,35 +8289,6 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "minimax/minimax-m3:free",
-      "name": "MiniMax: MiniMax M3 (free)",
-      "status": "active",
-      "contextWindowTokens": 1048576,
-      "maxOutputTokens": 943718,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "openrouter:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0,
-        "outputPerMillionTokens": 0
-      },
-      "request": {
-        "supportsTemperature": true,
-        "maxTokensField": "max_tokens",
-        "extraBody": {
-          "reasoning": {
-            "effort": "high"
-          }
-        }
-      }
-    },
-    {
       "id": "mistralai/codestral-2508",
       "name": "Mistral: Codestral 2508",
       "status": "active",
@@ -8077,6 +8307,31 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 0.3,
         "cachedInputPerMillionTokens": 0.03,
         "outputPerMillionTokens": 0.9
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens"
+      }
+    },
+    {
+      "id": "mistralai/codestral-2508:batch",
+      "name": "Mistral: Codestral 2508 (batch)",
+      "status": "active",
+      "contextWindowTokens": 256000,
+      "maxOutputTokens": 204800,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.015,
+        "outputPerMillionTokens": 0.45
       },
       "request": {
         "supportsTemperature": true,
@@ -8184,6 +8439,31 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "mistralai/ministral-8b-2512:batch",
+      "name": "Mistral: Ministral 3 8B 2512 (batch)",
+      "status": "active",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 209715,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.075,
+        "cachedInputPerMillionTokens": 0.0075,
+        "outputPerMillionTokens": 0.075
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens"
+      }
+    },
+    {
       "id": "mistralai/mistral-large",
       "name": "Mistral Large",
       "status": "active",
@@ -8234,8 +8514,8 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "mistralai/mistral-large-2512",
-      "name": "Mistral: Mistral Large 3 2512",
+      "id": "mistralai/mistral-large-2512:batch",
+      "name": "Mistral: Mistral Large 3 2512 (batch)",
       "status": "active",
       "contextWindowTokens": 262144,
       "maxOutputTokens": 209715,
@@ -8249,9 +8529,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.5,
-        "cachedInputPerMillionTokens": 0.05,
-        "outputPerMillionTokens": 1.5
+        "inputPerMillionTokens": 0.25,
+        "cachedInputPerMillionTokens": 0.025,
+        "outputPerMillionTokens": 0.75
       },
       "request": {
         "supportsTemperature": true,
@@ -8316,8 +8596,8 @@ export const GENERATED_MODELS = {
       "id": "mistralai/mistral-medium-3-5:batch",
       "name": "Mistral: Mistral Medium 3.5 (batch)",
       "status": "active",
-      "contextWindowTokens": 32768,
-      "maxOutputTokens": 26214,
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 209715,
       "input": {
         "text": true,
         "image": true
@@ -8360,6 +8640,31 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 0.4,
         "cachedInputPerMillionTokens": 0.04,
         "outputPerMillionTokens": 2
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens"
+      }
+    },
+    {
+      "id": "mistralai/mistral-medium-3.1:batch",
+      "name": "Mistral: Mistral Medium 3.1 (batch)",
+      "status": "active",
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 104857,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.2,
+        "cachedInputPerMillionTokens": 0.02,
+        "outputPerMillionTokens": 1
       },
       "request": {
         "supportsTemperature": true,
@@ -8446,10 +8751,64 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "mistralai/mistral-small-2603:batch",
+      "name": "Mistral: Mistral Small 4 (batch)",
+      "status": "active",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 209715,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.075,
+        "cachedInputPerMillionTokens": 0.0075,
+        "outputPerMillionTokens": 0.3
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "mistralai/mistral-small-3.1-24b-instruct",
+      "name": "Mistral: Mistral Small 3.1 24B",
+      "status": "active",
+      "contextWindowTokens": 128000,
+      "maxOutputTokens": 102400,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.351,
+        "outputPerMillionTokens": 0.555
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens"
+      }
+    },
+    {
       "id": "mistralai/mistral-small-3.2-24b-instruct",
       "name": "Mistral: Mistral Small 3.2 24B",
       "status": "active",
-      "contextWindowTokens": 131072,
+      "contextWindowTokens": 256000,
       "maxOutputTokens": 16384,
       "input": {
         "text": true,
@@ -8461,8 +8820,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.075,
-        "outputPerMillionTokens": 0.2
+        "inputPerMillionTokens": 0.09375,
+        "outputPerMillionTokens": 0.25
       },
       "request": {
         "supportsTemperature": true,
@@ -8524,7 +8883,7 @@ export const GENERATED_MODELS = {
       "name": "MoonshotAI: Kimi K2 0711",
       "status": "active",
       "contextWindowTokens": 131072,
-      "maxOutputTokens": 100352,
+      "maxOutputTokens": 98304,
       "input": {
         "text": true,
         "image": false
@@ -8548,7 +8907,7 @@ export const GENERATED_MODELS = {
       "name": "MoonshotAI: Kimi K2 0905",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 100352,
+      "maxOutputTokens": 98304,
       "input": {
         "text": true,
         "image": false
@@ -8572,7 +8931,7 @@ export const GENERATED_MODELS = {
       "name": "MoonshotAI: Kimi K2 Thinking",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 100352,
+      "maxOutputTokens": 98304,
       "input": {
         "text": true,
         "image": false
@@ -8673,9 +9032,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.66,
+        "inputPerMillionTokens": 0.7062,
         "cachedInputPerMillionTokens": 0.18,
-        "outputPerMillionTokens": 3.4
+        "outputPerMillionTokens": 3.21
       },
       "request": {
         "supportsTemperature": true,
@@ -8703,9 +9062,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 3,
-        "cachedInputPerMillionTokens": 0.3,
-        "outputPerMillionTokens": 15
+        "inputPerMillionTokens": 1.7,
+        "cachedInputPerMillionTokens": 0.17,
+        "outputPerMillionTokens": 8.5
       },
       "request": {
         "supportsTemperature": true,
@@ -8748,8 +9107,8 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "nex-agi/nex-n2-mini",
-      "name": "Nex AGI: Nex-N2-Mini",
+      "id": "nex-agi/nex-n2.5-mini:free",
+      "name": "Nex AGI: Nex-N2.5-Mini (free)",
       "status": "active",
       "contextWindowTokens": 262144,
       "maxOutputTokens": 235929,
@@ -8763,9 +9122,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.025,
-        "cachedInputPerMillionTokens": 0.0025,
-        "outputPerMillionTokens": 0.1
+        "inputPerMillionTokens": 0,
+        "outputPerMillionTokens": 0
       },
       "request": {
         "supportsTemperature": true,
@@ -8778,8 +9136,8 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "nex-agi/nex-n2-pro",
-      "name": "Nex AGI: Nex-N2-Pro",
+      "id": "nex-agi/nex-n2.5-pro:free",
+      "name": "Nex AGI: Nex-N2.5-Pro (free)",
       "status": "active",
       "contextWindowTokens": 262144,
       "maxOutputTokens": 235929,
@@ -8793,9 +9151,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.25,
-        "cachedInputPerMillionTokens": 0.025,
-        "outputPerMillionTokens": 1
+        "inputPerMillionTokens": 0,
+        "outputPerMillionTokens": 0
       },
       "request": {
         "supportsTemperature": true,
@@ -8823,9 +9180,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.05,
-        "cachedInputPerMillionTokens": 0.03,
-        "outputPerMillionTokens": 0.2
+        "inputPerMillionTokens": 0.06,
+        "outputPerMillionTokens": 0.24
       },
       "request": {
         "supportsTemperature": true,
@@ -8870,8 +9226,8 @@ export const GENERATED_MODELS = {
       "id": "nvidia/nemotron-3-super-120b-a12b",
       "name": "NVIDIA: Nemotron 3 Super",
       "status": "active",
-      "contextWindowTokens": 1000000,
-      "maxOutputTokens": 16384,
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 235929,
       "input": {
         "text": true,
         "image": false
@@ -8882,8 +9238,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.085,
-        "outputPerMillionTokens": 0.4
+        "inputPerMillionTokens": 0.08,
+        "outputPerMillionTokens": 0.45
       },
       "request": {
         "supportsTemperature": true,
@@ -8929,7 +9285,7 @@ export const GENERATED_MODELS = {
       "name": "NVIDIA: Nemotron 3 Ultra",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 32768,
+      "maxOutputTokens": 182520,
       "input": {
         "text": true,
         "image": false
@@ -8940,9 +9296,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.625,
-        "cachedInputPerMillionTokens": 0.1875,
-        "outputPerMillionTokens": 3.125
+        "inputPerMillionTokens": 0.6,
+        "cachedInputPerMillionTokens": 0.12,
+        "outputPerMillionTokens": 2.4
       },
       "request": {
         "supportsTemperature": true,
@@ -8988,7 +9344,7 @@ export const GENERATED_MODELS = {
       "name": "NVIDIA: Nemotron 3.5 Lightning",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 131072,
+      "maxOutputTokens": 235929,
       "input": {
         "text": true,
         "image": false
@@ -8999,7 +9355,7 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.08,
+        "inputPerMillionTokens": 0.07,
         "cachedInputPerMillionTokens": 0.04,
         "outputPerMillionTokens": 0.2
       },
@@ -9171,30 +9527,6 @@ export const GENERATED_MODELS = {
       "input": {
         "text": true,
         "image": true
-      },
-      "reasoning": false,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "openrouter:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 10,
-        "outputPerMillionTokens": 30
-      },
-      "request": {
-        "supportsTemperature": true,
-        "maxTokensField": "max_tokens"
-      }
-    },
-    {
-      "id": "openai/gpt-4-turbo-preview",
-      "name": "OpenAI: GPT-4 Turbo Preview",
-      "status": "active",
-      "contextWindowTokens": 128000,
-      "maxOutputTokens": 4096,
-      "input": {
-        "text": true,
-        "image": false
       },
       "reasoning": false,
       "toolCalling": true,
@@ -10899,7 +11231,7 @@ export const GENERATED_MODELS = {
       "name": "OpenAI: gpt-oss-120b",
       "status": "active",
       "contextWindowTokens": 131072,
-      "maxOutputTokens": 117964,
+      "maxOutputTokens": 65536,
       "input": {
         "text": true,
         "image": false
@@ -10910,8 +11242,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.037,
-        "outputPerMillionTokens": 0.17
+        "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.075,
+        "outputPerMillionTokens": 0.6
       },
       "request": {
         "supportsTemperature": true,
@@ -11480,6 +11813,35 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "prism-ml/ternary-bonsai-2-27b",
+      "name": "PrismML: Ternary Bonsai 2 27B",
+      "status": "active",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 32768,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.075,
+        "outputPerMillionTokens": 0.5
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
       "id": "qwen/qwen-2.5-72b-instruct",
       "name": "Qwen2.5 72B Instruct",
       "status": "active",
@@ -11626,7 +11988,7 @@ export const GENERATED_MODELS = {
       "name": "Qwen: Qwen3 235B A22B Instruct 2507",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 16384,
+      "maxOutputTokens": 235929,
       "input": {
         "text": true,
         "image": false
@@ -11637,8 +11999,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.09,
-        "outputPerMillionTokens": 0.55
+        "inputPerMillionTokens": 0.0875,
+        "cachedInputPerMillionTokens": 0.0175,
+        "outputPerMillionTokens": 0.35
       },
       "request": {
         "supportsTemperature": true,
@@ -11970,7 +12333,7 @@ export const GENERATED_MODELS = {
       "name": "Qwen: Qwen3 Next 80B A3B Instruct",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 235929,
+      "maxOutputTokens": 16384,
       "input": {
         "text": true,
         "image": false
@@ -11981,8 +12344,7 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.1,
-        "cachedInputPerMillionTokens": 0.07,
+        "inputPerMillionTokens": 0.09,
         "outputPerMillionTokens": 1.1
       },
       "request": {
@@ -11995,7 +12357,7 @@ export const GENERATED_MODELS = {
       "name": "Qwen: Qwen3 Next 80B A3B Thinking",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 235929,
+      "maxOutputTokens": 32768,
       "input": {
         "text": true,
         "image": false
@@ -12078,7 +12440,7 @@ export const GENERATED_MODELS = {
       "name": "Qwen: Qwen3 VL 30B A3B Instruct",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 16384,
+      "maxOutputTokens": 32768,
       "input": {
         "text": true,
         "image": true
@@ -12089,8 +12451,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.15,
-        "outputPerMillionTokens": 0.6
+        "inputPerMillionTokens": 0.13,
+        "outputPerMillionTokens": 0.52
       },
       "request": {
         "supportsTemperature": true,
@@ -12208,7 +12570,7 @@ export const GENERATED_MODELS = {
       "name": "Qwen: Qwen3.5-122B-A10B",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 81920,
+      "maxOutputTokens": 65536,
       "input": {
         "text": true,
         "image": true
@@ -12219,8 +12581,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.29,
-        "outputPerMillionTokens": 2.4
+        "inputPerMillionTokens": 0.26,
+        "outputPerMillionTokens": 2.08
       },
       "request": {
         "supportsTemperature": true,
@@ -12296,7 +12658,7 @@ export const GENERATED_MODELS = {
       "name": "Qwen: Qwen3.5 397B A17B",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 65536,
+      "maxOutputTokens": 235929,
       "input": {
         "text": true,
         "image": true
@@ -12307,8 +12669,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.39,
-        "outputPerMillionTokens": 2.34
+        "inputPerMillionTokens": 0.55,
+        "cachedInputPerMillionTokens": 0.225,
+        "outputPerMillionTokens": 3.5
       },
       "request": {
         "supportsTemperature": true,
@@ -12325,7 +12688,7 @@ export const GENERATED_MODELS = {
       "name": "Qwen: Qwen3.5-9B",
       "status": "active",
       "contextWindowTokens": 262144,
-      "maxOutputTokens": 235929,
+      "maxOutputTokens": 32768,
       "input": {
         "text": true,
         "image": true
@@ -12664,7 +13027,7 @@ export const GENERATED_MODELS = {
       "name": "Qwen: Qwen3.8 2.4T A95B",
       "status": "active",
       "contextWindowTokens": 1048576,
-      "maxOutputTokens": 262144,
+      "maxOutputTokens": 131072,
       "input": {
         "text": true,
         "image": false
@@ -12738,6 +13101,35 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 0.42,
         "cachedInputPerMillionTokens": 0.085,
         "outputPerMillionTokens": 3
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "qwen/qwen3.8-27b:free",
+      "name": "Qwen: Qwen3.8 27B (free)",
+      "status": "active",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 235929,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0,
+        "outputPerMillionTokens": 0
       },
       "request": {
         "supportsTemperature": true,
@@ -12860,8 +13252,61 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "sakana/fugu-max",
+      "name": "Sakana: Fugu Max",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 2,
+        "cachedInputPerMillionTokens": 0.25,
+        "outputPerMillionTokens": 6
+      },
+      "request": {
+        "supportsTemperature": false,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
       "id": "sakana/fugu-ultra",
       "name": "Sakana: Fugu Ultra",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "request": {
+        "supportsTemperature": false,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "sakana/fugu-ultra-v2",
+      "name": "Sakana: Fugu Ultra v2",
       "status": "active",
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 128000,
@@ -13079,30 +13524,6 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "thedrummer/unslopnemo-12b",
-      "name": "TheDrummer: UnslopNemo 12B",
-      "status": "active",
-      "contextWindowTokens": 1024000,
-      "maxOutputTokens": 819200,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": false,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "openrouter:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.4,
-        "outputPerMillionTokens": 0.4
-      },
-      "request": {
-        "supportsTemperature": true,
-        "maxTokensField": "max_tokens"
-      }
-    },
-    {
       "id": "thinkingmachines/inkling",
       "name": "Thinking Machines: Inkling",
       "status": "active",
@@ -13149,36 +13570,6 @@ export const GENERATED_MODELS = {
         "version": "openrouter:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.45,
-        "cachedInputPerMillionTokens": 0.1,
-        "outputPerMillionTokens": 1.2
-      },
-      "request": {
-        "supportsTemperature": true,
-        "maxTokensField": "max_tokens",
-        "extraBody": {
-          "reasoning": {
-            "effort": "high"
-          }
-        }
-      }
-    },
-    {
-      "id": "thinkingmachines/inkling-small:batch",
-      "name": "Thinking Machines: Inkling Small (batch)",
-      "status": "active",
-      "contextWindowTokens": 524288,
-      "maxOutputTokens": 471859,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "openrouter:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.5,
         "cachedInputPerMillionTokens": 0.1,
         "outputPerMillionTokens": 1.2
       },
@@ -13281,6 +13672,31 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "unbiased/pareto",
+      "name": "Pareto",
+      "status": "active",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 2.5,
+        "cachedInputPerMillionTokens": 0.25,
+        "outputPerMillionTokens": 7.5
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens"
+      }
+    },
+    {
       "id": "upstage/solar-pro-3",
       "name": "Upstage: Solar Pro 3",
       "status": "active",
@@ -13326,9 +13742,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.03,
-        "cachedInputPerMillionTokens": 0.006,
-        "outputPerMillionTokens": 0.12
+        "inputPerMillionTokens": 0.09,
+        "cachedInputPerMillionTokens": 0.018,
+        "outputPerMillionTokens": 0.36
       },
       "request": {
         "supportsTemperature": true,
@@ -13722,8 +14138,8 @@ export const GENERATED_MODELS = {
       "id": "z-ai/glm-4.7-flash",
       "name": "Z.ai: GLM 4.7 Flash",
       "status": "active",
-      "contextWindowTokens": 202752,
-      "maxOutputTokens": 16384,
+      "contextWindowTokens": 200000,
+      "maxOutputTokens": 117964,
       "input": {
         "text": true,
         "image": false
@@ -13734,8 +14150,7 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.06,
-        "cachedInputPerMillionTokens": 0.01,
+        "inputPerMillionTokens": 0.0605,
         "outputPerMillionTokens": 0.4
       },
       "request": {
@@ -13854,9 +14269,39 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.966,
-        "cachedInputPerMillionTokens": 0.1932,
-        "outputPerMillionTokens": 3.036
+        "inputPerMillionTokens": 0.6496,
+        "cachedInputPerMillionTokens": 0.12064,
+        "outputPerMillionTokens": 2.0416
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "z-ai/glm-5.2:batch",
+      "name": "Z.ai: GLM 5.2 (batch)",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 943718,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.7,
+        "cachedInputPerMillionTokens": 0.07,
+        "outputPerMillionTokens": 2.2
       },
       "request": {
         "supportsTemperature": true,
@@ -13873,7 +14318,7 @@ export const GENERATED_MODELS = {
       "name": "Z.ai: GLM 5.3",
       "status": "active",
       "contextWindowTokens": 1310720,
-      "maxOutputTokens": 943718,
+      "maxOutputTokens": 131072,
       "input": {
         "text": true,
         "image": false
@@ -13884,9 +14329,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 1.4,
-        "cachedInputPerMillionTokens": 0.26,
-        "outputPerMillionTokens": 4.4
+        "inputPerMillionTokens": 0.896,
+        "cachedInputPerMillionTokens": 0.1664,
+        "outputPerMillionTokens": 2.816
       },
       "request": {
         "supportsTemperature": true,
@@ -13914,9 +14359,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.075,
-        "cachedInputPerMillionTokens": 0.015,
-        "outputPerMillionTokens": 0.25
+        "inputPerMillionTokens": 0.09,
+        "cachedInputPerMillionTokens": 0.018,
+        "outputPerMillionTokens": 0.3
       },
       "request": {
         "supportsTemperature": true,
@@ -13932,8 +14377,8 @@ export const GENERATED_MODELS = {
       "id": "z-ai/glm-5.3-flash:batch",
       "name": "Z.ai: GLM 5.3 Flash (batch)",
       "status": "active",
-      "contextWindowTokens": 1048575,
-      "maxOutputTokens": 943717,
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 943718,
       "input": {
         "text": true,
         "image": true
@@ -13944,9 +14389,69 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "openrouter:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.15,
-        "cachedInputPerMillionTokens": 0.03,
-        "outputPerMillionTokens": 0.5
+        "inputPerMillionTokens": 0.075,
+        "cachedInputPerMillionTokens": 0.015,
+        "outputPerMillionTokens": 0.25
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3-flashx",
+      "name": "Z.ai: GLM 5.3 FlashX",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.37,
+        "cachedInputPerMillionTokens": 0.075,
+        "outputPerMillionTokens": 1.25
+      },
+      "request": {
+        "supportsTemperature": true,
+        "maxTokensField": "max_tokens",
+        "extraBody": {
+          "reasoning": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3:batch",
+      "name": "Z.ai: GLM 5.3 (batch)",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 943718,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "openrouter:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.7,
+        "cachedInputPerMillionTokens": 0.13,
+        "outputPerMillionTokens": 2.2
       },
       "request": {
         "supportsTemperature": true,
@@ -14087,7 +14592,7 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 1.3,
-        "cachedInputPerMillionTokens": 0.26,
+        "cachedInputPerMillionTokens": 0.13,
         "cacheWriteInputPerMillionTokens": 1.625,
         "outputPerMillionTokens": 7.8
       }
@@ -14261,8 +14766,8 @@ export const GENERATED_MODELS = {
       "id": "alibaba/qwen3-next-80b-a3b-instruct",
       "name": "Qwen3 Next 80B A3B Instruct",
       "status": "active",
-      "contextWindowTokens": 131072,
-      "maxOutputTokens": 32768,
+      "contextWindowTokens": 262114,
+      "maxOutputTokens": 262114,
       "input": {
         "text": true,
         "image": false
@@ -14281,8 +14786,8 @@ export const GENERATED_MODELS = {
       "id": "alibaba/qwen3-next-80b-a3b-thinking",
       "name": "Qwen3 Next 80B A3B Thinking",
       "status": "active",
-      "contextWindowTokens": 131072,
-      "maxOutputTokens": 32768,
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 262144,
       "input": {
         "text": true,
         "image": false
@@ -14374,7 +14879,7 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.1,
-        "cachedInputPerMillionTokens": 0.001,
+        "cachedInputPerMillionTokens": 0.01,
         "cacheWriteInputPerMillionTokens": 0.125,
         "outputPerMillionTokens": 0.4
       }
@@ -14398,7 +14903,7 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 0.4,
         "cachedInputPerMillionTokens": 0.04,
         "cacheWriteInputPerMillionTokens": 0.5,
-        "outputPerMillionTokens": 2.4
+        "outputPerMillionTokens": 2.5
       }
     },
     {
@@ -14438,7 +14943,7 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.5,
-        "cachedInputPerMillionTokens": 0.1,
+        "cachedInputPerMillionTokens": 0.05,
         "cacheWriteInputPerMillionTokens": 0.625,
         "outputPerMillionTokens": 3
       }
@@ -14568,38 +15073,17 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.16,
+        "inputPerMillionTokens": 0.15,
         "cachedInputPerMillionTokens": 0.016,
         "cacheWriteInputPerMillionTokens": 0.2,
         "outputPerMillionTokens": 0.47
       }
     },
     {
-      "id": "alibaba/qwen3.8-flash-next",
-      "name": "Qwen 3.8 Flash Next",
-      "status": "active",
-      "contextWindowTokens": 1048576,
-      "maxOutputTokens": 1048576,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.12,
-        "cachedInputPerMillionTokens": 0.01,
-        "outputPerMillionTokens": 0.4
-      }
-    },
-    {
       "id": "alibaba/qwen3.8-max",
       "name": "Qwen 3.8 Max",
       "status": "active",
-      "contextWindowTokens": 1000000,
+      "contextWindowTokens": 262144,
       "maxOutputTokens": 128000,
       "input": {
         "text": true,
@@ -14613,7 +15097,6 @@ export const GENERATED_MODELS = {
         "currency": "USD",
         "inputPerMillionTokens": 2,
         "cachedInputPerMillionTokens": 0.25,
-        "cacheWriteInputPerMillionTokens": 2.5,
         "outputPerMillionTokens": 6
       }
     },
@@ -14637,6 +15120,27 @@ export const GENERATED_MODELS = {
         "cachedInputPerMillionTokens": 0.25,
         "cacheWriteInputPerMillionTokens": 2.5,
         "outputPerMillionTokens": 6
+      }
+    },
+    {
+      "id": "alibaba/qwen3.8-omni-flash",
+      "name": "Qwen 3.8 Omni Flash",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.016,
+        "outputPerMillionTokens": 0.47
       }
     },
     {
@@ -15147,6 +15651,27 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "bytedance/seed-2.1-turbo",
+      "name": "Seed 2.1 Turbo",
+      "status": "active",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 262144,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.5,
+        "cachedInputPerMillionTokens": 0.1,
+        "outputPerMillionTokens": 2.5
+      }
+    },
+    {
       "id": "cohere/command-a",
       "name": "Command A",
       "status": "active",
@@ -15244,9 +15769,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.28,
-        "cachedInputPerMillionTokens": 0.028,
-        "outputPerMillionTokens": 0.42
+        "inputPerMillionTokens": 0.62,
+        "outputPerMillionTokens": 1.85
       }
     },
     {
@@ -15372,6 +15896,27 @@ export const GENERATED_MODELS = {
         "inputPerMillionTokens": 0.66,
         "cachedInputPerMillionTokens": 0.066,
         "outputPerMillionTokens": 1.98
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "status": "active",
+      "contextWindowTokens": 1048576,
+      "maxOutputTokens": 32768,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.3,
+        "cachedInputPerMillionTokens": 0.03,
+        "outputPerMillionTokens": 1.2
       }
     },
     {
@@ -15668,6 +16213,27 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "inception/mercury-2.5",
+      "name": "Mercury 2.5",
+      "status": "active",
+      "contextWindowTokens": 260000,
+      "maxOutputTokens": 65536,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.04,
+        "cachedInputPerMillionTokens": 0.004,
+        "outputPerMillionTokens": 0.15
+      }
+    },
+    {
       "id": "inception/mercury-coder-small",
       "name": "Mercury Coder Small Beta",
       "status": "active",
@@ -15703,9 +16269,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.06,
-        "cachedInputPerMillionTokens": 0.012,
-        "outputPerMillionTokens": 0.18
+        "inputPerMillionTokens": 0.021,
+        "cachedInputPerMillionTokens": 0.0042,
+        "outputPerMillionTokens": 0.063
       }
     },
     {
@@ -15789,6 +16355,46 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "inclusionai/ling-3.0-flash-vl",
+      "name": "Ling 3.0 Flash VL",
+      "status": "active",
+      "contextWindowTokens": 256000,
+      "maxOutputTokens": 32000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0,
+        "outputPerMillionTokens": 0
+      }
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-vl-free",
+      "name": "Ling 3.0 Flash VL (Free)",
+      "status": "active",
+      "contextWindowTokens": 256000,
+      "maxOutputTokens": 32000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0,
+        "outputPerMillionTokens": 0
+      }
+    },
+    {
       "id": "interfaze/interfaze-beta",
       "name": "Interfaze Beta",
       "status": "active",
@@ -15806,90 +16412,6 @@ export const GENERATED_MODELS = {
         "currency": "USD",
         "inputPerMillionTokens": 1.5,
         "outputPerMillionTokens": 3.5
-      }
-    },
-    {
-      "id": "kwaipilot/kat-coder-air-v2.5",
-      "name": "Kat Coder Air V2.5",
-      "status": "active",
-      "contextWindowTokens": 256000,
-      "maxOutputTokens": 80000,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.15,
-        "cachedInputPerMillionTokens": 0.03,
-        "outputPerMillionTokens": 0.6
-      }
-    },
-    {
-      "id": "kwaipilot/kat-coder-pro-v1",
-      "name": "KAT-Coder-Pro V1",
-      "status": "active",
-      "contextWindowTokens": 256000,
-      "maxOutputTokens": 32000,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": false,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.3,
-        "cachedInputPerMillionTokens": 0.06,
-        "outputPerMillionTokens": 1.2
-      }
-    },
-    {
-      "id": "kwaipilot/kat-coder-pro-v2",
-      "name": "Kat Coder Pro V2",
-      "status": "active",
-      "contextWindowTokens": 256000,
-      "maxOutputTokens": 256000,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.3,
-        "cachedInputPerMillionTokens": 0.06,
-        "outputPerMillionTokens": 1.2
-      }
-    },
-    {
-      "id": "kwaipilot/kat-coder-pro-v2.5",
-      "name": "Kat Coder Pro V2.5",
-      "status": "active",
-      "contextWindowTokens": 256000,
-      "maxOutputTokens": 80000,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.74,
-        "cachedInputPerMillionTokens": 0.15,
-        "outputPerMillionTokens": 2.96
       }
     },
     {
@@ -16310,54 +16832,15 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.3,
+        "cachedInputPerMillionTokens": 0.03,
         "outputPerMillionTokens": 0.9
-      }
-    },
-    {
-      "id": "mistral/devstral-2",
-      "name": "Devstral 2",
-      "status": "active",
-      "contextWindowTokens": 256000,
-      "maxOutputTokens": 256000,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": false,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.4,
-        "outputPerMillionTokens": 2
-      }
-    },
-    {
-      "id": "mistral/devstral-small-2",
-      "name": "Devstral Small 2",
-      "status": "active",
-      "contextWindowTokens": 256000,
-      "maxOutputTokens": 256000,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": false,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.1,
-        "outputPerMillionTokens": 0.3
       }
     },
     {
       "id": "mistral/ministral-14b",
       "name": "Ministral 14B",
       "status": "active",
-      "contextWindowTokens": 256000,
+      "contextWindowTokens": 262144,
       "maxOutputTokens": 256000,
       "input": {
         "text": true,
@@ -16370,6 +16853,7 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.2,
+        "cachedInputPerMillionTokens": 0.02,
         "outputPerMillionTokens": 0.2
       }
     },
@@ -16377,7 +16861,7 @@ export const GENERATED_MODELS = {
       "id": "mistral/ministral-3b",
       "name": "Ministral 3B",
       "status": "active",
-      "contextWindowTokens": 128000,
+      "contextWindowTokens": 131072,
       "maxOutputTokens": 4000,
       "input": {
         "text": true,
@@ -16390,6 +16874,7 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.1,
+        "cachedInputPerMillionTokens": 0.01,
         "outputPerMillionTokens": 0.1
       }
     },
@@ -16397,7 +16882,7 @@ export const GENERATED_MODELS = {
       "id": "mistral/ministral-8b",
       "name": "Ministral 8B",
       "status": "active",
-      "contextWindowTokens": 128000,
+      "contextWindowTokens": 262144,
       "maxOutputTokens": 4000,
       "input": {
         "text": true,
@@ -16410,6 +16895,7 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.15,
+        "cachedInputPerMillionTokens": 0.015,
         "outputPerMillionTokens": 0.15
       }
     },
@@ -16417,7 +16903,7 @@ export const GENERATED_MODELS = {
       "id": "mistral/mistral-large-3",
       "name": "Mistral Large 3",
       "status": "active",
-      "contextWindowTokens": 256000,
+      "contextWindowTokens": 262144,
       "maxOutputTokens": 256000,
       "input": {
         "text": true,
@@ -16430,34 +16916,15 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.5,
+        "cachedInputPerMillionTokens": 0.05,
         "outputPerMillionTokens": 1.5
-      }
-    },
-    {
-      "id": "mistral/mistral-medium",
-      "name": "Mistral Medium 3.1",
-      "status": "active",
-      "contextWindowTokens": 128000,
-      "maxOutputTokens": 64000,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": false,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.4,
-        "outputPerMillionTokens": 2
       }
     },
     {
       "id": "mistral/mistral-medium-3.5",
       "name": "Mistral Medium Latest",
       "status": "active",
-      "contextWindowTokens": 256000,
+      "contextWindowTokens": 262144,
       "maxOutputTokens": 256000,
       "input": {
         "text": true,
@@ -16470,6 +16937,7 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 1.5,
+        "cachedInputPerMillionTokens": 0.15,
         "outputPerMillionTokens": 7.5
       }
     },
@@ -16477,11 +16945,11 @@ export const GENERATED_MODELS = {
       "id": "mistral/mistral-nemo",
       "name": "Mistral Nemo 12B",
       "status": "active",
-      "contextWindowTokens": 128000,
-      "maxOutputTokens": 128000,
+      "contextWindowTokens": 60288,
+      "maxOutputTokens": 16000,
       "input": {
         "text": true,
-        "image": true
+        "image": false
       },
       "reasoning": false,
       "toolCalling": true,
@@ -16489,35 +16957,15 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.15,
-        "outputPerMillionTokens": 0.15
+        "inputPerMillionTokens": 0.04,
+        "outputPerMillionTokens": 0.17
       }
     },
     {
       "id": "mistral/mistral-small",
       "name": "Mistral Small",
       "status": "active",
-      "contextWindowTokens": 32000,
-      "maxOutputTokens": 4000,
-      "input": {
-        "text": true,
-        "image": true
-      },
-      "reasoning": false,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 0.1,
-        "outputPerMillionTokens": 0.3
-      }
-    },
-    {
-      "id": "mistral/pixtral-12b",
-      "name": "Pixtral 12B 2409",
-      "status": "active",
-      "contextWindowTokens": 128000,
+      "contextWindowTokens": 262144,
       "maxOutputTokens": 4000,
       "input": {
         "text": true,
@@ -16530,7 +16978,29 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.15,
-        "outputPerMillionTokens": 0.15
+        "cachedInputPerMillionTokens": 0.015,
+        "outputPerMillionTokens": 0.6
+      }
+    },
+    {
+      "id": "mixedbread/toast-1",
+      "name": "Toast 1",
+      "status": "active",
+      "contextWindowTokens": 131000,
+      "maxOutputTokens": 4000,
+      "input": {
+        "text": true,
+        "image": false
+      },
+      "reasoning": false,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 0.3,
+        "cachedInputPerMillionTokens": 0.036,
+        "outputPerMillionTokens": 0.72
       }
     },
     {
@@ -16578,8 +17048,8 @@ export const GENERATED_MODELS = {
       "id": "moonshotai/kimi-k2.5",
       "name": "Kimi K2.5",
       "status": "active",
-      "contextWindowTokens": 262114,
-      "maxOutputTokens": 262114,
+      "contextWindowTokens": 256000,
+      "maxOutputTokens": 256000,
       "input": {
         "text": true,
         "image": true
@@ -16591,7 +17061,6 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.6,
-        "cachedInputPerMillionTokens": 0.1,
         "outputPerMillionTokens": 3
       }
     },
@@ -16723,7 +17192,8 @@ export const GENERATED_MODELS = {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
         "inputPerMillionTokens": 0.05,
-        "outputPerMillionTokens": 0.24
+        "cachedInputPerMillionTokens": 0.025,
+        "outputPerMillionTokens": 0.2
       }
     },
     {
@@ -17724,10 +18194,10 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 2,
-        "cachedInputPerMillionTokens": 0.2,
-        "cacheWriteInputPerMillionTokens": 2.5,
-        "outputPerMillionTokens": 10
+        "inputPerMillionTokens": 4,
+        "cachedInputPerMillionTokens": 0.4,
+        "cacheWriteInputPerMillionTokens": 5,
+        "outputPerMillionTokens": 20
       }
     },
     {
@@ -17746,10 +18216,10 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 4,
-        "cachedInputPerMillionTokens": 0.4,
-        "cacheWriteInputPerMillionTokens": 5,
-        "outputPerMillionTokens": 20
+        "inputPerMillionTokens": 8,
+        "cachedInputPerMillionTokens": 0.8,
+        "cacheWriteInputPerMillionTokens": 10,
+        "outputPerMillionTokens": 40
       },
       "request": {
         "supportsTemperature": false
@@ -17888,8 +18358,8 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.05,
-        "outputPerMillionTokens": 0.2
+        "inputPerMillionTokens": 0.03,
+        "outputPerMillionTokens": 0.14
       }
     },
     {
@@ -18138,8 +18608,94 @@ export const GENERATED_MODELS = {
       }
     },
     {
+      "id": "quiverai/arrow-2",
+      "name": "Arrow 2",
+      "status": "active",
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 4,
+        "cachedInputPerMillionTokens": 0.4,
+        "cacheWriteInputPerMillionTokens": 5,
+        "outputPerMillionTokens": 20
+      }
+    },
+    {
+      "id": "quiverai/arrow-2-telos",
+      "name": "Arrow 2 Telos",
+      "status": "active",
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 131072,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 6,
+        "cachedInputPerMillionTokens": 0.6,
+        "cacheWriteInputPerMillionTokens": 7.5,
+        "outputPerMillionTokens": 30
+      }
+    },
+    {
+      "id": "sakana/fugu-max",
+      "name": "Fugu Max",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 1000000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 2,
+        "cachedInputPerMillionTokens": 0.25,
+        "outputPerMillionTokens": 6
+      }
+    },
+    {
       "id": "sakana/fugu-ultra",
       "name": "Fugu Ultra",
+      "status": "active",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 1000000,
+      "input": {
+        "text": true,
+        "image": true
+      },
+      "reasoning": true,
+      "toolCalling": true,
+      "developerRole": false,
+      "price": {
+        "version": "vercel-ai-gateway:live",
+        "currency": "USD",
+        "inputPerMillionTokens": 5,
+        "cachedInputPerMillionTokens": 0.5,
+        "outputPerMillionTokens": 30
+      }
+    },
+    {
+      "id": "sakana/fugu-ultra-v2",
+      "name": "Fugu Ultra v2",
       "status": "active",
       "contextWindowTokens": 1000000,
       "maxOutputTokens": 1000000,
@@ -18600,27 +19156,6 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "xiaomi/mimo-v2.5-pro-ultraspeed",
-      "name": "MiMo V2.5 Pro UltraSpeed",
-      "status": "active",
-      "contextWindowTokens": 1048576,
-      "maxOutputTokens": 131072,
-      "input": {
-        "text": true,
-        "image": false
-      },
-      "reasoning": true,
-      "toolCalling": true,
-      "developerRole": false,
-      "price": {
-        "version": "vercel-ai-gateway:live",
-        "currency": "USD",
-        "inputPerMillionTokens": 1.305,
-        "cachedInputPerMillionTokens": 0.0108,
-        "outputPerMillionTokens": 2.61
-      }
-    },
-    {
       "id": "zai/glm-4.5",
       "name": "GLM 4.5",
       "status": "active",
@@ -18886,9 +19421,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.7,
-        "cachedInputPerMillionTokens": 0.13,
-        "outputPerMillionTokens": 2.2
+        "inputPerMillionTokens": 1.4,
+        "cachedInputPerMillionTokens": 0.14,
+        "outputPerMillionTokens": 4.4
       }
     },
     {
@@ -18934,14 +19469,14 @@ export const GENERATED_MODELS = {
       }
     },
     {
-      "id": "zai/glm-5.3-promo-50",
-      "name": "GLM 5.3 (50% off)",
+      "id": "zai/glm-5.3-flashx",
+      "name": "GLM 5.3 FlashX",
       "status": "active",
-      "contextWindowTokens": 1048576,
-      "maxOutputTokens": 1048576,
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 131072,
       "input": {
         "text": true,
-        "image": false
+        "image": true
       },
       "reasoning": true,
       "toolCalling": true,
@@ -18949,9 +19484,9 @@ export const GENERATED_MODELS = {
       "price": {
         "version": "vercel-ai-gateway:live",
         "currency": "USD",
-        "inputPerMillionTokens": 0.7,
-        "cachedInputPerMillionTokens": 0.13,
-        "outputPerMillionTokens": 2.2
+        "inputPerMillionTokens": 0.37,
+        "cachedInputPerMillionTokens": 0.075,
+        "outputPerMillionTokens": 1.25
       }
     },
     {

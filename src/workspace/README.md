@@ -12,7 +12,7 @@ FileSystem、Git、LSP、Memory 和 Skills 共享。
 - `fingerprint` 表达工作区身份，不应随 Git HEAD 或普通文件内容改变。
 - `revision` 表达本次捕获的工作区事实版本，可以随 instructions、repository facts 或
   其他已声明事实改变。
-- `instructions` 已完成读取、验证、排序和快照；Context 不再扫描它们的来源。
+- `instructions` 是经过读取、验证、排序并取得快照的事实；Context 不扫描它们的来源。
 - Snapshot 及其嵌套值必须由 Provider 冻结。AgentLoop 在一个 Step 只解析一次；Tools
   获得完整 Snapshot，Context 从该 Snapshot 投影同一 fingerprint、revision、repository
   与 instructions，不允许各自重新扫描。
@@ -24,7 +24,7 @@ Workspace Service Definition 不依赖 Session、Context 或具体工具。Consu
 
 Workspace 不承担以下职责：
 
-- 持久化用户登记的项目列表；这是未来 Workspace Registry 的职责。
+- 持久化用户登记的项目列表；项目登记属于独立 Registry 能力。
 - 读写任意工作区文件；这是 FileSystem 能力的职责。
 - 决定某次操作是否允许；这是 Policy 的职责。
 - 执行 Shell 或 Git 命令。
@@ -68,9 +68,9 @@ Service，并在每个 Step 用 `Session.scope` 作为 `ResolveWorkspaceRequest.
 缺失或被 Loader 禁用时，`agentLoop → runtime → agents → application → surface` 保持
 PENDING；Provider 恢复后由 Cordis 重新激活。
 
-Workspace 当前不提供 Registry、受保护路径、访问授权或 sandbox。这些能力需要独立演进，
-应分别由未来的 Registry/Policy/FileSystem/Shell seam 消费 Workspace Snapshot，而不是塞进
-Local Provider。
+Workspace 不提供 Registry、受保护路径、访问授权或 sandbox。Registry、Policy、
+FileSystem 与 Shell 是独立 seam，按各自契约消费 Workspace Snapshot；Local Provider
+不承载这些职责。
 
 ## WebUI 目录选择
 

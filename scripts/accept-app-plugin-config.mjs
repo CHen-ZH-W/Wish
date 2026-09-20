@@ -37,6 +37,10 @@ import * as ModelPlugins from "../dist/models/plugins.js";
 import Models, {
   Config as ModelsConfig,
 } from "../dist/models/service.js";
+import StorageModelAttemptLedger, {
+  Config as ModelAttemptLedgerConfig,
+} from
+  "../dist/models/pricing/providers/storage.js";
 import Runtime, {
   Config as RuntimeConfig,
 } from "../dist/composition/runtime-service.js";
@@ -76,6 +80,12 @@ import { Config as CoordinatorConfig } from
   "../dist/coordinator/providers/storage.js";
 import { Config as SubagentLauncherConfig } from
   "../dist/apps/cli/subagent-launcher.js";
+import {
+  cleanEnvironment,
+  delay,
+  waitFor,
+  withTimeout,
+} from "./support/process-fixtures.mjs";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -171,6 +181,13 @@ test("capability, Application and WebUI plugins validate only their own settings
   assert.deepEqual(RuntimeLifecycleConfig({ backendId: "file" }), {
     backendId: "file",
   });
+  assert.deepEqual(ModelAttemptLedgerConfig({
+    backendId: "file",
+    currency: "CNY",
+  }), {
+    backendId: "file",
+    currency: "CNY",
+  });
   assert.deepEqual(WorkspaceConfig({
     instructionFiles: ["AGENTS.md"],
     repositoryMarkers: [".git"],
@@ -246,6 +263,7 @@ test("stable Agent config updates replace the downstream Application generation"
       rootDirectory: "./storage",
     });
     await root.plugin(JournalRuntimeLifecycleProvider, { backendId: "file" });
+    await root.plugin(StorageModelAttemptLedger, { backendId: "file" });
     await root.plugin(BlobToolResultArchiveProvider, { backendId: "file" });
     await root.plugin(FileSessionPersistence);
     await root.plugin(Sessions, { dataDirectory: "./session-state" });
@@ -316,6 +334,7 @@ test("the built-in profile translates compatibility environment at Loader", asyn
     WISH_MODEL: "deepseek/deepseek-v4-pro",
     WISH_FALLBACK_MODELS: "openai/gpt-5.2, anthropic/claude-opus-4-6",
     WISH_MODEL_MAX_RETRIES: "3",
+    WISH_MODEL_PRICING_CURRENCY: "CNY",
     WISH_AGENT_ID: "configured-agent",
     WISH_AGENT_INSTRUCTIONS: "Follow the configured instructions.",
     WISH_PERMISSION_PROFILE: "read-only",
@@ -367,6 +386,10 @@ test("the built-in profile translates compatibility environment at Loader", asyn
       model: "claude-opus-4-6",
     }]);
     assert.equal(configuration.models.maxRetries, 3);
+    assert.equal(
+      application.surfaceContext.get("modelAttemptLedger").currency,
+      "CNY",
+    );
     assert.equal(configuration.agentId, "configured-agent");
     assert.equal(
       configuration.agentInstructions[0].content,
@@ -558,6 +581,11 @@ function webProfile({ port, dataDirectory, maxSteps = 32 }) {
       name: 'cordis:runtime-lifecycle-journal'
       config:
         backendId: file
+    - id: model-attempt-ledger-storage
+      name: 'cordis:model-attempt-ledger-storage'
+      config:
+        backendId: file
+        currency: USD
     - id: tool-result-archive
       name: 'cordis:tool-result-archive-blob'
       config:
@@ -604,6 +632,10 @@ function webProfile({ port, dataDirectory, maxSteps = 32 }) {
 
     - id: context-engine
       name: 'cordis:context-engine'
+    - id: system-prompt
+      name: 'cordis:system-prompt'
+    - id: system-prompt-context
+      name: 'cordis:system-prompt-context'
     - id: compaction
       name: 'cordis:compaction'
 
@@ -688,16 +720,6 @@ async function waitForUnavailable(port, message) {
   }, message);
 }
 
-function cleanEnvironment() {
-  const environment = { ...process.env };
-  for (const name of Object.keys(environment)) {
-    if (name.startsWith("WISH_") || name.startsWith("CORDIS_")) {
-      delete environment[name];
-    }
-  }
-  return environment;
-}
-
 async function reservePorts(count) {
   const servers = [];
   try {
@@ -719,33 +741,6 @@ async function reservePorts(count) {
       await once(server, "close");
     }));
   }
-}
-
-async function waitFor(predicate, message, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await delay(20);
-  }
-  throw new Error(await message());
-}
-
-async function withTimeout(promise, timeoutMs, message) {
-  let timeout;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function occurrenceCount(value, expected) {

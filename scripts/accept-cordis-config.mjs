@@ -10,6 +10,12 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { bootstrap } from "../dist/boot/bootstrap.js";
+import {
+  cleanEnvironment,
+  delay,
+  waitFor,
+  withTimeout,
+} from "./support/process-fixtures.mjs";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const execFileAsync = promisify(execFile);
@@ -300,6 +306,11 @@ function liveProfile({
       name: 'cordis:runtime-lifecycle-journal'
       config:
         backendId: file
+    - id: model-attempt-ledger-storage
+      name: 'cordis:model-attempt-ledger-storage'
+      config:
+        backendId: file
+        currency: USD
     - id: tool-result-archive
       name: 'cordis:tool-result-archive-blob'
       config:
@@ -346,6 +357,10 @@ function liveProfile({
 
     - id: context-engine
       name: 'cordis:context-engine'
+    - id: system-prompt
+      name: 'cordis:system-prompt'
+    - id: system-prompt-context
+      name: 'cordis:system-prompt-context'
     - id: compaction
       name: 'cordis:compaction'
 
@@ -435,16 +450,6 @@ function count(values, expected) {
   return values.filter((value) => value === expected).length;
 }
 
-function cleanEnvironment() {
-  const environment = { ...process.env };
-  for (const name of Object.keys(environment)) {
-    if (name.startsWith("WISH_") || name.startsWith("CORDIS_")) {
-      delete environment[name];
-    }
-  }
-  return environment;
-}
-
 async function reservePort() {
   const server = createServer();
   server.listen(0, "127.0.0.1");
@@ -456,31 +461,4 @@ async function reservePort() {
   server.close();
   await once(server, "close");
   return port;
-}
-
-async function waitFor(predicate, message, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(await message());
-}
-
-async function withTimeout(promise, timeoutMs, message) {
-  let timeout;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

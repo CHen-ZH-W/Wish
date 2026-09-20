@@ -6,7 +6,7 @@ import { ContextProjector } from "../dist/core/context/projector.js";
 const model = Object.freeze({ provider: "provider", model: "model" });
 
 function request(messages) {
-  return { model, messages, tools: [] };
+  return { model, instructions: [], messages, tools: [] };
 }
 
 function lane(id, kind, placement, role, content) {

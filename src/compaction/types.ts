@@ -1,4 +1,5 @@
 import type {
+  ModelInvocationScope,
   ModelMessage,
   ModelRef,
   ModelUsage,
@@ -54,6 +55,7 @@ export interface CompactionSessionPort {
 export interface CompactionSummaryInput {
   /** Only the selected historical prefix; never the final Agent request. */
   readonly oldEntries: readonly ContextHistoryRecord[];
+  readonly invocationScope?: ModelInvocationScope;
   readonly signal?: AbortSignal;
 }
 
@@ -79,6 +81,7 @@ export interface ContextOverflowCompactionInput {
   /** The model whose Agent request overflowed; used only to size history. */
   readonly model: ModelRef;
   readonly preserveUserTurnId: string;
+  readonly invocationScope?: ModelInvocationScope;
   readonly signal?: AbortSignal;
 }
 
@@ -114,4 +117,3 @@ export interface SessionCompactorOptions {
   readonly counter: ModelInputTokenCounter;
   readonly configuration: CompactionConfiguration;
 }
-

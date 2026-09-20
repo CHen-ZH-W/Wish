@@ -7,7 +7,7 @@ import ContextEngine from "../dist/context/service.js";
 const item = { id: "source:item", kind: "reference", placement: "before_current_user", message: { role: "assistant", content: "source" } };
 const source = { id: "source", provide: () => [item] };
 const options = {
-  history: { read: () => [] }, agentInstructions: [], archive: {},
+  history: { read: () => [] }, archive: {},
   models: { getContextWindowTokens: () => 4096 }, counter: { count: () => ({ inputTokens: 32, method: "fixture" }) },
   configuration: { reservedOutputTokens: 512 },
 };
@@ -40,7 +40,7 @@ test("ContextEngine registration unload aborts and drains reads, then existing b
   let releases = 0;
   root.provide("toolResultArchive", { open: () => ({ release: () => { releases++; return true; } }) });
   await root.plugin(ContextEngine);
-  const bundle = root.contextEngine.open({ dataDirectory: "/tmp/fixture", agentInstructions: [],
+  const bundle = root.contextEngine.open({ dataDirectory: "/tmp/fixture",
     models: { configuredModel: options.models, requestCounter: options.counter }, configuration: options.configuration });
   let begun, drained = false, seen;
   const started = new Promise(resolve => { begun = resolve; });

@@ -86,11 +86,14 @@ function snapshotRequest(request: ModelRequest): ModelRequest {
   if (request === null || typeof request !== "object") {
     throw new Error("Model request tokenizer requires a ModelRequest");
   }
-  if (!Array.isArray(request.messages) || !Array.isArray(request.tools)) {
-    throw new Error("Model request tokenizer requires message and Tool arrays");
+  if (!Array.isArray(request.instructions) || !Array.isArray(request.messages) || !Array.isArray(request.tools)) {
+    throw new Error("Model request tokenizer requires instruction, message and Tool arrays");
   }
   return Object.freeze({
     model: freezeModelRef(request.model),
+    instructions: Object.freeze(request.instructions.map((instruction) =>
+      snapshotInstruction(instruction)
+    )),
     messages: Object.freeze(request.messages.map(snapshotMessage)),
     tools: Object.freeze(request.tools.map((tool) => Object.freeze({
       name: requireIdentifier(tool.name, "Model Tool name"),
@@ -101,6 +104,9 @@ function snapshotRequest(request: ModelRequest): ModelRequest {
         ? tool.inputSchemaJson
         : (() => { throw new Error("Model Tool schema must be a string"); })(),
     }))),
+    ...(request.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: request.reasoningEffort }),
     ...(request.temperature === undefined
       ? {}
       : { temperature: request.temperature }),
@@ -110,7 +116,25 @@ function snapshotRequest(request: ModelRequest): ModelRequest {
     ...(request.metadata === undefined
       ? {}
       : { metadata: snapshotPlainRecord(request.metadata) }),
+    ...(request.invocationScope === undefined
+      ? {}
+      : { invocationScope: Object.freeze({ ...request.invocationScope }) }),
   });
+}
+
+function snapshotInstruction(
+  instruction: ModelRequest["instructions"][number],
+): ModelRequest["instructions"][number] {
+  if (instruction === null || typeof instruction !== "object") {
+    throw new Error("Model request tokenizer received an invalid instruction");
+  }
+  if (instruction.role !== "system" && instruction.role !== "developer") {
+    throw new Error("Model request tokenizer instruction role is invalid");
+  }
+  if (typeof instruction.content !== "string") {
+    throw new Error("Model request tokenizer instruction content must be a string");
+  }
+  return Object.freeze({ role: instruction.role, content: instruction.content });
 }
 
 function snapshotMessage(message: ModelMessage): ModelMessage {

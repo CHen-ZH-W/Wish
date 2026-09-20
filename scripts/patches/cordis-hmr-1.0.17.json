@@ -1,31 +1,39 @@
 {
   "src/index.ts": {
     "before": "5d9ea00ede52a1b03abbf10a0df75d886403debe25a2a0495c6814dc6842220b",
-    "after": "3cbb38cd3f6b27ecf6523a70575f13dd9d6b3070e198a05233aba573b64bc763",
-    "previous": "b05c4e44a00849145f37d21e3190a297b4cfc8697bf1b095dfcfe185f8b534b7",
+    "after": "ed39fbdabee70b1a6fb8f73149953376fdf8d56efe4bdfb744e8184cc06ac9c7",
+    "previous": "3cbb38cd3f6b27ecf6523a70575f13dd9d6b3070e198a05233aba573b64bc763",
     "upgrade": [
       {
-        "from": "static readonly coordinationVersion = 2",
-        "to": "static readonly coordinationVersion = 3"
+        "from": "    const reloads = new Map<Plugin, Reload>()",
+        "to": "    const reloads = new Map<Plugin, Reload>()\n    const reloadDependencies: Set<string>[] = []"
       },
       {
-        "from": "        await Promise.all(fibers.map(fiber => fiber.await()))",
-        "to": "        await Promise.all(fibers.map(fiber => fiber.await()))\n        // A dependent may initially be PENDING while an asynchronous Provider\n        // initializes. Settle Loader's full lifecycle graph before validation.\n        await this.ctx.loader.await()"
+        "from": "      dependencies.forEach(dep => this.accepted.add(dep))",
+        "to": "      reloadDependencies.push(new Set(dependencies))"
+      },
+      {
+        "from": "      reloads.set(plugin, {\n        filename: job.url,\n        runtime: this.ctx.registry.get(plugin),\n      })\n    }\n\n    /**\n     * Clear module caches for all accepted files before re-importing.",
+        "to": "      reloads.set(plugin, {\n        filename: job.url,\n        runtime: this.ctx.registry.get(plugin),\n      })\n    }\n\n    // Select every reload root against the original change set. Expanding the\n    // cache-clear set while selecting makes later, unrelated plugins match a\n    // dependency that merely happens to be shared with an earlier root.\n    for (const dependencies of reloadDependencies) {\n      dependencies.forEach(dep => this.accepted.add(dep))\n    }\n\n    /**\n     * Clear module caches for all accepted files before re-importing."
       }
     ]
   },
   "lib/index.js": {
     "before": "7ec3296a902154a2b9906dceb4d81b996ff4c8373709e116ea8dac69058ee2b1",
-    "after": "f3059b1941a0f47ae01641a09605335473c968239682088977c4caafde386a29",
-    "previous": "934afbc3723a4683d0f7b342d30224df80b323885b4cf2624c155a8ce227d085",
+    "after": "2c4e5c174ab85b25735de402668fa8991b06d58dc7a5e3ade221a72539c507b0",
+    "previous": "f3059b1941a0f47ae01641a09605335473c968239682088977c4caafde386a29",
     "upgrade": [
       {
-        "from": "static coordinationVersion = 2",
-        "to": "static coordinationVersion = 3"
+        "from": "    const reloads = /* @__PURE__ */ new Map();",
+        "to": "    const reloads = /* @__PURE__ */ new Map();\n    const reloadDependencies = [];"
       },
       {
-        "from": "          await Promise.all(fibers.map((fiber) => fiber.await()));",
-        "to": "          await Promise.all(fibers.map((fiber) => fiber.await()));\n          // Settle dependent PENDING -> LOADING -> ACTIVE transitions as well.\n          await this.ctx.loader.await();"
+        "from": "      dependencies.forEach((dep) => this.accepted.add(dep));",
+        "to": "      reloadDependencies.push(new Set(dependencies));"
+      },
+      {
+        "from": "      reloads.set(plugin, {\n        filename: job.url,\n        runtime: this.ctx.registry.get(plugin)\n      });\n    }\n    const esmBackup = /* @__PURE__ */ Object.create(null);",
+        "to": "      reloads.set(plugin, {\n        filename: job.url,\n        runtime: this.ctx.registry.get(plugin)\n      });\n    }\n    // Select every reload root against the original change set. Expanding the\n    // cache-clear set while selecting makes later, unrelated plugins match a\n    // dependency that merely happens to be shared with an earlier root.\n    for (const dependencies of reloadDependencies) {\n      dependencies.forEach((dep) => this.accepted.add(dep));\n    }\n    const esmBackup = /* @__PURE__ */ Object.create(null);"
       }
     ]
   },

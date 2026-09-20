@@ -712,9 +712,6 @@ test("composes Sessions -> Context -> Compaction -> AgentLoop without current-us
   };
   const context = createContextBundle({
     history: history.context,
-    agentInstructions: [
-      { id: "agent", authority: "system", content: "Be exact." },
-    ],
     archive: { archive: () => { throw new Error("No Tool Result expected"); } },
     models: { getContextWindowTokens: () => 100 },
     counter,

@@ -16,7 +16,7 @@ import { SettingsService } from "../dist/settings/service.js";
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const fiberState = Object.freeze({ pending: 0, active: 2, disposed: 4 });
 
-test("Model Adapter plugins follow Models and own their registrations", async () => {
+test("Model plugins follow Models and own Adapter and Pricing registrations", async () => {
   const environment = { FIXTURE_API_KEY: "first-secret" };
   const root = new Context();
   root.provide("launch", {
@@ -36,6 +36,22 @@ test("Model Adapter plugins follow Models and own their registrations", async ()
           yield { type: "done", finishReason: "stop" };
         },
       }));
+      ctx.models.registerPricing({
+        provider: "fixture",
+        quote(input) {
+          return {
+            version: "fixture-price-v1",
+            currency: input.currency,
+            inputPerMillionTokens: 1,
+            outputPerMillionTokens: 2,
+            requestedModel: input.requestedModel,
+            billedModel: input.requestedModel,
+            period: "flat",
+            pricedAt: new Date(input.requestedAt).toISOString(),
+            timeBasis: "request_started",
+          };
+        },
+      });
     },
   };
   let adapterFiber = root.plugin(adapter);
@@ -48,7 +64,13 @@ test("Model Adapter plugins follow Models and own their registrations", async ()
     assert.deepEqual(root.models.registry.protocols(), ["fixture-protocol"]);
     assert.deepEqual(adapterFiber.getEffects().map((effect) => effect.label), [
       'models.register("fixture-protocol")',
+      'models.registerPricing("fixture")',
     ]);
+    assert.equal(root.models.pricing.resolve({
+      requestedModel: { provider: "fixture", model: "model" },
+      requestedAt: Date.parse("2026-09-19T00:00:00.000Z"),
+      currency: "USD",
+    }).version, "fixture-price-v1");
 
     const configuration = await root.models.load({
       dataDirectory: repositoryRoot,
@@ -87,6 +109,11 @@ test("Model Adapter plugins follow Models and own their registrations", async ()
 
     await adapterFiber.dispose();
     assert.deepEqual(root.models.registry.protocols(), []);
+    assert.equal(root.models.pricing.resolve({
+      requestedModel: { provider: "fixture", model: "model" },
+      requestedAt: Date.parse("2026-09-19T00:00:00.000Z"),
+      currency: "USD",
+    }), undefined);
     assert.deepEqual(adapterFiber.getEffects(), []);
     assert.equal(
       (await collect(resources.configuredModel.stream(request()))).at(-1).error.code,
@@ -161,7 +188,7 @@ test("Models owns a WebUI setting that changes the default sampled by new Runs",
     assert.deepEqual(configured.getDefaultModel(), { provider: "fixture", model: "primary" });
     await root.settings.port.replace({ namespace: "models", revision: settings.revision, user: { "default-model": "fixture/secondary" } });
     assert.deepEqual(configured.getDefaultModel(), { provider: "fixture", model: "secondary" });
-    const primaryRequest = { model: { provider: "fixture", model: "primary" }, messages: [{ role: "user", content: "hello" }], tools: [] };
+    const primaryRequest = { model: { provider: "fixture", model: "primary" }, instructions: [], messages: [{ role: "user", content: "hello" }], tools: [] };
     await collect(configured.stream(primaryRequest));
     assert.deepEqual(seenLimits, [1024]);
     const next = root.settings.port.describe().sections.find(section => section.namespace === "models");
@@ -348,6 +375,7 @@ test("Models owns its schema and AgentLoop consumes the request stack", async ()
 function request() {
   return {
     model: { provider: "fixture", model: "model" },
+    instructions: [],
     messages: [],
     tools: [],
   };

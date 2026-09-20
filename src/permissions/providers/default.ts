@@ -21,7 +21,6 @@ import { PermissionsService } from "../service.js";
 import {
   PERMISSION_PROFILES,
   TOOL_CAPABILITY_KINDS,
-  type AgentPermissionConfiguration,
   type PermissionExecutionContext,
   type PermissionProfile,
   type PermissionPolicySnapshot,

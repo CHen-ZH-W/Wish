@@ -71,6 +71,7 @@ const budget: ContextBudgetEvaluator = {
 
 const request: ModelRequest = {
   model: { provider: "provider", model: "model" },
+  instructions: [],
   messages: [{ role: "user", content: "hello" }],
   tools: [],
 };
@@ -185,9 +186,6 @@ const concreteBudget: ContextBudgetEvaluator = new ModelContextBudgetEvaluator({
 declare const stepSnapshot: StepSnapshot<{ readonly text: string }>;
 const bundle: ContextBundle = createContextBundle({
   history,
-  agentInstructions: [
-    { id: "agent", authority: "system", content: "Be exact" },
-  ],
   archive,
   models: modelWindows,
   counter,

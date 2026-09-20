@@ -107,15 +107,17 @@ checkpoint 和被 checkpoint 切开的 Tool 单元。没有 summary 时选择完
 ```
 
 旧 summary 和 coverage 内的 assistant/tool 历史不会进入最终请求。选择 metadata
-会明确列出受保护 user sequence；后续预算实现必须把这些消息视为不可静默删除的
-压缩下限。如果它们自身超过窗口，应报告不可继续压缩，而不是丢弃用户约束。
+会明确列出受保护 user sequence；这些消息构成不可静默删除的压缩下限。如果它们自身
+超过窗口，预算实现必须报告不可继续压缩，而不是丢弃用户约束。
 
 ## Instructions 与 State
 
-`InstructionsContextProvider` 固定输出顺序为 Agent 基本指令、workspace 指令。所有
-item 都使用 `kind=instruction`、`placement=stable_prefix`，authority 必须明确为
-`system` 或 `developer`。Agent 指令由组合根在构造 Provider 时传入并立即复制；
-workspace 指令则从每次 `ContextInput` 的已解析快照读取。
+稳定的 Agent/System Prompt 由 `system-prompt` 组装到独立的
+`ModelRequest.instructions`，不再由 Context 生成消息。
+
+`InstructionsContextProvider` 只读取每次 `ContextInput` 中已经解析的 workspace
+指令，输出 `kind=instruction`、`placement=before_current_user` 的 Context item；
+authority 必须明确为 `system` 或 `developer`。
 
 Provider 不扫描文件，也不读取 Session、Memory 或 Skill。显式数组顺序具有语义，
 不会按正文或文件名重新排序；重复 ID、空正文和不合法 authority 会 fail closed。
@@ -236,7 +238,6 @@ Core 当前保留 `ready + unknown`，由外部产品策略决定是否允许调
 ```ts
 const context = createContextBundle({
   history,
-  agentInstructions,
   archive,
   models,
   counter,
@@ -254,6 +255,7 @@ const loop = new AgentLoop({
       const model = modelFor(snapshot);
       return {
         model,
+        instructions: stableInstructionsFor(snapshot),
         context: context.forStep({
           snapshot,
           sessionId: sessionIdFor(snapshot),

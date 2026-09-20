@@ -15,6 +15,8 @@ import {
 } from "../dist/models/registry.js";
 import { createConfiguredModelResources } from "../dist/models/runtime.js";
 import { TokenizerUsageEstimator } from "../dist/models/usage.js";
+import { MemoryModelAttemptLedger } from
+  "../dist/models/pricing/ledger.js";
 import { createContextResources } from "../dist/context/service.js";
 import { createCompactionResources } from "../dist/compaction/service.js";
 import { FileToolResultArchive } from
@@ -73,6 +75,9 @@ function modelResources(configuration, options = {}) {
     registry: options.registry ?? createDefaultModelAdapterRegistry(),
     usageEstimator: new TokenizerUsageEstimator(),
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    ...(options.attemptLedger === undefined
+      ? {}
+      : { attemptLedger: options.attemptLedger }),
   });
 }
 
@@ -84,7 +89,6 @@ function agentLoopResources(options) {
       directory: join(options.dataDirectory, "tool-results"),
       locatorRoot: options.dataDirectory,
     }),
-    agentInstructions: options.agentInstructions,
     models: options.models,
     configuration: {
       reservedOutputTokens: options.reservedOutputTokens,
@@ -109,6 +113,10 @@ function agentLoopResources(options) {
         : { permissions: options.permissions }),
       context,
       compaction,
+      resolveInstructions: () => options.agentInstructions.map((instruction) => ({
+        role: instruction.authority,
+        content: instruction.content,
+      })),
       ...(options.tools === undefined ? {} : { tools: options.tools }),
     }),
   };
@@ -156,6 +164,7 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
     await writeFile(join(root, "workspace-note.txt"), "workspace value", "utf8");
 
     const requests = [];
+    const attemptLedger = new MemoryModelAttemptLedger();
     const adapters = new ModelAdapterRegistry();
     adapters.register("fixture-protocol", () => ({
       async *stream(request) {
@@ -163,7 +172,7 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
         yield { type: "start", model: request.model };
         if (requests.length === 1) {
           yield { type: "text_delta", text: "first answer" };
-          yield { type: "done", finishReason: "stop" };
+          yield { type: "done", finishReason: "stop", usage: fixtureUsage() };
           return;
         }
         if (requests.length === 2) {
@@ -175,11 +184,11 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
               argumentsJson: '{"path":"workspace-note.txt"}',
             },
           };
-          yield { type: "done", finishReason: "tool_calls" };
+          yield { type: "done", finishReason: "tool_calls", usage: fixtureUsage() };
           return;
         }
         yield { type: "text_delta", text: "read complete" };
-        yield { type: "done", finishReason: "stop" };
+        yield { type: "done", finishReason: "stop", usage: fixtureUsage() };
       },
     }));
     const approvals = [];
@@ -198,6 +207,7 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
     const models = modelResources(fixtureConfiguration(), {
       registry: adapters,
       fetch: async () => new Response(),
+      attemptLedger: { ledger: attemptLedger, currency: "USD" },
     });
     const agentInstructions = [{
       id: "agent-base",
@@ -273,6 +283,9 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
       requests[0].tools.map((tool) => tool.name),
       ["read", "write", "edit", "grep"],
     );
+    assert.deepEqual(requests[0].instructions, [
+      { role: "system", content: "Be exact." },
+    ]);
 
     toolRegistry.register(createBashTool());
 
@@ -360,10 +373,34 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
       SessionArchivedError,
     );
     assert.equal(requests.length, 3);
+    const attempts = await attemptLedger.list({ sessionId: session.sessionId });
+    assert.equal(attempts.length, 3);
+    assert.deepEqual(attempts.map((attempt) => attempt.runId), [
+      "run-1",
+      "run-2",
+      "run-2",
+    ]);
+    assert.deepEqual(attempts.map((attempt) => attempt.stepId), [
+      "turn-1:1",
+      "turn-2:1",
+      "turn-2:2",
+    ]);
+    assert.equal(attempts.every((attempt) => attempt.status === "completed"), true);
+    assert.equal(attempts.every((attempt) => attempt.cost?.status === "unavailable"), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function fixtureUsage() {
+  return {
+    inputTokens: 10,
+    cachedInputTokens: 0,
+    outputTokens: 2,
+    totalTokens: 12,
+    source: "provider",
+  };
+}
 
 function sse(records) {
   return new Response(records.map(({ event, data }) =>

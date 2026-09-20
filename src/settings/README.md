@@ -5,7 +5,7 @@
 `SettingsStore` 管原始文档；`SettingsService.register(owner, definition)` 将贡献绑定到真实
 Cordis owner。停用贡献者会移除设置入口，但不删除已保存值。恢复注册重新读取保存值。
 
-设置页只能查看、修改已注册命名空间。首版支持有限的 boolean、number、string、enum
+设置页只能查看、修改已注册命名空间，支持有限的 boolean、number、string、enum
 字段，不支持密钥、任意 JSON、部署表达式或可执行代码；API key 由独立 Credentials seam
 只写保存，Settings 描述和文档都不会携带其值。
 每个模块声明字段和 `applies: live / next-request / restart`，必要时提供纯校验函数。

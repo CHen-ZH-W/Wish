@@ -14,8 +14,6 @@ import type {
 } from "../models/types.js";
 
 const DEFAULT_AGENT_ID = "wish";
-const DEFAULT_AGENT_INSTRUCTION =
-  "You are Wish, a coding agent. Work carefully within the provided workspace and report results truthfully.";
 const DEFAULT_RESERVED_OUTPUT_TOKENS = 8_192;
 const DEFAULT_KEEP_RECENT_TOKENS = 16_384;
 const DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 4_096;
@@ -180,11 +178,7 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 function defaultInstructions(): readonly ContextInstruction[] {
-  return Object.freeze([Object.freeze({
-    id: "wish-agent-base",
-    authority: "system" as const,
-    content: DEFAULT_AGENT_INSTRUCTION,
-  })]);
+  return Object.freeze([]);
 }
 
 function snapshotInstructions(

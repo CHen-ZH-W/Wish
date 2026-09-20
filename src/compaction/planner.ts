@@ -206,6 +206,7 @@ async function countRecords(
   const count = await counter.count({
     request: Object.freeze({
       model,
+      instructions: Object.freeze([]),
       messages: Object.freeze(records.map((record) => record.message)),
       tools: Object.freeze([]),
     }),

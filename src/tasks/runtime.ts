@@ -1,6 +1,6 @@
 import { graphDigest, normalizeTasks } from "./graph.js";
 import { transitionTask } from "./transition.js";
-import type { TaskCollection, TaskGraph, TaskGraphRef, TaskSpec, TaskStatus, TaskStore, Tasks } from "./types.js";
+import type { TaskGraph, TaskGraphRef, TaskSpec, TaskStatus, TaskStore, Tasks } from "./types.js";
 
 export class TaskRuntime implements Tasks {
   private tail = Promise.resolve();

@@ -22,6 +22,7 @@ async function collect(iterable) {
 function request(model) {
   return {
     model,
+    instructions: [],
     messages: [{ role: "user", content: "hello" }],
     tools: [],
   };
@@ -155,6 +156,19 @@ test("generated defaults expose current Providers and DeepSeek compatibility", (
   assert.equal(flash.spec.input.image, true);
   assert.equal(flash.spec.toolCalling, true);
   assert.equal(flash.spec.price, undefined, "tiered current pricing must not be flattened");
+
+  const configured = new ConfiguredModel({
+    configuration,
+    registry: createDefaultModelAdapterRegistry(),
+  });
+  const flashQuote = configured.getPriceQuote("deepseek/deepseek-flash", {
+    requestedAt: Date.parse("2026-09-21T01:30:00.000Z"),
+    currency: "USD",
+  });
+  assert.equal(flashQuote.period, "peak");
+  assert.equal(flashQuote.inputPerMillionTokens, 0.3);
+  assert.equal(flashQuote.cachedInputPerMillionTokens, 0.006);
+  assert.equal(flashQuote.outputPerMillionTokens, 1.2);
 
   const legacyFlash = resolveConfiguredModel(configuration, "deepseek/deepseek-v4-flash");
   assert.equal(legacyFlash.spec.status, "deprecated");

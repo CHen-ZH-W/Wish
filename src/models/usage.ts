@@ -8,6 +8,7 @@ import type {
   ModelUsage,
 } from "../core/model/model.js";
 import type { ModelPrice } from "./types.js";
+import type { ModelPriceQuote, ModelPriceTimeBasis } from "./pricing.js";
 
 export interface ModelTokenizerInput {
   readonly request: ModelRequest;
@@ -169,6 +170,9 @@ export class UsageResolvingModel implements Model {
               ? {}
               : { finishReason: event.finishReason }),
             ...(usage === undefined ? {} : { usage }),
+            ...(event.providerCreatedAt === undefined
+              ? {}
+              : { providerCreatedAt: event.providerCreatedAt }),
           });
           break;
         }
@@ -182,6 +186,7 @@ export class UsageResolvingModel implements Model {
 
 export type ModelCostUnavailableReason =
   | "price_unavailable"
+  | "price_model_mismatch"
   | "cached_usage_unknown"
   | "cache_write_usage_unknown"
   | "cached_price_unavailable"
@@ -194,6 +199,11 @@ export interface AvailableModelCost {
   readonly currency: string;
   readonly priceVersion: string;
   readonly effectiveFrom?: string;
+  readonly effectiveTo?: string;
+  readonly billedModel?: ModelRef;
+  readonly pricePeriod?: string;
+  readonly pricedAt?: string;
+  readonly priceTimeBasis?: ModelPriceTimeBasis;
   readonly uncachedInputCost: number;
   readonly cachedInputCost: number;
   readonly cacheWriteInputCost: number;
@@ -215,12 +225,18 @@ export type ModelCost = AvailableModelCost | UnavailableModelCost;
 export function calculateModelCost(input: {
   readonly model: ModelRef;
   readonly usage: ModelUsage;
-  readonly price?: ModelPrice;
+  readonly price?: ModelPrice | ModelPriceQuote;
 }): ModelCost {
   const model = freezeModelRef(input.model);
   const estimated = input.usage.source !== "provider";
   const price = input.price;
   if (price === undefined) return unavailableCost(model, estimated, "price_unavailable");
+  if (
+    isPriceQuote(price) &&
+    (price.requestedModel.provider !== model.provider || price.requestedModel.model !== model.model)
+  ) {
+    return unavailableCost(model, estimated, "price_model_mismatch");
+  }
 
   const cached = input.usage.cachedInputTokens;
   if (cached === undefined && price.cachedInputPerMillionTokens !== undefined) {
@@ -281,6 +297,17 @@ export function calculateModelCost(input: {
     ...(price.effectiveFrom === undefined
       ? {}
       : { effectiveFrom: price.effectiveFrom }),
+    ...(!isPriceQuote(price) || price.effectiveTo === undefined
+      ? {}
+      : { effectiveTo: price.effectiveTo }),
+    ...(!isPriceQuote(price)
+      ? {}
+      : {
+        billedModel: freezeModelRef(price.billedModel),
+        pricePeriod: price.period,
+        pricedAt: price.pricedAt,
+        priceTimeBasis: price.timeBasis,
+      }),
     uncachedInputCost,
     cachedInputCost,
     cacheWriteInputCost,
@@ -289,6 +316,11 @@ export function calculateModelCost(input: {
     cacheSavings,
     estimated,
   });
+}
+
+function isPriceQuote(price: ModelPrice | ModelPriceQuote): price is ModelPriceQuote {
+  return "requestedModel" in price && "billedModel" in price &&
+    "period" in price && "pricedAt" in price && "timeBasis" in price;
 }
 
 function unavailableCost(
@@ -306,6 +338,9 @@ function tokenCost(tokens: number, pricePerMillion: number): number {
 function snapshotRequest(request: ModelRequest): ModelRequest {
   return Object.freeze({
     model: freezeModelRef(request.model),
+    instructions: Object.freeze(request.instructions.map((instruction) =>
+      Object.freeze({ role: instruction.role, content: instruction.content })
+    )),
     messages: Object.freeze(request.messages.map((message) => Object.freeze({
       role: message.role,
       content: message.content,
@@ -336,6 +371,9 @@ function snapshotRequest(request: ModelRequest): ModelRequest {
         : { reasoningContent: message.reasoningContent }),
     }))),
     tools: Object.freeze(request.tools.map((tool) => Object.freeze({ ...tool }))),
+    ...(request.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: request.reasoningEffort }),
     ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
     ...(request.maxOutputTokens === undefined
       ? {}
@@ -343,6 +381,9 @@ function snapshotRequest(request: ModelRequest): ModelRequest {
     ...(request.metadata === undefined
       ? {}
       : { metadata: snapshotPlainRecord(request.metadata) }),
+    ...(request.invocationScope === undefined
+      ? {}
+      : { invocationScope: Object.freeze({ ...request.invocationScope }) }),
   });
 }
 

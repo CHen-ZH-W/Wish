@@ -100,6 +100,10 @@ models.configurationPath
 - `WISH_MAX_STEPS`、`WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS`；
 - `WISH_WEBUI_HOST`、`WISH_WEBUI_PORT`、`WISH_WEBUI_WORKSPACE_ROOT`。
 
+`WISH_AGENT_INSTRUCTIONS` 是追加在 Wish 稳定基础 Prompt 之后的部署级或 Agent 级
+指令；未设置时为空。身份、权威边界、通用行为和输出风格由
+`system-prompt-base` 统一提供。
+
 外部 Cordis profile 直接配置各 service，不会隐式继承这些普通变量。Provider 密钥只按
 Models 配置声明的环境变量在调用时读取。
 
@@ -286,8 +290,8 @@ Enter 保存、Escape 取消。普通列表只显示活动会话；最左侧全�
 同级的“归档”入口，不放在会话/业务视图列表中。活动与归档会话分别按完整 `Session.scope`
 工作区路径分组，可折叠，同名目录不合并；归档会话可取消归档。删除只需一次确认，不要求先归档。
 进入归档时，侧栏只列归档会话，主区显示选中的归档聊天；活动/归档分别保留浏览选择。
-最左侧工具栏固定，会话侧栏可收起并通过 W 展开（悬停/键盘焦点切换展开图标）。顶部横栏
-已移除，区域标题和收起按钮在侧栏内；连接状态以 W 右下角蓝/红点及可访问文字表达。
+最左侧工具栏固定，会话侧栏可收起并通过 W 展开（悬停/键盘焦点切换展开图标）。界面不设
+顶部横栏，区域标题和收起按钮位于侧栏内；连接状态以 W 右下角蓝/红点及可访问文字表达。
 Host 复用所有权检查，并将 Run 接纳与归档/删除串行化；活动 Run 完成前、Runtime 待核对
 或模块 `beforeRemoval` 拒绝时返回 `session_busy`。子 Agent 和 Workflow 在自己的 Consumer
 提供检查，Apps 不解释它们的状态。已注册的检查所有者卸载后不能当作空闲；从未装配的

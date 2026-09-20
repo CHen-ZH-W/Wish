@@ -15,6 +15,8 @@ import Compaction from "../dist/compaction/service.js";
 import ContextEngine from "../dist/context/service.js";
 import * as ModelPlugins from "../dist/models/plugins.js";
 import Models from "../dist/models/service.js";
+import StorageModelAttemptLedger from
+  "../dist/models/pricing/providers/storage.js";
 import Sessions from "../dist/sessions/service.js";
 import { StorageHub } from "../dist/storage/index.js";
 import FileStorage from "../dist/storage/providers/file/plugin.js";
@@ -35,6 +37,7 @@ import DefaultPermissions from "../dist/permissions/providers/default.js";
 import LocalFilesystem from "../dist/filesystem/providers/local.js";
 import LinuxNativeShell from "../dist/shell/providers/linux-native.js";
 import DefaultSandboxPolicy from "../dist/sandbox/providers/default.js";
+import SystemPrompt from "../dist/system-prompt/service.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const fiberState = Object.freeze({ pending: 0, active: 2, disposed: 4 });
@@ -69,12 +72,14 @@ test("AgentLoop owns the Step pipeline and follows all injected capabilities", a
       rootDirectory: "./storage",
     });
     await root.plugin(JournalRuntimeLifecycleProvider, { backendId: "file" });
+    await root.plugin(StorageModelAttemptLedger, { backendId: "file" });
     await root.plugin(BlobToolResultArchiveProvider, { backendId: "file" });
     await root.plugin(FileSessionPersistence);
     await root.plugin(Sessions, { dataDirectory: "./state" });
     await root.plugin(Models);
     await root.plugin(ModelPlugins.OpenAIChatCompletions);
     await root.plugin(ContextEngine, { reservedOutputTokens: 256 });
+    await root.plugin(SystemPrompt);
     await root.plugin(Compaction, {
       keepRecentTokens: 512,
       summaryMaxOutputTokens: 128,

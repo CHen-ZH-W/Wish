@@ -10,32 +10,20 @@ import type {
 const DEFAULT_PROVIDER_ID = "instructions";
 
 export interface InstructionsContextProviderOptions {
-  /** Stable Agent behavior supplied by the composition root. */
-  readonly agentInstructions: readonly ContextInstruction[];
   readonly id?: string;
 }
 
-interface InstructionSource {
-  readonly namespace: "agent" | "workspace";
-  readonly instructions: readonly ContextInstruction[];
-}
-
-/** Produces only stable, explicitly-authorized instruction items. */
+/** Projects resolved Workspace instructions before the current User message. */
 export class InstructionsContextProvider implements ContextProvider<ContextInput> {
   readonly id: string;
   private readonly itemIdPrefix: string;
-  private readonly agentInstructions: readonly ContextInstruction[];
 
-  constructor(options: InstructionsContextProviderOptions) {
+  constructor(options: InstructionsContextProviderOptions = {}) {
     this.id = requireIdentifier(
       options.id ?? DEFAULT_PROVIDER_ID,
       "Instructions provider id",
     );
     this.itemIdPrefix = encodeURIComponent(this.id);
-    this.agentInstructions = snapshotInstructions(
-      options.agentInstructions,
-      "Agent instructions",
-    );
   }
 
   provide(
@@ -47,27 +35,19 @@ export class InstructionsContextProvider implements ContextProvider<ContextInput
       input.workspace.instructions,
       "Workspace instructions",
     );
-    const sources: readonly InstructionSource[] = [
-      { namespace: "agent", instructions: this.agentInstructions },
-      { namespace: "workspace", instructions: workspaceInstructions },
-    ];
     const items: ContextItem[] = [];
 
-    for (const source of sources) {
-      for (const instruction of source.instructions) {
-        throwIfAborted(signal);
-        items.push(Object.freeze({
-          id:
-            `${this.itemIdPrefix}:${source.namespace}:` +
-            encodeURIComponent(instruction.id),
-          kind: "instruction" as const,
-          placement: "stable_prefix" as const,
-          message: Object.freeze({
-            role: instruction.authority,
-            content: instruction.content,
-          }),
-        }));
-      }
+    for (const instruction of workspaceInstructions) {
+      throwIfAborted(signal);
+      items.push(Object.freeze({
+        id: `${this.itemIdPrefix}:workspace:` + encodeURIComponent(instruction.id),
+        kind: "instruction" as const,
+        placement: "before_current_user" as const,
+        message: Object.freeze({
+          role: instruction.authority,
+          content: instruction.content,
+        }),
+      }));
     }
     throwIfAborted(signal);
     return Object.freeze(items);

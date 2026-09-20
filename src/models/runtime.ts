@@ -15,6 +15,14 @@ import {
 } from "./config.js";
 import { ModelRequestTokenCounter } from "./input-tokens.js";
 import {
+  createDefaultModelPricingResolver,
+  type ModelPriceQuote,
+  type ModelPriceQuoteRequest,
+  type ModelPricingResolver,
+} from "./pricing.js";
+import { AttemptRecordingModel } from "./pricing/attempt-recording-model.js";
+import type { ModelAttemptLedger } from "./pricing/attempts.js";
+import {
   ANTHROPIC_MESSAGES_PROTOCOL,
 } from "./providers/anthropic-messages.js";
 import {
@@ -57,10 +65,16 @@ export interface ConfiguredModelOptions {
     reference: ModelRef,
     configuredDefault: number | undefined,
   ) => number | undefined;
+  /** Provider-aware price selection; defaults to Wish's built-in policies. */
+  readonly pricing?: ModelPricingResolver;
 }
 
 export interface ConfiguredModelStackOptions extends ConfiguredModelOptions {
   readonly usageEstimator: UsageEstimator;
+  readonly attemptLedger?: {
+    readonly ledger: ModelAttemptLedger;
+    readonly currency: string;
+  };
   readonly retry?: Pick<
     RetryingModelOptions,
     "baseRetryDelayMs" | "maxRetryDelayMs" | "random"
@@ -100,7 +114,17 @@ export function createConfiguredModelStack(
     configuredModel,
     options.usageEstimator,
   );
-  const model = new RetryingModel(measuredModel, {
+  const attemptModel = options.attemptLedger === undefined
+    ? measuredModel
+    : new AttemptRecordingModel(measuredModel, {
+        ledger: options.attemptLedger.ledger,
+        currency: options.attemptLedger.currency,
+        quote: (reference, request) => configuredModel.getPriceQuote(
+          reference,
+          request,
+        ),
+      });
+  const model = new RetryingModel(attemptModel, {
     maxRetries: options.configuration.maxRetries,
     fallbackModels: options.configuration.fallbackModels,
     ...options.retry,
@@ -148,6 +172,7 @@ export function createConfiguredModelRequestTokenCounter(
 export class ConfiguredModel implements Model {
   private readonly fetch: ModelFetch;
   private readonly environment: () => ModelEnvironment;
+  private readonly pricing: ModelPricingResolver;
   private defaultModel: ModelRef;
 
   constructor(private readonly options: ConfiguredModelOptions) {
@@ -167,6 +192,7 @@ export class ConfiguredModel implements Model {
     }
     this.fetch = resolveModelFetch(options.fetch);
     this.environment = resolveModelEnvironment(options.environment);
+    this.pricing = options.pricing ?? createDefaultModelPricingResolver();
   }
 
   async *stream(
@@ -292,6 +318,21 @@ export class ConfiguredModel implements Model {
 
   getPrice(reference: ModelRef | string): ModelPrice | undefined {
     return this.getModelSpec(reference).price;
+  }
+
+  /** Resolve an immutable request-attempt quote without performing FX conversion. */
+  getPriceQuote(
+    reference: ModelRef | string,
+    request: ModelPriceQuoteRequest,
+  ): ModelPriceQuote | undefined {
+    const resolved = this.resolve(reference);
+    return this.pricing.resolve({
+      requestedModel: resolved.ref,
+      ...request,
+      ...(resolved.spec.price === undefined
+        ? {}
+        : { configuredPrice: resolved.spec.price }),
+    });
   }
 }
 

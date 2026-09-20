@@ -17,7 +17,14 @@ export function mapOpenAIResponsesRequest(
   readonly body: Readonly<Record<string, unknown>>;
   readonly authorityDegraded: boolean;
 } {
-  const hasDeveloper = request.messages.some((message) =>
+  const instructionMessages: readonly ModelMessage[] = Object.freeze(
+    (request.instructions ?? []).map((instruction) => Object.freeze({
+      role: instruction.role,
+      content: instruction.content,
+    })),
+  );
+  const modelMessages = [...instructionMessages, ...request.messages];
+  const hasDeveloper = modelMessages.some((message) =>
     message.role === "developer"
   );
   const roleMode = input.model.developerRoleMode;
@@ -32,7 +39,7 @@ export function mapOpenAIResponsesRequest(
     );
   }
 
-  const messages = request.messages.flatMap((message) =>
+  const messages = modelMessages.flatMap((message) =>
     mapMessage(message, roleMode)
   );
   const tools = request.tools.map((tool) => {

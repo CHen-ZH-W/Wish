@@ -5,7 +5,7 @@ import type { Tasks } from "../tasks/types.js";
 import type { RunContinuation } from "../core/runtime/continuation.js";
 import { WorkflowContinuations } from "./continuations.js";
 import { activeAttempt } from "./transition.js";
-import type { AttemptTarget, CreateWorkflowRequest, Workflow, WorkflowAttempt, WorkflowRun, WorkflowStep } from "./types.js";
+import type { AttemptTarget, CreateWorkflowRequest, Workflow, WorkflowRun, WorkflowStep } from "./types.js";
 
 export interface ChildSchedulerOptions {
   readonly workflow: Workflow;

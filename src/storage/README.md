@@ -115,8 +115,8 @@ durable commit、更新内存缓存、最后发布 commit event。事件观察�
 `DomainModelCatalogStore` 把现有 `ModelCatalogStore` Port 映射到 global
 `models/catalog` Domain，保持业务 schemaVersion 为 1。`ModelCatalog` 无需知道 Hub、KV、
 文件路径或 Provider。旧的 `FileCatalogStore` 仍保留；两种 Store 运行相同的 diff、sync、
-malformed state 和 Provider last-known-good 行为测试。这里不会静默导入旧文件，未来迁移必须
-使用显式 importer。
+malformed state 和 Provider last-known-good 行为测试。这里不会静默导入旧文件；旧数据
+只能通过显式 importer 导入。
 默认 `model-catalog-storage` Cordis Provider 把这一 Store 绑定到选中的 Backend；canonical
 Catalog 数据仍在 Domain/Store 中，不放入 Cordis Context。
 
@@ -152,6 +152,11 @@ Journal Backend 不认识 Runtime lifecycle、Trace、Usage 或 Audit 的业务�
 Journal。它 acquire Backend lease、要求原子 batch + fsync，在显式恢复扫描中产出
 `needs-reconciliation` 等业务分类；这些语义没有下沉到 Storage。
 
+`src/models/pricing/` 同样把每次 Provider attempt 的 started/terminal 领域事件编码后写入
+独立 Journal；Storage 不解释 provider、model、usage、price quote 或 cost。Pricing Provider
+持有 Backend lease，负责启动时恢复未终结 attempt，并把 durable record 通过
+`modelAttemptLedger` Cordis Service 暴露给 Models 组合。
+
 SessionPersistence 是独立业务 seam，没有退化成 KV 或 Journal；Definition、Provider 和磁盘
 格式由 `src/sessions/` 拥有。
 
@@ -163,5 +168,5 @@ npm run test:storage
 npm run test:runtime-durability
 ```
 
-可复用 KV conformance 位于 `scripts/support/storage-kv-conformance.mjs`。新增 SQLite 等
-Provider 时必须运行同一套测试。
+可复用 KV conformance 位于 `scripts/support/storage-kv-conformance.mjs`。所有替代 KV
+Provider 都必须通过同一套测试。

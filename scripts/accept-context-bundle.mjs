@@ -32,9 +32,6 @@ function snapshot() {
 function bundleOptions(overrides = {}) {
   return {
     history: { read: () => [] },
-    agentInstructions: [
-      { id: "agent-base", authority: "system", content: "Be exact." },
-    ],
     archive: {
       archive({ result }) {
         return {
@@ -311,6 +308,7 @@ test("plugs directly into AgentLoop with archive-first Tool Result admission", a
       resolve({ snapshot: stepSnapshot }) {
         return {
           model: modelRef,
+          instructions: [{ role: "system", content: "Be exact." }],
           context: bundle.forStep({
             snapshot: stepSnapshot,
             sessionId: "session-1",
@@ -348,14 +346,16 @@ test("plugs directly into AgentLoop with archive-first Tool Result admission", a
   assert.deepEqual(historyReads, ["session-1", "session-1"]);
   assert.equal(countedRequests.length, 2);
   assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0].instructions, [
+    { role: "system", content: "Be exact." },
+  ]);
   assert.deepEqual(requests[0].messages.map((message) => message.role), [
-    "system",
-    "developer",
     "user",
+    "developer",
     "developer",
     "user",
   ]);
-  assert.equal(requests[0].messages[2].content, "prior request");
+  assert.equal(requests[0].messages[0].content, "prior request");
   assert.equal(requests[0].messages.at(-1).content, "2+3?");
   assert.equal(
     requests[0].messages.some((message) => message.content.includes("run-1")),

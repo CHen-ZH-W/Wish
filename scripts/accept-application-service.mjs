@@ -15,6 +15,8 @@ import { bootstrap, BootstrapError } from "../dist/boot/bootstrap.js";
 import Compaction from "../dist/compaction/service.js";
 import ContextEngine from "../dist/context/service.js";
 import Models from "../dist/models/service.js";
+import StorageModelAttemptLedger from
+  "../dist/models/pricing/providers/storage.js";
 import Runtime from "../dist/composition/runtime-service.js";
 import Sessions from "../dist/sessions/service.js";
 import { StorageHub } from "../dist/storage/index.js";
@@ -101,6 +103,7 @@ test("Application availability drives consumer PENDING, disposal, and reactivati
     rootDirectory: ".wish/storage",
   });
   await root.plugin(JournalRuntimeLifecycleProvider, { backendId: "file" });
+  await root.plugin(StorageModelAttemptLedger, { backendId: "file" });
   await root.plugin(BlobToolResultArchiveProvider, { backendId: "file" });
   await root.plugin(FileSessionPersistence);
   await root.plugin(Sessions, { dataDirectory: ".wish" });
