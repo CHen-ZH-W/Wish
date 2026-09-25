@@ -1,4 +1,5 @@
 import { Service, type Context } from "@deepseek-ai/cordis";
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 
 import {
   ToolRegistry,
@@ -25,6 +26,7 @@ export interface ToolResultRendererContribution {
 /** Cordis-owned registration surface around the pure Core ToolRegistry. */
 export class Tools extends Service {
   readonly registry = new ToolRegistry<WishToolExecutionContext>();
+  private readonly work: PluginWorkOwner;
   private readonly resultRenderers = new Map<
     string,
     ToolResultRendererContribution
@@ -32,6 +34,7 @@ export class Tools extends Service {
 
   constructor(ctx: Context) {
     super(ctx, "tools");
+    this.work = new PluginWorkOwner(ctx, { code: "tools", codeReload: true });
   }
 
   /** Register a Tool for exactly the lifetime of the calling plugin fiber. */
@@ -39,6 +42,7 @@ export class Tools extends Service {
     definition: ToolDefinition<Name, Input, Output, WishToolExecutionContext>,
     resultRenderer?: ToolResultRendererContribution,
   ): ToolRegistration {
+    this.work.assertAttached();
     if (resultRenderer !== undefined && this.resultRenderers.has(definition.name)) {
       throw new Error(
         `Tool result renderer for ${JSON.stringify(definition.name)} is already registered`,
@@ -75,10 +79,11 @@ export class Tools extends Service {
   createResultRenderer<Payload>(
     fallback: AgentLoopToolResultRenderer<Payload>,
   ): AgentLoopToolResultRenderer<Payload> {
+    this.work.assertAttached();
     return Object.freeze({
       render: (input: Parameters<
         AgentLoopToolResultRenderer<Payload>["render"]
-      >[0]) => {
+      >[0]) => this.work.run(() => {
         const renderer = this.resultRenderers.get(input.result.toolName);
         if (renderer === undefined) return fallback.render(input);
         return renderer.render({
@@ -86,7 +91,7 @@ export class Tools extends Service {
           result: input.result,
           signal: input.signal,
         });
-      },
+      }),
     });
   }
 }

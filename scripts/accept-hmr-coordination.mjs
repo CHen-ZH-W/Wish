@@ -76,11 +76,12 @@ test("import errors and pre-disposal veto keep the old instance; a later valid e
   assert.deepEqual(f.probe.activated, [1, 3]);
 }));
 
-test("asynchronous initialization failure fences later batches without reapplying old effects", { timeout: 8000 }, () => fixture(async f => {
+test("asynchronous initialization failure restores the old callback and permits a later retry", { timeout: 8000 }, () => fixture(async f => {
   await f.change(2, true); await until(() => f.failures.length === 1);
-  assert.equal(f.failures[0].phase, "apply"); assert.equal(f.successes.length, 0);
-  await f.change(3); await delay(200);
-  assert.deepEqual(f.probe.activated, [1, 2]); assert.equal(f.successes.length, 0);
+  assert.equal(f.failures[0].phase, "restored"); assert.equal(f.successes.length, 0);
+  assert.deepEqual(f.probe.activated, [1, 2, 1]);
+  await f.change(3); await until(() => f.successes.length === 1);
+  assert.deepEqual(f.probe.activated, [1, 2, 1, 3]);
 }));
 
 test("cleanup deadline is reported and late cleanup cannot activate the replacement", { timeout: 8000 }, () => fixture(async f => {
@@ -138,6 +139,9 @@ for (const fails of [false, true]) test(`native reload waits for asynchronous de
     await delay(30); assert.equal(successes.length, 0); assert.equal(failures.length, 0);
     release.resolve(); await until(() => successes.length + failures.length > 0);
     assert.equal(successes.length, fails ? 0 : 1); assert.equal(failures.length, fails ? 1 : 0);
-    if (fails) assert.equal(failures[0].phase, "apply");
+    if (fails) {
+      assert.equal(failures[0].phase, "restored");
+      assert.equal(root.get("delayed"), 1);
+    }
   } finally { release.resolve(); await root.fiber.dispose(); await rm(directory, { recursive: true, force: true }); }
 });

@@ -1,4 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
+import type { ModelAdapterFactory } from "./types.js";
 
 import {
   ANTHROPIC_MESSAGES_PROTOCOL,
@@ -15,12 +17,21 @@ import {
 
 const inject = ["models"];
 
+function register(ctx: Context, protocol: string, factory: ModelAdapterFactory): void {
+  const work = new PluginWorkOwner(ctx, { code: "model_adapter", codeReload: true });
+  ctx.models.register(protocol, input => {
+    work.assertAttached();
+    const model = factory(input);
+    return { stream: (request, options) => work.stream(() => model.stream(request, options)) };
+  });
+}
+
 /** Independent protocol plugins; Models.register owns caller-fiber cleanup. */
 export const OpenAIChatCompletions = {
   name: "openai-chat-completions-model-adapter",
   inject,
   apply(ctx: Context): void {
-    ctx.models.register(
+    register(ctx,
       OPENAI_CHAT_COMPLETIONS_PROTOCOL,
       createOpenAICompatibleAdapter,
     );
@@ -31,7 +42,7 @@ export const OpenAIResponses = {
   name: "openai-responses-model-adapter",
   inject,
   apply(ctx: Context): void {
-    ctx.models.register(OPENAI_RESPONSES_PROTOCOL, createOpenAIResponsesAdapter);
+    register(ctx, OPENAI_RESPONSES_PROTOCOL, createOpenAIResponsesAdapter);
   },
 };
 
@@ -39,6 +50,6 @@ export const AnthropicMessages = {
   name: "anthropic-messages-model-adapter",
   inject,
   apply(ctx: Context): void {
-    ctx.models.register(ANTHROPIC_MESSAGES_PROTOCOL, createAnthropicMessagesAdapter);
+    register(ctx, ANTHROPIC_MESSAGES_PROTOCOL, createAnthropicMessagesAdapter);
   },
 };

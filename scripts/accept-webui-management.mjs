@@ -7,7 +7,9 @@ import { request as httpRequest } from "node:http";
 import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import { installPluginInspection } from "../dist/boot/plugin-control/inspection.js";
-import { installPluginLifecycle, registerPluginLifecycle } from "../dist/boot/plugin-control/lifecycle.js";
+import { PluginManagementClassifier } from "../dist/boot/plugin-control/classification.js";
+import { installPluginLifecycle } from "../dist/boot/plugin-control/lifecycle.js";
+import { registerPluginOwner } from "../dist/boot/plugin-control/owner-registry.js";
 import { ManagedPluginStore } from "../dist/boot/plugin-control/managed-store.js";
 import { ManagedProfileSource, managedProfilePlugin } from "../dist/boot/plugin-control/managed-profile.js";
 import { ManagedPluginControl } from "../dist/boot/plugin-control/managed-control.js";
@@ -22,7 +24,8 @@ async function fixture(run) {
   let host, settings, credentials, control;
   try {
     await root.plugin(Loader);
-    const inspection = installPluginInspection(root), lifecycle = installPluginLifecycle(root, inspection);
+    const classifications = new PluginManagementClassifier({ "cordis:profile": "kernel", "cordis:sample": "managed" });
+    const inspection = installPluginInspection(root, classifications), lifecycle = installPluginLifecycle(root, inspection);
     const store = await ManagedPluginStore.open(join(directory, "managed.json"));
     control = new ManagedPluginControl(root, inspection, store);
     settings = new Settings(await FileSettingsStore.open(join(directory, "settings.json")));
@@ -30,9 +33,10 @@ async function fixture(run) {
     const scope = settings.register({ namespace: "composer", title: "消息输入", applies: "next-request", fields: [
       { key: "delivery", label: "运行中发送", type: "enum", options: ["queue", "steer"], default: "queue" },
     ] });
-    await writeFile(join(directory, "cordis.yml"), '- id: sample\n  name: cordis:sample\n');
-    root.loader.builtins.sample = { apply(ctx) { registerPluginLifecycle(ctx, () => ({ disposition: "direct", code: "idle" }), () => ({ close: async () => {}, release() {} })); } };
-    root.loader.builtins.profile = managedProfilePlugin(new ManagedProfileSource(join(directory, "cordis.yml"), "include", store.snapshot()), profile => control.attach(profile));
+    await writeFile(join(directory, "cordis.yml"), '- id: sample\n  name: cordis:sample\n  management:\n    class: managed\n');
+    root.loader.builtins.sample = { apply(ctx) { registerPluginOwner(ctx, { status: () => ({ disposition: "direct", code: "idle" }), replacement: "drain",
+      prepare: () => ({ drained: Promise.resolve(), deactivate: async () => {}, release() {} }) }); } };
+    root.loader.builtins.profile = managedProfilePlugin(new ManagedProfileSource(join(directory, "cordis.yml"), "include", store.snapshot(), undefined, classifications), profile => control.attach(profile), classifications);
     await root.loader.create({ id: "include", name: "cordis:profile" }); await root.loader.await();
     host = await startWebManagementHost({ root, control, settings, credentials, lifecycle, port: 0 });
     const fetchJson = async (path, options) => { const response = await fetch(host.url + path, options); return { status: response.status, value: await response.json() }; };
@@ -57,7 +61,15 @@ test("Root HTTP and SSE survive business detachment; real mutation saves and cha
     assert.equal(preview.value.impact.affected.length, 1);
     const result = await f.post("/api/management/plugins/change", { requestId: "http-disable", revision: snapshot.revision,
       selection: { instanceId: snapshot.inspection.instanceId, entryIds: ["include:sample"] }, preference: "disabled" });
-    assert.equal(result.status, 200); assert.equal(result.value.status, "succeeded");
+    assert.equal(result.status, 202); assert.equal(result.value.operation.requestId, "http-disable");
+    let operation = result.value.operation;
+    while (!["succeeded", "rejected", "recovery-required"].includes(operation.phase)) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      const queried = await f.fetchJson(`/api/management/plugins/operations/${encodeURIComponent(operation.id)}`);
+      assert.equal(queried.status, 200); operation = queried.value.operation;
+    }
+    assert.equal(operation.phase, "succeeded");
+    assert.equal((await f.fetchJson("/api/management/plugins/operations/missing")).status, 404);
     assert.equal(f.root.loader.resolve("include:sample").disabled, true);
     assert.match(new TextDecoder().decode((await reader.read()).value), /event: invalidated/);
     const settings = (await f.fetchJson("/api/management/settings")).value.sections[0];

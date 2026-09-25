@@ -24,11 +24,11 @@ import { AttemptRecordingModel } from "./pricing/attempt-recording-model.js";
 import type { ModelAttemptLedger } from "./pricing/attempts.js";
 import {
   ANTHROPIC_MESSAGES_PROTOCOL,
-} from "./providers/anthropic-messages.js";
+} from "./providers/protocols.js";
 import {
   createAnthropicMessagesRequestTokenizer,
 } from "./providers/anthropic-messages-tokens.js";
-import { ModelAdapterRegistry } from "./registry.js";
+import type { ModelAdapterRegistry } from "./adapter-registry.js";
 import {
   UsageResolvingModel,
   type UsageEstimator,

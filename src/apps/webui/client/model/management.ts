@@ -1,5 +1,6 @@
 import type { ManagedPluginReceipt, ManagedPluginSnapshot } from "../../../../boot/plugin-control/managed-types.js";
 import type { PluginLifecycleCollection, PluginPreference } from "../../../../boot/plugin-control/management-types.js";
+import type { PluginChangeOperationView } from "../../../../boot/plugin-control/change-coordinator.js";
 import type { ClientConnection } from "../connection.js";
 import { RefreshQueue, SnapshotStore } from "./store.js";
 
@@ -20,6 +21,11 @@ export class PluginManagementModel extends SnapshotStore<ManagementSnapshot> {
     this.unsubscribe = connection.onInvalidation(() => { void this.refresh(); });
   }
   refresh = (): Promise<void> => this.queue.request();
+  cancel = async (operationId: string): Promise<void> => {
+    if (this.closed || !this.connection.getSnapshot().online) throw new Error("management_unavailable");
+    await this.connection.request("/api/management/plugins/cancel", { operationId });
+    await this.refresh();
+  };
   preview = (entryIds: readonly string[]): Promise<PluginLifecycleCollection> => {
     const data = this.getSnapshot().data;
     if (this.closed || !data) return Promise.reject(new Error("尚未获得插件状态"));
@@ -31,14 +37,32 @@ export class PluginManagementModel extends SnapshotStore<ManagementSnapshot> {
     if (state.data.revision !== expected.revision || state.data.inspection.instanceId !== expected.instanceId) throw new Error("management_revision_conflict");
     this.publish({ ...state, pending: true, error: null });
     try {
-      const receipt = await this.connection.request<ManagedPluginReceipt>("/api/management/plugins/change", {
-        requestId: crypto.randomUUID(), revision: state.data.revision, selection: { instanceId: state.data.inspection.instanceId, entryIds }, preference,
+      const requestId = crypto.randomUUID();
+      const accepted = await this.connection.request<{ operation: PluginChangeOperationView }>("/api/management/plugins/change", {
+        requestId, revision: state.data.revision, selection: { instanceId: state.data.inspection.instanceId, entryIds }, preference,
       });
+      const result = await this.waitForOperation(accepted.operation);
+      await this.refresh();
+      const receipt = result.receipt;
+      if (!receipt || receipt.requestId !== requestId) throw new Error(result.operation.code ?? "management_operation_incomplete");
       if (receipt.status !== "succeeded") throw new Error(receipt.code);
       return receipt;
     } catch (error) { if (!this.closed) this.publish({ ...this.getSnapshot(), error: message(error) }); throw error; }
     finally { if (!this.closed) { this.publish({ ...this.getSnapshot(), pending: false }); await this.refresh(); } }
   };
+  private async waitForOperation(operation: PluginChangeOperationView): Promise<{ operation: PluginChangeOperationView; receipt: ManagedPluginReceipt | null }> {
+    while (true) {
+      if (this.closed || !this.connection.getSnapshot().online) throw new Error("management_wait_disconnected");
+      const result = await this.connection.request<{ operation: PluginChangeOperationView; receipt: ManagedPluginReceipt | null }>(
+        `/api/management/plugins/operations/${encodeURIComponent(operation.id)}`);
+      operation = result.operation;
+      if (terminal(operation.phase)) {
+        if (operation.phase !== "succeeded") throw new Error(operation.code ?? "management_operation_failed");
+        return result;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
   recover = async (): Promise<void> => {
     const state = this.getSnapshot(); if (this.closed || !state.data || state.pending) return;
     this.publish({ ...state, pending: true });
@@ -47,6 +71,9 @@ export class PluginManagementModel extends SnapshotStore<ManagementSnapshot> {
     finally { if (!this.closed) { this.publish({ ...this.getSnapshot(), pending: false }); await this.refresh(); } }
   };
   close(): void { this.closed = true; this.queue.close(); this.unsubscribe(); }
+}
+function terminal(phase: PluginChangeOperationView["phase"]): boolean {
+  return phase === "succeeded" || phase === "rejected" || phase === "recovery-required";
 }
 export function message(error: unknown): string {
   return error instanceof Error ? error.message : "请求失败，状态会自动重新同步";

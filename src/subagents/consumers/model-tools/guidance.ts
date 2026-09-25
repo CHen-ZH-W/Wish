@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 
 /** Cross-call guidance for Wish-owned child Agent lifecycle Tools. */
@@ -5,6 +6,7 @@ export const SubagentToolGuidance = {
   name: "subagent-tool-guidance",
   inject: ["systemPrompt"],
   apply(ctx: Context): void {
+    new PluginWorkOwner(ctx, { code: "subagent_guidance", codeReload: true });
     ctx.systemPrompt.register({
       id: "subagents.delegation",
       order: 400,

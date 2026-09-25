@@ -65,8 +65,9 @@ Local Provider 的 Loader Config 为：
 
 `workspace-local` 是 `workspace` Service 的默认 Provider。`agentLoop` 显式注入该
 Service，并在每个 Step 用 `Session.scope` 作为 `ResolveWorkspaceRequest.root`。Provider
-缺失或被 Loader 禁用时，`agentLoop → runtime → agents → application → surface` 保持
-PENDING；Provider 恢复后由 Cordis 重新激活。
+缺失或被 Loader 禁用时，`agentLoop` 保持 PENDING；稳定的 Runtime、Agents 与 Application
+Service 继续存在，但新 Application generation 会等待 AgentLoop 就绪，并在所有者卸载或超时
+时取消。Provider 恢复后由 Cordis 激活 AgentLoop，等待中的 Surface 初始化才继续。
 
 Workspace 不提供 Registry、受保护路径、访问授权或 sandbox。Registry、Policy、
 FileSystem 与 Shell 是独立 seam，按各自契约消费 Workspace Snapshot；Local Provider

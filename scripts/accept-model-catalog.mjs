@@ -281,7 +281,7 @@ test("Model Catalog Domain Provider follows selected Backend lifecycle", async (
   assert.equal(consumer.state, 0);
   await assert.rejects(
     oldStore.load(),
-    (error) => error?.code === "storage_closed",
+    /model_catalog_closed/,
   );
 
   await root.plugin(FileStorageProvider, {

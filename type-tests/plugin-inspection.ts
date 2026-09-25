@@ -3,6 +3,7 @@ import type { BootstrappedProcess } from "../src/boot/bootstrap.js";
 import type { PluginInspection, PluginInspectionSnapshot } from "../src/boot/plugin-control/types.js";
 import type { PluginConfigurationState, PluginOperationState, PluginSelection } from "../src/boot/plugin-control/management-types.js";
 import { assessPluginDisable } from "../src/boot/plugin-control/assessment.js";
+import type { WishPluginManifest } from "../src/boot/plugin-control/manifest.js";
 
 declare const booted: BootstrappedProcess;
 declare const root: Context;
@@ -49,3 +50,12 @@ booted.pluginStops.reserve(selection);
 // @ts-expect-error Operation receipts are immutable.
 if (currentStop) currentStop.state = { phase: "checking" };
 void operation;
+
+const manifest: WishPluginManifest = {
+  apiVersion: "wish.plugin/v1", id: "example.plugin", entry: "./index.js", managementClass: "managed", replacement: "drain",
+  configSchema: { type: "object", additionalProperties: false }, permissions: { capabilities: [] },
+  sandbox: { isolation: "trusted-in-process", filesystem: "none", process: "none", network: "none" }, state: { mode: "stateless" },
+};
+// @ts-expect-error Unknown API generations cannot compile as the v1 contract.
+const futureManifest: WishPluginManifest = { ...manifest, apiVersion: "wish.plugin/v2" };
+void futureManifest;

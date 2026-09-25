@@ -60,6 +60,9 @@ export class SubagentResultRelay {
     await Promise.allSettled([...this.tasks].map((task) => task.completion));
   }
 
+  /** A held parent completion is state that this ephemeral adapter cannot migrate. */
+  get pendingResults(): number { return this.tasks.size; }
+
   private observe(
     input: {
       readonly record: SubagentRecord;

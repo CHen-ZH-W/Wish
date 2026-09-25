@@ -1,118 +1,72 @@
+Index: src/index.ts
 ===================================================================
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -1,5 +1,5 @@
+@@ -1,1 +1,1 @@
 -import { Context, Service, type Plugin } from '@deepseek-ai/cordis'
 +import { Context, Service, type FiberState, type Plugin } from '@deepseek-ai/cordis'
- import type { Dict } from '@deepseek-ai/cosmokit'
- import { ModuleLoader, type ModuleJob, type ResolveResult } from '@deepseek-ai/cordis-plugin-loader'
- import type { Include } from '@deepseek-ai/cordis-plugin-include'
- import { FSWatcher, watch, type ChokidarOptions } from 'chokidar'
-@@ -11,16 +11,26 @@
- import { createRequire } from 'node:module'
- import picomatch from 'picomatch'
- import z from '@deepseek-ai/schemastery'
- 
+@@ -7,0 +8,2 @@
++import { readFileSync } from 'node:fs'
++import { createHash } from 'node:crypto'
+@@ -14,0 +17,3 @@
 +// Cordis exposes FiberState as a const enum, not a runtime export.
 +const ACTIVE: FiberState = 2
 +
- declare module '@deepseek-ai/cordis' {
-   interface Context {
-     hmr: Hmr
-   }
- 
-   interface Events {
+@@ -20,0 +26,2 @@
 +    /** Encloses analysis/import/cache work as well as replacement. */
 +    'hmr/reload-batch'(signal: AbortSignal, next: () => Promise<void>): Promise<void>
-     'hmr/change'(url: string): void
-     'hmr/reload'(reloads: Map<Plugin, Reload>): void
+@@ -22,0 +30,5 @@
 +    /** Awaitable pre-disposal middleware. Throw to veto; call next exactly once to apply. */
 +    'hmr/reload-prepare'(reloads: ReadonlyMap<Plugin, Reload>, signal: AbortSignal, next: () => Promise<void>): Promise<void>
-+    'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply'): void
++    'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply' | 'restored'): void
 +    /** Full reload can also be vetoed by a host that requires explicit restart. */
 +    'hmr/restart'(url: string, next: () => void): void
-     /**
-      * A watched config-file refresh failed.
-      * @param filename - Absolute path observed by HMR.
-      * @param error - Normalized refresh failure.
-@@ -84,8 +94,10 @@
- }
- 
- class Hmr extends Service {
-   static inject = ['loader', 'timer']
+@@ -87,0 +100,2 @@
 +  /** Hosts must check this before relying on pre-disposal coordination. */
-+  static readonly coordinationVersion = 3
- 
-   public baseDir: string
- 
-   private internal: ModuleLoader
-@@ -113,8 +125,12 @@
-   private declined!: Set<string>
- 
-   /** Stashed file changes waiting to be processed */
-   private stashed = new Set<string>()
++  static readonly coordinationVersion = 5
+@@ -116,0 +131,5 @@
++  private readonly contents = new Map<string, string>()
 +  private queued = new Set<string>()
 +  private codeTask?: Promise<void>
 +  private halted = false
 +  private readonly closing = new AbortController()
- 
-   constructor(ctx: Context, public config: Hmr.Config) {
-     super(ctx, 'hmr')
-     if (!this.ctx.loader.internal) {
-@@ -197,9 +213,11 @@
-   }
- 
-   async* [Service.init]() {
-     yield async () => {
+@@ -200,0 +220,1 @@
 +      this.closing.abort(new Error('HMR disposed'))
-       await this.watcher?.close()
+@@ -201,0 +222,1 @@
 +      await this.codeTask
-       await Promise.allSettled([...this.configs.values()].map(registration => registration.watcher.close()))
-       this.configs.clear()
-       await Promise.allSettled([...this.refreshTasks])
-     }
-@@ -238,16 +256,16 @@
-       // user patch layer present at registration must apply once.
-       ignoreInitial: true,
-     })
- 
+@@ -227,0 +249,7 @@
++    // Snapshot already loaded modules before observing rebuild events. Rewriting
++    // identical compiler output must not restart unrelated stable infrastructure.
++    for (const [url] of this.internal.loadCache) {
++      if (!url.startsWith('file:')) continue
++      try { this.contents.set(url, createHash('sha256').update(readFileSync(new URL(url))).digest('hex')) } catch {}
++    }
++
+@@ -242,1 +270,1 @@
 -    const partialReload = this.ctx.debounce(() => this.partialReload(), this.config.debounce)
 +    const partialReload = this.ctx.debounce(() => this.flushChanges(), this.config.debounce)
- 
-     const onChange = (kind: 'add' | 'change' | 'unlink', path: string) => {
-       this.ctx.logger.debug('%s detected at %C', kind, path)
-       const filename = resolve(watchBaseDir, path)
-       const configuredFilename = resolve(this.baseDir, path)
-       // Config reload: the file is a loader config file (e.g. cordis.yml).
+@@ -249,1 +277,1 @@
 -      for (const entry of loader.entries()) {
 +      for (const entry of this.config.watchConfig === false ? [] : loader.entries()) {
-         const include = entry.subtree as Include | undefined
-         if (include?.filename !== filename && include?.filename !== configuredFilename) continue
-         this.refreshConfig(include, include.filename, () => include.refresh())
-         return
-@@ -256,15 +274,15 @@
-       if (kind !== 'change') return
-       const url = pathToFileURL(filename).href
- 
-       // Full reload: the changed file is part of the framework
+@@ -256,1 +283,0 @@
+-      if (kind !== 'change') return
+@@ -257,0 +285,9 @@
++      if (kind === 'unlink') this.contents.delete(url)
++      else {
++        try {
++          const digest = createHash('sha256').update(readFileSync(filename)).digest('hex')
++          if (this.contents.get(url) === digest) return
++          this.contents.set(url, digest)
++        } catch { /* Let normal import/error handling diagnose the source. */ }
++      }
++      if (kind === 'add' && !loader.internal!.loadCache.has(url)) return
+@@ -260,1 +296,1 @@
 -      if (this.externals.has(url)) return loader.exit()
 +      if (this.externals.has(url)) return this.ctx.waterfall('hmr/restart', url, () => loader.exit())
- 
-       // Partial reload: the file is in the ESM loadCache
-       // In Node 24, both CJS and ESM modules imported via import() end up
-       // in loadCache, so this check covers all module formats.
-       if (loader.internal!.loadCache.has(url)) {
+@@ -266,1 +302,1 @@
 -        this.stashed.add(url)
 +        this.queued.add(url)
-         return partialReload()
-       }
- 
-       this.ctx.emit('hmr/change', url)
-@@ -323,8 +341,25 @@
-     this.refreshTasks.add(task)
-   }
- 
-   // hide stack trace from HMR
+@@ -326,0 +363,17 @@
 +  private flushChanges() {
 +    if (this.codeTask || this.halted || this.closing.signal.aborted) return
 +    this.codeTask = (async () => {
@@ -130,20 +84,12 @@
 +    return this.codeTask
 +  }
 +
-   getOuterStack = (): string[] => [
-     // '    at HMR.partialReload (<anonymous>)',
-   ]
- 
-@@ -403,2 +403,3 @@
-     const pending = new Map<ModuleJob, Plugin>()
-     const reloads = new Map<Plugin, Reload>()
+@@ -404,0 +458,1 @@
 +    const reloadDependencies: Set<string>[] = []
-@@ -437 +438 @@
+@@ -437,1 +491,1 @@
 -      dependencies.forEach(dep => this.accepted.add(dep))
 +      reloadDependencies.push(new Set(dependencies))
-@@ -443 +444,8 @@
--
-+
+@@ -444,0 +499,7 @@
 +    // Select every reload root against the original change set. Expanding the
 +    // cache-clear set while selecting makes later, unrelated plugins match a
 +    // dependency that merely happens to be shared with an earlier root.
@@ -151,15 +97,9 @@
 +      dependencies.forEach(dep => this.accepted.add(dep))
 +    }
 +
-@@ -495,53 +537,72 @@
-         attempts[filename] = this.ctx.loader.unwrapExports(await this.ctx.loader.import(filename, this.getOuterStack))
-       }
-     } catch (e) {
-       handleError(this.ctx, e)
+@@ -498,0 +560,1 @@
 +      this.ctx.emit('hmr/reload-failed', e instanceof Error ? e : new Error(String(e)), 'import')
-       return rollback()
-     }
- 
+@@ -502,9 +564,5 @@
 -    const reload = (plugin: any, runtime: Plugin.Runtime) => {
 -      if (!runtime) return
 -      for (const oldFiber of runtime.fibers) {
@@ -173,8 +113,8 @@
 +    const targets = [...reloads].flatMap(([plugin, { filename, runtime }]) =>
 +      [...runtime?.fibers ?? []].map(fiber => ({ plugin, filename, fiber, uid: fiber.uid, config: fiber._config,
 +        configVersion: JSON.stringify(fiber._config) })))
-+    let started = false
-     try {
++    let started = false, timedOut = false, restored = false
+@@ -512,9 +570,7 @@
 -      for (const [plugin, { filename, runtime }] of reloads) {
 -        if (!runtime) continue
 -        const path = relative(this.baseDir, fileURLToPath(filename))
@@ -191,7 +131,7 @@
 +          if (fiber.uid !== uid || JSON.stringify(fiber._config) !== configVersion || fiber.state !== ACTIVE || fiber.entry?.disabled) {
 +            throw new Error('HMR target changed before disposal')
 +          }
-         }
+@@ -522,8 +578,32 @@
 -
 -        try {
 -          reload(attempts[filename], runtime)
@@ -206,6 +146,7 @@
 +        let timer: ReturnType<typeof setTimeout>
 +        const deadline = new Promise<never>((_resolve, reject) => {
 +          timer = setTimeout(() => {
++            timedOut = true
 +            const error = new Error('HMR replacement timeout; recovery required')
 +            timeout.abort(error)
 +            reject(error)
@@ -231,7 +172,7 @@
 +        await this.ctx.loader.await()
 +        for (const fiber of fibers) {
 +          if (fiber.state !== ACTIVE) throw new Error('HMR replacement did not activate')
-         }
+@@ -531,11 +611,1 @@
 -      }
 -    } catch {
 -      // Rollback: restore caches and re-register old plugins
@@ -244,72 +185,83 @@
 -        } catch (err) {
 -          this.ctx.logger.warn(err)
 +        signal.throwIfAborted()
-         }
+@@ -543,1 +613,43 @@
 -      }
-+        try { await Promise.race([apply(), deadline]) }
-+        finally { clearTimeout(timer!) }
++        try {
++          await Promise.race([apply(), deadline])
++        } catch (reason) {
++          if (timedOut || this.closing.signal.aborted) throw reason
++          const error = reason instanceof Error ? reason : new Error(String(reason))
++          try {
++            const callbacks = [...new Set(Object.values(attempts))]
++            const candidateFibers = callbacks.flatMap(callback => [...this.ctx.registry.get(callback)?.fibers ?? []])
++            for (const callback of callbacks) this.ctx.registry.delete(callback)
++            await Promise.all(candidateFibers.map(async fiber => {
++              while (fiber.inertia) await fiber.inertia
++              if (fiber.uid !== null) throw new Error('HMR candidate generation did not dispose')
++            }))
++            rollback()
++            const replacements = targets.map(({ plugin, fiber: oldFiber, config }) => {
++              const fiber = oldFiber.parent.registry.plugin(plugin, config, this.getOuterStack)
++              fiber.entry = oldFiber.entry
++              if (fiber.entry) fiber.entry.fiber = fiber
++              return fiber
++            })
++            await Promise.all(replacements.map(fiber => fiber.await()))
++            await this.ctx.loader.await()
++            if (replacements.some(fiber => fiber.state !== ACTIVE)) throw new Error('HMR previous generation did not reactivate')
++            restored = true
++            this.ctx.logger.warn(error)
++            this.ctx.emit('hmr/reload-failed', error, 'restored')
++          } catch (rollbackReason) {
++            this.ctx.logger.warn(rollbackReason)
++            throw reason
++          }
++        } finally { clearTimeout(timer!) }
 +      })
 +      if (!started) throw new Error('HMR batch was vetoed')
 +    } catch (reason) {
-+      // Import/preparation failure can restore caches. Once cleanup has started,
-+      // business effects are not reversible; fence subsequent batches, no replay.
 +      if (!started) rollback()
-+      else this.halted = true
 +      const error = reason instanceof Error ? reason : new Error(String(reason))
++      // A restored candidate failure is reported through the managed
++      // middleware, which rejects its durable intent after the old generation
++      // is healthy. Do not treat that deliberate rejection as a second failure.
++      if (restored) return
++      if (started) this.halted = true
 +      this.ctx.logger.warn(error)
 +      this.ctx.emit('hmr/reload-failed', error, started ? 'apply' : 'prepare')
-       return
-     }
- 
-     this.ctx.emit('hmr/reload', reloads)
-@@ -554,8 +615,12 @@
-     base?: string
-     root: string[]
-     debounce: number
-     ignored: string[]
+@@ -546,0 +659,1 @@
++    if (restored) return
+@@ -557,0 +671,4 @@
 +    /** Post-drain cleanup/activation deadline. Expiry fences HMR, never replays effects. */
 +    reloadTimeout?: number
 +    /** Disable automatic Include refresh; explicit registerConfig remains supported. */
 +    watchConfig?: boolean
-   }
- 
-   export const Config: z<Config> = z.object({
-     base: z.string(),
-@@ -566,8 +631,10 @@
-       'cache',
-       'data',
-     ]),
-     debounce: z.natural().role('ms').default(100),
+@@ -569,0 +687,2 @@
 +    reloadTimeout: z.natural().min(1).role('ms').default(30_000),
 +    watchConfig: z.boolean().default(true),
-   })
-   // [deepseek-harness] vendored modification: removed `.i18n({ 'en-US': enUS, 'zh-CN': zhCN })`
-   // and the corresponding `./locales/*.yml` imports, to avoid a runtime YAML import hook
-   // (@cordisjs/unyaml) that we don't vendor. See vendor/README.md.
+Index: lib/index.js
 ===================================================================
 --- a/lib/index.js
 +++ b/lib/index.js
-@@ -1,452 +1,542 @@
+@@ -1,1 +1,1 @@
 -import { createRequire } from "node:module";
 +// node_modules/@deepseek-ai/cordis-plugin-hmr/src/index.ts
- import { Service } from "@deepseek-ai/cordis";
- import { watch } from "chokidar";
- import { dirname, relative, resolve } from "node:path";
- import { realpath, stat } from "node:fs/promises";
+@@ -5,0 +6,2 @@
 +
 +// node_modules/@deepseek-ai/cordis-plugin-hmr/src/error.ts
- import { codeFrameColumns } from "@babel/code-frame";
- import { readFileSync } from "node:fs";
+@@ -8,4 +10,1 @@
 -import { fileURLToPath, pathToFileURL } from "node:url";
 -import picomatch from "picomatch";
 -import z from "@deepseek-ai/schemastery";
 -//#region lib/types/error.js
- function isBuildFailure(e) {
++import { createHash } from "node:crypto";
+@@ -13,1 +12,1 @@
 -	return Array.isArray(e?.errors) && e.errors.every((error) => error.text);
 +  return Array.isArray(e?.errors) && e.errors.every((error) => error.text);
- }
+@@ -15,1 +13,0 @@
 -/** Log HMR build failures with code frames when source locations are available. */
- function handleError(ctx, e) {
+@@ -17,23 +15,24 @@
 -	if (!isBuildFailure(e)) {
 -		ctx.logger.warn(e);
 -		return;
@@ -357,7 +309,7 @@
 +      ctx.logger.warn(e2);
 +    }
 +  }
- }
+@@ -41,6 +40,7 @@
 -//#endregion
 -//#region lib/types/index.js
 -/**
@@ -371,7 +323,7 @@
 +import picomatch from "picomatch";
 +import z from "@deepseek-ai/schemastery";
 +var ACTIVE = 2;
- async function loadDependencies(job, ignored = /* @__PURE__ */ new Set()) {
+@@ -48,10 +48,10 @@
 -	const dependencies = /* @__PURE__ */ new Set();
 -	async function traverse(job) {
 -		if (ignored.has(job.url) || dependencies.has(job.url)) return;
@@ -392,8 +344,7 @@
 +  }
 +  await traverse(job);
 +  return dependencies;
- }
- async function findWatchRoot(filename) {
+@@ -60,17 +60,19 @@
 -	let root = dirname(filename);
 -	let depth = 0;
 -	while (true) try {
@@ -430,8 +381,7 @@
 +      depth += 1;
 +    }
 +  }
- }
- var Hmr = class extends Service {
+@@ -79,357 +81,488 @@
 -	config;
 -	static inject = ["loader", "timer"];
 -	baseDir;
@@ -801,7 +751,7 @@
 +  config;
 +  static inject = ["loader", "timer"];
 +  /** Hosts must check this before relying on pre-disposal coordination. */
-+  static coordinationVersion = 3;
++  static coordinationVersion = 5;
 +  baseDir;
 +  internal;
 +  watcher;
@@ -825,6 +775,7 @@
 +  declined;
 +  /** Stashed file changes waiting to be processed */
 +  stashed = /* @__PURE__ */ new Set();
++  contents = /* @__PURE__ */ new Map();
 +  queued = /* @__PURE__ */ new Set();
 +  codeTask;
 +  halted = false;
@@ -923,6 +874,11 @@
 +    } else {
 +      this.externals = /* @__PURE__ */ new Set();
 +    }
++    // Ignore unchanged compiler output before classifying full/partial reloads.
++    for (const [url] of this.internal.loadCache) {
++      if (!url.startsWith("file:")) continue;
++      try { this.contents.set(url, createHash("sha256").update(readFileSync(new URL(url))).digest("hex")); } catch {}
++    }
 +    this.watcher = watch(root, {
 +      ...this.config,
 +      cwd: watchBaseDir,
@@ -947,8 +903,16 @@
 +        this.refreshConfig(include, include.filename, () => include.refresh());
 +        return;
 +      }
-+      if (kind !== "change") return;
 +      const url = pathToFileURL(filename).href;
++      if (kind === "unlink") this.contents.delete(url);
++      else {
++        try {
++          const digest = createHash("sha256").update(readFileSync(filename)).digest("hex");
++          if (this.contents.get(url) === digest) return;
++          this.contents.set(url, digest);
++        } catch {}
++      }
++      if (kind === "add" && !loader.internal.loadCache.has(url)) return;
 +      if (this.externals.has(url)) return this.ctx.waterfall("hmr/restart", url, () => loader.exit());
 +      if (loader.internal.loadCache.has(url)) {
 +        this.queued.add(url);
@@ -1175,7 +1139,7 @@
 +      config: fiber._config,
 +      configVersion: JSON.stringify(fiber._config)
 +    })));
-+    let started = false;
++    let started = false, timedOut = false, restored = false;
 +    try {
 +      await this.ctx.waterfall("hmr/reload-prepare", reloads, this.closing.signal, async () => {
 +        this.closing.signal.throwIfAborted();
@@ -1191,6 +1155,7 @@
 +        let timer;
 +        const deadline = new Promise((_resolve, reject) => {
 +          timer = setTimeout(() => {
++            timedOut = true;
 +            const error = new Error("HMR replacement timeout; recovery required");
 +            timeout.abort(error);
 +            reject(error);
@@ -1216,6 +1181,34 @@
 +        };
 +        try {
 +          await Promise.race([apply(), deadline]);
++        } catch (reason) {
++          if (timedOut || this.closing.signal.aborted) throw reason;
++          const error = reason instanceof Error ? reason : new Error(String(reason));
++          try {
++            const callbacks = [...new Set(Object.values(attempts))];
++            const candidateFibers = callbacks.flatMap((callback) => [...this.ctx.registry.get(callback)?.fibers ?? []]);
++            for (const callback of callbacks) this.ctx.registry.delete(callback);
++            await Promise.all(candidateFibers.map(async (fiber) => {
++              while (fiber.inertia) await fiber.inertia;
++              if (fiber.uid !== null) throw new Error("HMR candidate generation did not dispose");
++            }));
++            rollback();
++            const replacements = targets.map(({ plugin, fiber: oldFiber, config }) => {
++              const fiber = oldFiber.parent.registry.plugin(plugin, config, this.getOuterStack);
++              fiber.entry = oldFiber.entry;
++              if (fiber.entry) fiber.entry.fiber = fiber;
++              return fiber;
++            });
++            await Promise.all(replacements.map((fiber) => fiber.await()));
++            await this.ctx.loader.await();
++            if (replacements.some((fiber) => fiber.state !== ACTIVE)) throw new Error("HMR previous generation did not reactivate");
++            restored = true;
++            this.ctx.logger.warn(error);
++            this.ctx.emit("hmr/reload-failed", error, "restored");
++          } catch (rollbackReason) {
++            this.ctx.logger.warn(rollbackReason);
++            throw reason;
++          }
 +        } finally {
 +          clearTimeout(timer);
 +        }
@@ -1223,16 +1216,18 @@
 +      if (!started) throw new Error("HMR batch was vetoed");
 +    } catch (reason) {
 +      if (!started) rollback();
-+      else this.halted = true;
 +      const error = reason instanceof Error ? reason : new Error(String(reason));
++      if (restored) return;
++      if (started) this.halted = true;
 +      this.ctx.logger.warn(error);
 +      this.ctx.emit("hmr/reload-failed", error, started ? "apply" : "prepare");
 +      return;
 +    }
++    if (restored) return;
 +    this.ctx.emit("hmr/reload", reloads);
 +    this.stashed = /* @__PURE__ */ new Set();
 +  }
- };
+@@ -437,12 +570,14 @@
 -(function(Hmr) {
 -	Hmr.Config = z.object({
 -		base: z.string(),
@@ -1259,7 +1254,7 @@
 +    reloadTimeout: z.natural().min(1).role("ms").default(3e4),
 +    watchConfig: z.boolean().default(true)
 +  });
- })(Hmr || (Hmr = {}));
+@@ -450,3 +585,4 @@
 -var types_default = Hmr;
 -//#endregion
 -export { types_default as default };
@@ -1267,46 +1262,25 @@
 +export {
 +  index_default as default
 +};
+Index: lib/types/index.d.ts
 ===================================================================
 --- a/lib/types/index.d.ts
 +++ b/lib/types/index.d.ts
-@@ -5,10 +5,15 @@
-     interface Context {
-         hmr: Hmr;
-     }
-     interface Events {
+@@ -8,0 +9,1 @@
 +        'hmr/reload-batch'(signal: AbortSignal, next: () => Promise<void>): Promise<void>;
-         'hmr/change'(url: string): void;
-         'hmr/reload'(reloads: Map<Plugin, Reload>): void;
+@@ -10,0 +12,4 @@
 +        /** Awaitable pre-disposal middleware. Throw to veto; call next exactly once to apply. */
 +        'hmr/reload-prepare'(reloads: ReadonlyMap<Plugin, Reload>, signal: AbortSignal, next: () => Promise<void>): Promise<void>;
-+        'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply'): void;
++        'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply' | 'restored'): void;
 +        'hmr/restart'(url: string, next: () => void): void;
-         /**
-          * A watched config-file refresh failed.
-          * @param filename - Absolute path observed by HMR.
-          * @param error - Normalized refresh failure.
-@@ -21,8 +26,9 @@
-     filename: string;
-     runtime?: Plugin.Runtime;
- }
- declare class Hmr extends Service {
-+    static readonly coordinationVersion = 3;
-     config: Hmr.Config;
-     static inject: string[];
-     baseDir: string;
-     private internal;
-@@ -79,9 +85,11 @@
-         base?: string;
-         root: string[];
-         debounce: number;
-         ignored: string[];
+@@ -24,0 +30,1 @@
++    static readonly coordinationVersion = 5;
+@@ -49,0 +56,1 @@
++    private readonly contents;
+@@ -82,0 +90,2 @@
 +        reloadTimeout?: number;
 +        watchConfig?: boolean;
-     }
-     const Config: z<Config>;
- }
- export default Hmr;
+@@ -87,1 +96,1 @@
 -//# sourceMappingURL=index.d.ts.map
 \ No newline at end of file
 +//# sourceMappingURL=index.d.ts.map

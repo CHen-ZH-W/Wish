@@ -31,7 +31,9 @@ The Cordis Provider owns admission and in-flight CLI requests, not the terminal 
 Disposal seals its API synchronously and waits for admitted commands without killing sessions.
 Old Provider references remain closed after reactivation; a new Provider reconstructs the
 existing target from the same socket. Optional Host lifecycle reporting exposes only command
-counts and a stop guard, never Agent identities or task text. Live dependent capabilities
+counts and a stop guard, never Agent identities or task text. An admitted CLI command reports
+`drain`: managed disable fences new commands, waits for that command, unloads the old Fiber,
+and can re-enable a fresh Provider in the same Host. Live dependent capabilities
 still have their own stop requirements; a transport reporting idle does not authorize stopping
 an active Subagent or Workflow. Code replacement uses a separate Host protocol: reviewed
 Consumers drain before this Provider fences and drains its commands, then the new Provider

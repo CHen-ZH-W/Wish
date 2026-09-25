@@ -82,16 +82,50 @@ for (const target of ["scheduler", "subagents", "tmux", "storage", "batch", "cap
     assert.ok(terminal.panePid); assert.equal(terminal.active, true);
     const stable = new Map(["runtime", "sessions", "application", "tools", "workflow-continuations", "coordinator-storage", "webui"].map(id => [id, loader.resolve(`include:${id}`).fiber]));
     const mode = await ctx.get("coordinator").enter({ runId: handle.runId, sessionId: "parent", goal: "preserve parent mode" });
-    const oldScheduler = ctx.get("workflowScheduler").children;
-    const old = { subagents: ctx.get("subagents"), tmux: ctx.get("tmux"), state: ctx.get("workflow").state };
-    const oldTmuxFiber = loader.resolve("include:tmux-local").fiber;
+    const retiring = { scheduler: ctx.get("workflowScheduler").children, subagents: ctx.get("subagents"), tmux: ctx.get("tmux") };
     const base = booted.context.webManagementHost.url;
     const auth = await (await fetch(base + "/api/management/bootstrap")).json();
     const beforeDisable = booted.pluginManagement.snapshot();
     const response = await fetch(base + "/api/management/plugins/change", { method: "POST", headers: { "Content-Type": "application/json", "X-Wish-Management-Token": auth.token },
       body: JSON.stringify({ requestId: crypto.randomUUID(), revision: beforeDisable.revision, preference: "disabled", selection: { instanceId: auth.instanceId, entryIds: ["include:tmux-local"] } }) });
-    assert.equal(response.status, 200); assert.equal((await response.json()).status, "rejected");
-    assert.deepEqual(booted.pluginManagement.snapshot().preferences, beforeDisable.preferences);
+    assert.equal(response.status, 202);
+    let { operation } = await response.json();
+    await until(async () => {
+      ({ operation } = await (await fetch(base + `/api/management/plugins/operations/${operation.id}`)).json());
+      return ["succeeded", "rejected", "recovery-required"].includes(operation.phase);
+    });
+    assert.equal(operation.phase, "succeeded", JSON.stringify(operation));
+    assert.equal(booted.pluginManagement.snapshot().preferences["include:tmux-local"].preference, "disabled");
+    assert.equal(ctx.get("tmux"), undefined);
+    assert.equal(ctx.get("subagents"), undefined);
+    assert.equal(ctx.get("workflowScheduler"), undefined);
+    assert.equal(completed, false);
+    assert.equal(ctx.get("workflowContinuations").state.size, 1);
+    assert.throws(() => retiring.subagents.inspect({ ...workflow.owner, id: child.id }), /closed/i);
+    await assert.rejects(retiring.tmux.list(), /closed/i);
+    await assert.rejects(retiring.scheduler.submit({}), /closed/i);
+
+    const afterDisable = booted.pluginManagement.snapshot();
+    const enableResponse = await fetch(base + "/api/management/plugins/change", { method: "POST", headers: { "Content-Type": "application/json", "X-Wish-Management-Token": auth.token },
+      body: JSON.stringify({ requestId: crypto.randomUUID(), revision: afterDisable.revision, preference: "enabled",
+        selection: { instanceId: auth.instanceId, entryIds: ["include:tmux-local"] } }) });
+    assert.equal(enableResponse.status, 202);
+    ({ operation } = await enableResponse.json());
+    await until(async () => {
+      ({ operation } = await (await fetch(base + `/api/management/plugins/operations/${operation.id}`)).json());
+      return ["succeeded", "rejected", "recovery-required"].includes(operation.phase);
+    });
+    assert.equal(operation.phase, "succeeded", JSON.stringify(operation));
+    assert.equal((await ctx.get("tmux").inspect(terminal.target)).panePid, terminal.panePid);
+    assert.equal((await ctx.get("subagents").inspect({ ...workflow.owner, id: child.id })).id, child.id);
+    const resumedAttempt = (await ctx.get("workflow").state.get(workflow.id)).steps[0].attempts[0];
+    for (const key of ["id", "ordinal", "childId", "deadline", "idempotencyKey"]) assert.equal(resumedAttempt[key], attempt[key], key);
+    assert.equal(ctx.get("workflowContinuations").state.size, 1);
+    assert.equal(requests.length, 3, "managed re-enable must not dispatch another child");
+
+    const oldScheduler = ctx.get("workflowScheduler").children;
+    const old = { subagents: ctx.get("subagents"), tmux: ctx.get("tmux"), state: ctx.get("workflow").state };
+    const oldTmuxFiber = loader.resolve("include:tmux-local").fiber;
     let capture;
     if (target === "capture") {
       const run = old.tmux.backend.runner.run.bind(old.tmux.backend.runner);
@@ -130,7 +164,30 @@ for (const target of ["scheduler", "subagents", "tmux", "storage", "batch", "cap
       assert.equal(completed, false); captureRelease.resolve(); await capture;
     }
     await until(() => ["succeeded", "rejected", "recovery-required"].includes(booted.codeReload.snapshot().phase));
-    if (target.endsWith("failure")) {
+    if (target === "activation-failure") {
+      await until(() => booted.pluginManagement.snapshot().status === "ready");
+      const management = booted.pluginManagement.snapshot();
+      assert.equal(booted.codeReload.snapshot().phase, "rejected");
+      assert.equal(booted.codeReload.snapshot().code, "code_reload_candidate_rolled_back");
+      assert.equal(management.status, "ready"); assert.equal(management.pending, null);
+      assert.equal(management.lastReceipt.code, "management_code_reload_rolled_back");
+      assert.equal(ctx.get("runEngine").execution.snapshot().phase, "ready");
+      assert.notEqual(ctx.get("subagents"), old.subagents);
+      assert.throws(() => old.subagents.inspect({ ...workflow.owner, id: child.id }), /closed/i);
+      assert.equal(completed, false); assert.equal(ctx.get("workflowContinuations").state.size, 1);
+      assert.equal((await ctx.get("tmux").inspect(terminal.target)).panePid, terminal.panePid);
+      childRelease.resolve();
+      const completion = await handle.completion;
+      assert.equal(completion.status, "completed", JSON.stringify(completion));
+      assert.equal(receipts.length, 1); assert.equal(receipts[0].pending, null);
+      assert.equal(receipts[0].lastReceipt.code, "management_code_reload_rolled_back");
+      assert.equal(ctx.get("workflowContinuations").state.size, 0);
+      assert.match(JSON.stringify(await app.readSessionHistory({ sessionId: "parent" })), /parent integrated hot child evidence/);
+      assert.equal(requests.length, 4); assert.equal(process.pid, pid);
+      for (const [id, fiber] of stable) assert.ok(loader.resolve(`include:${id}`).fiber === fiber, `${id} was replaced`);
+      return;
+    }
+    if (target === "receipt-failure") {
       assert.equal(booted.codeReload.snapshot().phase, "recovery-required");
       assert.equal(completed, false); assert.equal(ctx.get("workflowContinuations").state.size, 1);
       assert.equal((await ctx.get("tmux").inspect(terminal.target)).panePid, terminal.panePid);
@@ -165,7 +222,7 @@ for (const target of ["scheduler", "subagents", "tmux", "storage", "batch", "cap
         permissionProfile: "read-only", availableTools: ["read"], tasks: [] });
       assert.equal(next.budget.maxTotalAttempts, 199);
     }
-    assert.equal(completed, false); assert.equal(ctx.get("workflowContinuations").state.size, 1);
+    assert.equal(completed, false); assert.equal(ctx.get("workflowContinuations").state.size, 1, JSON.stringify(await ctx.get("workflow").state.get(workflow.id)));
     assert.equal((await ctx.get("tmux").inspect(terminal.target)).panePid, terminal.panePid);
     const current = (await ctx.get("workflow").state.get(workflow.id)).steps[0].attempts[0];
     assert.deepEqual(await ctx.get("coordinator").get({ runId: handle.runId }), mode);
@@ -185,7 +242,7 @@ for (const target of ["scheduler", "subagents", "tmux", "storage", "batch", "cap
     assert.equal(requests.length, 4); assert.equal(process.pid, pid);
     for (const [id, fiber] of stable) assert.ok(loader.resolve(`include:${id}`).fiber === fiber, `${id} was replaced`);
     await delay(550); assert.equal(receipts.length, 1); assert.equal(requests.length, 4);
-  } catch (error) { throw Error(`${error.message}\nReload: ${JSON.stringify(booted?.codeReload.snapshot())}\nBatch: ${JSON.stringify(batchFiles)}\nRuntime: ${JSON.stringify(booted?.context.get("pluginInspection").inspect().fibers.filter(f => /runtime|workflow/.test(f.entryId ?? "")))}`, { cause: error }); }
+  } catch (error) { throw Error(`${error.stack}\nReload: ${JSON.stringify(booted?.codeReload.snapshot())}\nBatch: ${JSON.stringify(batchFiles)}\nRuntime: ${JSON.stringify(booted?.context.get("pluginInspection").inspect().fibers.filter(f => /runtime|workflow/.test(f.entryId ?? "")))}`, { cause: error }); }
   finally {
     captureRelease.resolve(); childRelease.resolve(); await booted?.dispose();
     await execute("tmux", ["-S", socket, "kill-server"]).catch(() => {});

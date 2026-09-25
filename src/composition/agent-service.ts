@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
@@ -89,9 +90,15 @@ export class Agents extends Service {
   readonly agentId: string;
   readonly agentInstructions: readonly ContextInstruction[];
   readonly permissions: AgentPermissionConfiguration;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, "agents");
+    this.work = new PluginWorkOwner(ctx, {
+      code: "agents",
+      codeReload: true,
+      replacement: "generation",
+    });
     this.agentId = requireIdentifier(
       config.agentId ?? DEFAULT_AGENT_ID,
       "Wish Agent id",
@@ -112,6 +119,7 @@ export class Agents extends Service {
 
   /** Build one Agent/Application generation from the current Runtime owner. */
   open(input: OpenAgentInput): AgentResources {
+    this.work.assertAttached();
     const resources = this.ctx.runEngine.open({
       ...input,
       agentId: this.agentId,

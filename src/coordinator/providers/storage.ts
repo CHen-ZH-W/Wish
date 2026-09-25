@@ -1,11 +1,8 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
-import type { ContextProviderRegistration } from "../../context/service.js";
-import type { PermissionPolicyRegistration } from "../../permissions/index.js";
 import type { StorageBackendLease } from "../../storage/backend.js";
-import { CoordinatorContextProvider } from "../context.js";
-import { createCoordinatorPermissionPolicy } from "../policy.js";
 import { CoordinatorRuntime } from "../runtime.js";
 import { CoordinatorService } from "../service.js";
 import { DomainCoordinatorStateStore } from "../store.js";
@@ -26,18 +23,12 @@ export const Config: s<Config> = s.object({
 
 /** Durable Coordinator Provider; Subagents remains a separately injected owner. */
 export class StorageCoordinatorService extends CoordinatorService {
-  static readonly inject = [
-    "storageBackend",
-    "permissions",
-    "contextEngine",
-  ];
+  static readonly inject = ["storageBackend"];
   static readonly Config = Config;
 
   private readonly lease: StorageBackendLease;
   private readonly backend: CoordinatorRuntime;
-  private readonly contextRegistration: ContextProviderRegistration;
-  private readonly policyRegistration: PermissionPolicyRegistration;
-  private closing: Promise<void> | undefined;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
@@ -47,18 +38,7 @@ export class StorageCoordinatorService extends CoordinatorService {
       this.backend = new CoordinatorRuntime({
         store: new DomainCoordinatorStateStore({ storage: this.lease, backendId }),
       });
-      this.policyRegistration = ctx.permissions.registerPolicy(
-        createCoordinatorPermissionPolicy(this, () => this.modeControls()),
-      );
-      try {
-        this.contextRegistration = ctx.contextEngine.registerProvider(
-          new CoordinatorContextProvider(this),
-        );
-      } catch (error: unknown) {
-        this.policyRegistration.unregister();
-        throw error;
-      }
-      ctx.effect(() => () => this.close(), "coordinator.close");
+      this.work = new PluginWorkOwner(ctx, { code: "coordinator", codeReload: true, close: () => this.closeOwnedResources() });
     } catch (error: unknown) {
       this.lease.release();
       throw error;
@@ -66,27 +46,25 @@ export class StorageCoordinatorService extends CoordinatorService {
   }
 
   get(request: CoordinatorRunRequest): Promise<CoordinatorState | undefined> {
-    return this.backend.get(request);
+    return this.work.run(() => this.backend.get(request));
   }
 
   enter(request: EnterCoordinatorRequest): Promise<CoordinatorState> {
     // Availability is admission, not ownership of the transport's lifetime.
     // Existing mode state/policy must survive a child Provider replacement.
     if (!this.ctx.get("subagents")) throw new Error("Coordinator requires the Subagents capability");
-    return this.backend.enter(request);
+    return this.work.run(() => this.backend.enter(request));
   }
 
   exit(request: ExitCoordinatorRequest): Promise<CoordinatorState> {
-    return this.backend.exit(request);
+    return this.work.run(() => this.backend.exit(request));
   }
 
   close(): Promise<void> {
-    return this.closing ??= this.closeOwnedResources();
+    return this.work.close();
   }
 
   private async closeOwnedResources(): Promise<void> {
-    this.contextRegistration.unregister();
-    this.policyRegistration.unregister();
     try {
       await this.backend.close();
     } finally {

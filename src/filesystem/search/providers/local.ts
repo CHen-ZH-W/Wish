@@ -4,6 +4,7 @@ import { basename, join, relative, sep } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { PluginWorkOwner } from "../../../boot/plugin-control/work-owner.js";
 
 import { FilesystemError } from "../../errors.js";
 import type { Filesystem } from "../../types.js";
@@ -239,15 +240,17 @@ export class LocalFilesystemSearch extends FilesystemSearchService {
 
   readonly policy: FilesystemSearchPolicy;
   private readonly backend: LocalFilesystemSearchBackend;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
     this.backend = new LocalFilesystemSearchBackend(ctx.filesystem, config);
     this.policy = this.backend.policy;
+    this.work = new PluginWorkOwner(ctx, { code: "filesystem_search", codeReload: true });
   }
 
   search(request: SearchTextRequest): Promise<SearchTextResult> {
-    return this.backend.search(request);
+    return this.work.run(() => this.backend.search(request));
   }
 }
 

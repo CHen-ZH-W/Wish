@@ -10,5 +10,5 @@ export default { name: "context-session-feature", inject: ["application", "conte
         textEn: "This is a bounded in-process projection summary: Provider, message order, available tools, and budget. It does not recreate a request or include instruction bodies; unknown means no reliable token count.\n\n" + (observations.length ? JSON.stringify(observations, null, 2) : "No projection record for this session in this process."), token: {}, actions: [] };
     },
     async act() { throw new Error("Context observation is read-only"); },
-  });
+  }, { codeReload: true });
 } };

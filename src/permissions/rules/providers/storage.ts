@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
@@ -28,7 +29,7 @@ export class StorageApprovalRules extends ApprovalRulesService {
   readonly version: string;
   private readonly lease: StorageBackendLease;
   private readonly store: DomainApprovalRuleStore;
-  private closing: Promise<void> | undefined;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
@@ -44,7 +45,7 @@ export class StorageApprovalRules extends ApprovalRulesService {
         ...(config.maxRules === undefined ? {} : { maxRules: config.maxRules }),
       });
       this.version = this.store.version;
-      ctx.effect(() => () => this.close(), "approval-rules.close");
+      this.work = new PluginWorkOwner(ctx, { code: "approval_rules", codeReload: true, close: () => this.closeOwnedResources() });
     } catch (error: unknown) {
       lease.release();
       throw error;
@@ -52,28 +53,28 @@ export class StorageApprovalRules extends ApprovalRulesService {
   }
 
   find(request: ApprovalRuleMatchRequest): Promise<ApprovalRuleRecord | undefined> {
-    return this.store.find(request);
+    return this.work.run(() => this.store.find(request));
   }
 
   remember(request: RememberApprovalRuleRequest): Promise<ApprovalRuleRecord> {
-    return this.store.remember(request);
+    return this.work.run(() => this.store.remember(request));
   }
 
   list(signal?: AbortSignal): Promise<readonly ApprovalRuleRecord[]> {
-    return this.store.list(signal);
+    return this.work.run(() => this.store.list(signal));
   }
 
   revoke(id: string, signal?: AbortSignal): Promise<boolean> {
-    return this.store.revoke(id, signal);
+    return this.work.run(() => this.store.revoke(id, signal));
   }
 
   clearRun(runId: string): boolean {
+    this.work.assertOpen();
     return this.store.clearRun(runId);
   }
 
   close(): Promise<void> {
-    this.closing ??= this.closeOwnedResources();
-    return this.closing;
+    return this.work.close();
   }
 
   private async closeOwnedResources(): Promise<void> {

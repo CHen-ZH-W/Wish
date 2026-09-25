@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 
 /** Cross-call filesystem guidance; parameter semantics remain in Tool schemas. */
@@ -5,6 +6,7 @@ export const FilesystemToolGuidance = {
   name: "filesystem-tool-guidance",
   inject: ["systemPrompt"],
   apply(ctx: Context): void {
+    new PluginWorkOwner(ctx, { code: "filesystem_guidance", codeReload: true });
     ctx.systemPrompt.register({
       id: "filesystem.inspect",
       order: 100,

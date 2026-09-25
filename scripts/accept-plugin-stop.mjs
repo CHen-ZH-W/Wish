@@ -14,9 +14,11 @@ import FileStorage from "../dist/storage/providers/file/plugin.js";
 import Runtime from "../dist/composition/runtime-service.js";
 import Subagents from "../dist/subagents/runtime.js";
 import WorkflowSchedulers from "../dist/workflow/providers/schedulers.js";
+import WorkflowGraphScheduler from "../dist/workflow/providers/graph-scheduler.js";
 import WorkflowContinuations from "../dist/workflow/providers/continuations.js";
 import { WorkflowRuntime } from "../dist/workflow/runtime.js";
 import { MemoryWorkflowStore } from "../dist/workflow/store.js";
+import { PluginWorkOwner } from "../dist/boot/plugin-control/work-owner.js";
 
 const idle = () => ({ disposition: "direct", code: "owner_idle" });
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
@@ -35,6 +37,14 @@ function memoryHost(root, hooks = {}) {
       current: () => !hooks.conflict?.() && entries.every((entry, i) => root.loader.resolve(entry.id) === entry && JSON.stringify(entry.options) === before[i]),
       async apply() { await hooks.apply?.(); for (const entry of entries) await entry.update({ disabled: true }); await root.loader.await(); },
       verify: async () => hooks.verify ? hooks.verify() : entries.every(entry => entry.disabled),
+      async restore() {
+        await hooks.restore?.();
+        for (const entry of entries) await entry.update({ disabled: true });
+        await root.loader.await();
+        for (const entry of entries) await entry.update({ disabled: JSON.parse(before[entries.indexOf(entry)]).disabled ?? false });
+        await root.loader.await();
+      },
+      verifyRestored: async () => hooks.verifyRestored ? hooks.verifyRestored() : entries.every(entry => !entry.disabled && entry.fiber?.state === 2),
       release() { reserved = false; hooks.release?.(); },
     };
   } };
@@ -51,7 +61,7 @@ async function fixture(run, options = {}) {
       ...(options.noHost ? {} : { host: memoryHost(root, options.hooks) }), timeoutMs: options.timeoutMs ?? 1000,
     });
     root.provide("launch", { cwd: directory, homeDirectory: directory, fail() {} });
-    Object.assign(root.loader.builtins, { storage: StorageHub, file: FileStorage, runtime: Runtime, subagents: Subagents, schedulers: WorkflowSchedulers });
+    Object.assign(root.loader.builtins, { storage: StorageHub, file: FileStorage, runtime: Runtime, subagents: Subagents, schedulers: WorkflowSchedulers, graphScheduler: WorkflowGraphScheduler });
     await run({ root, inspection, lifecycle, stop, directory });
   } finally { await root.fiber.dispose(); await rm(directory, { recursive: true, force: true }); }
 }
@@ -71,6 +81,35 @@ function reporter(root, name, options = {}) {
   } };
   return state;
 }
+
+test("a draining Consumer can finish calls to its Provider before the Provider admission closes", async () => {
+  const continueWork = deferred(); let consumer, provider, cleaned = [];
+  await fixture(async ({ root, inspection, stop }) => {
+    root.loader.builtins.provider = { apply(ctx) {
+      const owner = new PluginWorkOwner(ctx, { code: "provider", close: () => { cleaned.push("provider"); } });
+      provider = { request: () => owner.run(() => "provider result") };
+      ctx.provide("sample", provider);
+    } };
+    root.loader.builtins.consumer = { inject: ["sample"], apply(ctx) {
+      const owner = new PluginWorkOwner(ctx, { code: "consumer", close: () => { cleaned.push("consumer"); } });
+      consumer = () => owner.run(async () => { await continueWork.promise; return ctx.sample.request(); });
+    } };
+    await root.loader.create({ id: "provider", name: "cordis:provider" });
+    await root.loader.create({ id: "consumer", name: "cordis:consumer" });
+    const work = consumer();
+    const stopping = stop.disable(select(inspection, "provider"));
+    try {
+      for (let i = 0; i < 10 && stop.current()?.state.phase !== "stopping"; i++) await nextTick();
+      assert.equal(stop.current()?.state.phase, "stopping");
+      assert.deepEqual(cleaned, []);
+      assert.equal(await provider.request(), "provider result");
+    } finally { continueWork.resolve(); }
+    assert.equal(await work, "provider result");
+    assert.equal((await stopping).state.phase, "succeeded");
+    assert.deepEqual(cleaned, ["consumer", "provider"]);
+    await assert.rejects(provider.request(), /provider_closed/);
+  });
+});
 
 test("unconfigured Root rejects execution without changing runtime", async () => {
   await fixture(async ({ root, inspection, stop }) => {
@@ -97,6 +136,8 @@ test("supported owner fences stale references, confirms cleanup, then really unl
     } finally { finish.resolve(); }
     const receipt = await operation;
     assert.deepEqual(receipt.state, { phase: "succeeded", runtime: "confirmed", cleanup: "confirmed", persistence: "not-requested" });
+    assert.deepEqual({ kind: root.pluginChanges.snapshot().last.kind, source: root.pluginChanges.snapshot().last.source,
+      phase: root.pluginChanges.snapshot().last.phase }, { kind: "disable", source: "standalone-stop", phase: "succeeded" });
     assert.equal(state.closes, 1); assert.equal(state.releases, 0);
     assert.throws(() => state.request(), /admission_closed/);
     assert.equal(root.loader.resolve("worker").fiber, undefined);
@@ -268,17 +309,18 @@ test("cleanup failure hides diagnostics and does not equate an unloaded Fiber wi
   });
 });
 
-test("failed verification after real unload reports partial failure, not success", async () => {
+test("failed verification after real unload rebuilds and verifies the committed generation", async () => {
   await fixture(async ({ root, inspection, stop }) => {
     reporter(root, "worker"); await root.loader.create({ id: "worker", name: "cordis:worker" });
+    const oldFiber = root.loader.resolve("worker").fiber;
     const result = await stop.disable(select(inspection, "worker"));
-    assert.equal(root.loader.resolve("worker").fiber, undefined);
-    assert.equal(result.state.code, "stop_verification_failed"); assert.equal(result.state.cleanup, "confirmed");
-    assert.equal(result.state.runtime, "unknown");
+    assert.notEqual(root.loader.resolve("worker").fiber, oldFiber);
+    assert.equal(root.loader.resolve("worker").fiber.state, 2);
+    assert.deepEqual(result.state, { phase: "rejected", code: "stop_change_rolled_back", changed: false });
   }, { hooks: { verify: () => false } });
 });
 
-test("real Runtime rejects active Runs without abort, then retires idle generations and old references", async () => {
+test("real Runtime fences admission, drains an active generation, then retires old references", async () => {
   await fixture(async ({ root, inspection, stop }) => {
     const started = deferred(), finish = deferred(); let released = 0;
     root.provide("sessions", { acquire() { return { manager: {}, release() {} }; } });
@@ -293,20 +335,16 @@ test("real Runtime rejects active Runs without abort, then retires idle generati
     const input = { scope: "test-session", payload: { text: "hello" } };
     const selection = select(inspection, "runtime");
     const running = resources.runtime.startRun(definition, input);
-    try {
-      await started.promise;
-      assert.equal((await stop.disable(selection)).state.code, "stop_lifecycle_blocked");
-      assert.equal(resources.generation.snapshot().activeRuns[0].abortRequested, false);
-      assert.equal(released, 0);
-    } finally { finish.resolve(); await running.completion; }
-    const resumeOne = resources.generation.suspendAdmission(), resumeTwo = resources.generation.suspendAdmission();
-    assert.throws(() => resources.runtime.startRun(definition, input), { code: "run_generation_suspended" });
-    resumeOne(); assert.throws(() => resources.runtime.startRun(definition, input), { code: "run_generation_suspended" });
-    resumeTwo(); await resources.runtime.startRun(definition, input).completion;
-    assert.equal((await stop.disable(selection)).state.phase, "succeeded");
-    assert.equal(released, 2, "each executed Step releases its own resources");
+    await started.promise;
+    const stopping = stop.disable(selection);
+    for (let i = 0; i < 100 && service.suspended !== true; i++) await nextTick();
+    assert.equal(service.suspended, true);
     assert.throws(() => service.open({ agentId: "new" }), /admission is closed/);
-    resumeOne(); resumeTwo();
+    assert.equal(released, 0);
+    finish.resolve(); await running.completion;
+    assert.equal((await stopping).state.phase, "succeeded");
+    assert.equal(released, 1, "the admitted Step releases its resources before retirement");
+    assert.throws(() => service.open({ agentId: "new" }), /admission is closed/);
     assert.throws(() => resources.runtime.startRun(definition, input), { code: "run_generation_retired" });
   });
 });
@@ -335,7 +373,7 @@ test("real Storage drain denies new leases, awaits admitted work, closes old fac
   });
 });
 
-test("real Subagents blocks an in-flight launch without stopping tmux, then closes resources and stale API", async () => {
+test("real Subagents drains an in-flight launch without stopping tmux, then closes resources and stale API", async () => {
   await fixture(async ({ root, inspection, stop, directory }) => {
     const started = deferred(), finish = deferred(); let stops = 0;
     root.provide("subagentExecution", {
@@ -348,14 +386,22 @@ test("real Subagents blocks an in-flight launch without stopping tmux, then clos
     await root.loader.create({ id: "file", name: "cordis:file" });
     await root.loader.create({ id: "children", name: "cordis:subagents" });
     const service = root.get("subagents"), request = { parentAgentId: "a", parentSessionId: "s", parentRunId: "r", workspaceRoot: directory, task: "inspect" };
-    const spawning = service.spawn(request), selection = select(inspection, "children");
+    const spawning = service.spawn(request);
+    let settled = false;
+    const operation = stop.disable(select(inspection, "children", "file")).finally(() => { settled = true; });
     try {
       await started.promise;
-      assert.equal((await stop.disable(selection)).state.code, "stop_lifecycle_blocked");
+      for (let i = 0; i < 1000 && (service.suspended !== true || stop.current().state.phase !== "stopping"); i++) await nextTick();
+      assert.equal(service.suspended, true);
+      assert.equal(stop.current().state.phase, "stopping");
+      assert.throws(() => service.spawn(request), { code: "subagent_closed" });
+      await nextTick();
+      assert.equal(settled, false, "disable must wait for the admitted launch");
       assert.equal(stops, 0);
-    } finally { finish.resolve(); await spawning; }
+    } finally { finish.resolve(); }
+    await spawning;
     // Batch uses observed dependency order: child lease releases before File backend closes.
-    const result = await stop.disable(select(inspection, "children", "file"));
+    const result = await operation;
     assert.equal(result.state.phase, "succeeded", JSON.stringify(result.state));
     assert.equal(stops, 0);
     assert.throws(() => service.spawn(request), { code: "subagent_closed" });
@@ -364,7 +410,7 @@ test("real Subagents blocks an in-flight launch without stopping tmux, then clos
   });
 });
 
-test("real Scheduler keeps a Plan-waiting start visible, then closes graph and child admission", async () => {
+test("graph Scheduler drains a Plan-waiting start without closing child admission", async () => {
   await fixture(async ({ root, inspection, stop }) => {
     const reading = deferred(), finish = deferred();
     root.provide("workflow", { state: new WorkflowRuntime(new MemoryWorkflowStore()) });
@@ -373,19 +419,25 @@ test("real Scheduler keeps a Plan-waiting start visible, then closes graph and c
     root.provide("plan", { async get() { reading.resolve(); await finish.promise; return undefined; } });
     for (const key of ["tasks", "permissions", "workspace", "agents"]) root.provide(key, {});
     await root.loader.create({ id: "scheduler", name: "cordis:schedulers" });
-    const { children, graphs } = root.get("workflowScheduler");
+    await root.loader.create({ id: "graph-scheduler", name: "cordis:graphScheduler" });
+    const { children } = root.get("workflowScheduler"), { graphs } = root.get("workflowGraphScheduler");
     const starting = graphs.start({ owner: { parentSessionId: "s" } });
     const rejected = assert.rejects(starting, /approved Plan/);
+    let settled = false;
+    const operation = stop.disable(select(inspection, "graph-scheduler")).finally(() => { settled = true; });
     try {
       await reading.promise;
-      assert.equal((await stop.disable(select(inspection, "scheduler"))).state.code, "stop_lifecycle_blocked");
+      for (let i = 0; i < 1000 && (graphs.admissionFences.size === 0 || stop.current().state.phase !== "stopping"); i++) await nextTick();
+      assert.equal(graphs.admissionFences.size, 1);
+      assert.equal(children.admissionFences.size, 0, "accepted graph starts retain child submission until drained");
       assert.equal(graphs.lifecycleSnapshot().activeStarts, 1);
+      await assert.rejects(graphs.start({}), /admission is closed/);
+      await nextTick();
+      assert.equal(settled, false, "disable must wait for the admitted Plan lookup");
     } finally { finish.resolve(); await rejected; }
-    assert.equal((await stop.disable(select(inspection, "scheduler"))).state.phase, "succeeded");
+    assert.equal((await operation).state.phase, "succeeded");
     await assert.rejects(graphs.start({}), /admission is closed/);
-    await assert.rejects(children.submit({}), /admission is closed/);
-    await assert.rejects(children.retry("r", "s", "retry"), /admission is closed/);
-    await assert.rejects(children.cancel("r", "cancel"), /admission is closed/);
+    assert.notEqual(root.get("workflowScheduler"), undefined);
     await children.tick(); assert.equal(children.lifecycleSnapshot instanceof Function, true);
   });
 });

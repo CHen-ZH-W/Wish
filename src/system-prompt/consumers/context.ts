@@ -1,4 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
+import { registerManagedContextProvider } from "../../context/managed.js";
 
 import type { ContextInput } from "../../context/types.js";
 import type { ContextItem, ContextProvider } from "../../core/context/projector.js";
@@ -42,7 +43,7 @@ export const SystemPromptContext = {
   inject: ["systemPrompt", "contextEngine"],
   apply(ctx: Context): void {
     const provider = new SystemPromptContextProvider(ctx.systemPrompt);
-    ctx.contextEngine.registerProvider(provider);
+    registerManagedContextProvider(ctx, provider);
   },
 };
 

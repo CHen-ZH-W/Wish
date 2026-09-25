@@ -139,6 +139,8 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
     assert.equal(root.contextEngine.reservedOutputTokens, 384);
     assert.equal(disposals, 1);
     assert.equal(generations.length, 2);
+    assert.throws(() => firstContextEngine.open({}), /context_engine_closed/);
+    await assert.rejects(context.projector.project({}), /context_engine_closed/);
 
     const firstCompaction = root.compaction;
     await compactionProvider.update({
@@ -151,6 +153,8 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
     assert.equal(root.compaction.summaryMaxOutputTokens, 192);
     assert.equal(disposals, 2);
     assert.equal(generations.length, 3);
+    assert.throws(() => firstCompaction.open({}), /compaction_closed/);
+    await assert.rejects(compactor.compact({}), /compaction_closed/);
 
     assert.throws(
       () => contextProvider.update({ reservedOutputTokens: -1 }),
@@ -200,6 +204,7 @@ test("Loader updates and disables ContextEngine and Compaction by stable id", as
       configurationFile,
     });
     assert.equal(await booted.completion, 0);
+    const stableApplication = booted.context.loader.resolve("include:application").fiber;
 
     const contextId = "include:context-engine";
     const contextEntry = booted.context.loader.resolve(contextId);
@@ -249,13 +254,11 @@ test("Loader updates and disables ContextEngine and Compaction by stable id", as
     assert.equal(contextEntry.disabled, true);
     assert.equal(booted.surfaceContext.get("contextEngine"), undefined);
     assert.equal(
-      booted.context.loader.resolve("include:application").fiber.state,
+      booted.context.loader.resolve("include:agent-loop").fiber.state,
       fiberState.pending,
     );
-    assert.deepEqual(
-      booted.context.loader.resolve("include:application").fiber.getEffects(),
-      [],
-    );
+    assert.equal(booted.context.loader.resolve("include:application").fiber, stableApplication);
+    assert.equal(stableApplication.state, fiberState.active);
 
     await booted.context.loader.update(contextId, { disabled: false });
     assert.equal(contextEntry.disabled, false);
@@ -273,9 +276,11 @@ test("Loader updates and disables ContextEngine and Compaction by stable id", as
     assert.equal(compactionEntry.disabled, true);
     assert.equal(booted.surfaceContext.get("compaction"), undefined);
     assert.equal(
-      booted.context.loader.resolve("include:application").fiber.state,
+      booted.context.loader.resolve("include:agent-loop").fiber.state,
       fiberState.pending,
     );
+    assert.equal(booted.context.loader.resolve("include:application").fiber, stableApplication);
+    assert.equal(stableApplication.state, fiberState.active);
     await booted.context.loader.update(compactionId, { disabled: false });
     assert.equal(compactionEntry.disabled, false);
     assert.equal(booted.surfaceContext.get("compaction").keepRecentTokens, 768);

@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -18,14 +19,14 @@ import {
 import {
   ModelAdapterRegistry,
   type ModelAdapterRegistration,
-} from "./registry.js";
+} from "./adapter-registry.js";
 import {
   createDefaultModelPricingResolver,
   type ModelPricingPolicy,
   type ModelPricingPolicyRegistration,
 } from "./pricing.js";
 import { canonicalModelSelection } from "./selection.js";
-import { DomainSessionReasoningStore, SessionReasoningSelections, type SessionReasoningStore } from "./session-reasoning.js";
+import { LeasedSessionReasoningStore, SessionReasoningSelections, type SessionReasoningStore } from "./session-reasoning.js";
 import type {
   ModelAdapterFactory,
   ModelEnvironment,
@@ -39,7 +40,6 @@ import {
 import type { SettingsScope } from "../settings/types.js";
 import type {} from "../settings/service.js";
 import type {} from "../storage/binding.js";
-import type { StorageBackendLease } from "../storage/backend.js";
 
 /** Loader-owned Models source and selection settings. */
 export interface Config {
@@ -87,6 +87,8 @@ export class Models extends Service {
   readonly registry = new ModelAdapterRegistry();
   readonly pricing = createDefaultModelPricingResolver();
   readonly usageEstimator = new TokenizerUsageEstimator();
+  private readonly owner: Context;
+  private readonly work: PluginWorkOwner;
   private selection: {
     readonly signature: string;
     readonly available: ReadonlySet<string>;
@@ -94,10 +96,15 @@ export class Models extends Service {
     readonly scope: SettingsScope;
   } | undefined;
   private reasoningStore: SessionReasoningStore | undefined;
-  private reasoningLease: StorageBackendLease | undefined;
 
   constructor(ctx: Context, private readonly config: Config = {}) {
     super(ctx, "models");
+    this.owner = ctx;
+    this.work = new PluginWorkOwner(ctx, {
+      code: "models",
+      codeReload: true,
+      close: () => { this.reasoningStore = undefined; },
+    });
   }
 
   /** Register an Adapter for exactly the lifetime of the calling plugin fiber. */
@@ -105,6 +112,7 @@ export class Models extends Service {
     protocol: string,
     factory: ModelAdapterFactory,
   ): ModelAdapterRegistration {
+    this.work.assertAttached();
     const registration = this.registry.register(protocol, factory);
     try {
       this.ctx.effect(() => () => {
@@ -119,6 +127,7 @@ export class Models extends Service {
 
   /** Register a Provider Pricing policy for exactly the calling plugin fiber lifetime. */
   registerPricing(policy: ModelPricingPolicy): ModelPricingPolicyRegistration {
+    this.work.assertAttached();
     const registration = this.pricing.register(policy);
     try {
       this.ctx.effect(() => () => {
@@ -133,42 +142,44 @@ export class Models extends Service {
 
   /** Resolve public Models configuration from service defaults plus one surface override. */
   async load(input: LoadModelsInput): Promise<ModelsConfiguration> {
-    const configurationJson = input.configurationJson ??
-      this.config.configurationJson;
-    const model = input.model ?? this.config.model;
-    const fallbackModels = input.fallbackModels ?? this.config.fallbackModels;
-    const maxRetries = input.maxRetries ?? this.config.maxRetries;
-    const environment = selectionEnvironment({
-      ...(configurationJson === undefined ? {} : { configurationJson }),
-      ...(model === undefined ? {} : { model }),
-      ...(fallbackModels === undefined ? {} : { fallbackModels }),
-      ...(maxRetries === undefined ? {} : { maxRetries }),
-    });
-    const configuredPath = input.configurationPath ?? this.config.configurationPath;
-    const configurationPath = configuredPath === undefined
-      ? undefined
-      : resolve(this.ctx.launch.cwd, configuredPath);
-    const defaultPath = join(resolve(input.dataDirectory), "models.json");
-    const availableProtocols = this.registry.protocols();
+    return this.work.runAttached(async () => {
+      const configurationJson = input.configurationJson ??
+        this.config.configurationJson;
+      const model = input.model ?? this.config.model;
+      const fallbackModels = input.fallbackModels ?? this.config.fallbackModels;
+      const maxRetries = input.maxRetries ?? this.config.maxRetries;
+      const environment = selectionEnvironment({
+        ...(configurationJson === undefined ? {} : { configurationJson }),
+        ...(model === undefined ? {} : { model }),
+        ...(fallbackModels === undefined ? {} : { fallbackModels }),
+        ...(maxRetries === undefined ? {} : { maxRetries }),
+      });
+      const configuredPath = input.configurationPath ?? this.config.configurationPath;
+      const configurationPath = configuredPath === undefined
+        ? undefined
+        : resolve(this.ctx.launch.cwd, configuredPath);
+      const defaultPath = join(resolve(input.dataDirectory), "models.json");
+      const availableProtocols = this.registry.protocols();
 
-    if (configurationPath !== undefined) {
-      return loadModelsConfigurationFile({
-        path: configurationPath,
-        environment,
-        availableProtocols,
-      });
-    }
-    if (environment.WISH_MODELS_JSON !== undefined) {
+      if (configurationPath !== undefined) {
+        return loadModelsConfigurationFile({
+          path: configurationPath,
+          environment,
+          availableProtocols,
+        });
+      }
+      if (environment.WISH_MODELS_JSON !== undefined) {
+        return loadModelsConfiguration({ environment, availableProtocols });
+      }
+      if (await fileExists(defaultPath)) {
+        return loadModelsConfigurationFile({
+          path: defaultPath,
+          environment,
+          availableProtocols,
+        });
+      }
       return loadModelsConfiguration({ environment, availableProtocols });
-    }
-    if (await fileExists(defaultPath)) {
-      return loadModelsConfigurationFile({
-        path: defaultPath,
-        environment,
-        availableProtocols,
-      });
-    }
-    return loadModelsConfiguration({ environment, availableProtocols });
+    });
   }
 
   /** Build one Application-facing graph while keeping construction in Models. */
@@ -176,6 +187,7 @@ export class Models extends Service {
     configuration: ModelsConfiguration,
     input: OpenModelsInput = {},
   ): ConfiguredModelResources {
+    this.work.assertAttached();
     const preferences = this.modelPreferences(configuration);
     const credentials = this.ctx.get("credentials");
     const resources = createConfiguredModelResources({
@@ -200,12 +212,12 @@ export class Models extends Service {
     const backend = this.ctx.get("storageBackend");
     if (backend === undefined) return resources;
     if (this.reasoningStore === undefined) {
-      const lease = backend.acquire(backend.id, { kv: { list: false } });
-      try {
-        this.reasoningStore = new DomainSessionReasoningStore(lease, backend.id);
-        this.reasoningLease = lease;
-        this.ctx.effect(() => () => { this.reasoningLease?.release(); this.reasoningLease = undefined; }, "Models Session reasoning storage");
-      } catch (error) { lease.release(); throw error; }
+      this.reasoningStore = new LeasedSessionReasoningStore(() => {
+        this.work.assertAttached();
+        const current = this.ctx.get("storageBackend");
+        if (current === undefined) throw new Error("Session reasoning storage is unavailable");
+        return { storage: current, backendId: current.id };
+      });
     }
     return Object.freeze({ ...resources, sessionReasoning: new SessionReasoningSelections(resources.configuredModel, this.reasoningStore) });
   }
@@ -218,8 +230,8 @@ export class Models extends Service {
     readonly contextWindowTokens: (reference: import("../core/model/model.js").ModelRef, configured: number | undefined) => number | undefined;
     readonly maxOutputTokens: (reference: import("../core/model/model.js").ModelRef, configuredDefault: number | undefined) => number | undefined;
   } | undefined {
-    const settings = this.ctx.get("settings");
-    if (this.ctx.launch.surface !== "webui" || settings === undefined) return undefined;
+    const settings = this.owner.get("settings");
+    if (this.owner.launch.surface !== "webui" || settings === undefined) return undefined;
     const options = Object.freeze(configuration.providers.flatMap(provider => provider.models.map(model => {
       const reference = formatModelReference({ provider: provider.id, model: model.id });
       const resolved = resolveConfiguredModel(configuration, reference);
@@ -248,7 +260,7 @@ export class Models extends Service {
         signature,
         available,
         deploymentDefault,
-        scope: settings.register(this.ctx, {
+        scope: settings.register(this.owner, {
           namespace: "models",
           title: "默认模型",
           applies: "next-request",

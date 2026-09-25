@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { createWishWebUiHandler } from "./server.js";
 import type {} from "./host/management.js";
 import { localDirectoryBrowser } from "../../workspace/directory-picker/local.js";
@@ -46,7 +47,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   if (ctx.launch.surface !== "webui") {
     throw new Error("WebUI surface was mounted for a non-WebUI process");
   }
-
+  let closeSurface: () => Promise<void> = async () => {};
+  const work = new PluginWorkOwner(ctx, {
+    code: "webui_surface",
+    codeReload: true,
+    replacement: "generation",
+    close: () => closeSurface(),
+  });
   const configuration = await loadWishWebUiConfiguration({
     cwd: ctx.launch.cwd,
     ...(config.host === undefined ? {} : { host: config.host }),
@@ -68,9 +75,14 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const handler = await createWishWebUiHandler({ application, approvals, approvalRules: ctx.approvalRules,
         workspaceRoot: configuration.workspaceRoot, directoryBrowser: localDirectoryBrowser, onRunGenerationDrainTimeout: error => ctx.launch.fail(error) });
       let registration;
-      try { registration = managementHost.register(handler.handle); }
+      try { registration = managementHost.register((request, response) => work.run(() => handler.handle(request, response))); }
       catch (error) { await handler.close(); throw error; }
-      return async () => { registration.release(); await handler.close(); };
+      let closing: Promise<void> | undefined;
+      closeSurface = () => closing ??= (async () => {
+        registration.release();
+        await handler.close();
+      })();
+      return () => closeSurface();
     }, "WebUI business handler");
     return;
   }
@@ -115,7 +127,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       }
     });
     started = generation.server;
-    return () => releaseSurface(ctx.fiber, generation);
+    let closing: Promise<void> | undefined;
+    closeSurface = () => closing ??= releaseSurface(ctx.fiber, generation);
+    return () => closeSurface();
   }, "WebUI process surface");
 
   if (started?.server.listening === true) {

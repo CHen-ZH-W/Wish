@@ -10,8 +10,15 @@ export abstract class WorkflowService extends Service {
 export abstract class WorkflowSchedulerService extends Service {
   constructor(ctx: Context) { super(ctx, "workflowScheduler"); }
   abstract readonly children: ChildWorkflowScheduler;
+}
+export abstract class WorkflowGraphSchedulerService extends Service {
+  constructor(ctx: Context) { super(ctx, "workflowGraphScheduler"); }
   abstract readonly graphs: TaskGraphScheduler;
 }
 declare module "@deepseek-ai/cordis" {
-  interface Context { workflow: WorkflowService; workflowScheduler: WorkflowSchedulerService }
+  interface Context {
+    workflow: WorkflowService;
+    workflowScheduler: WorkflowSchedulerService;
+    workflowGraphScheduler: WorkflowGraphSchedulerService;
+  }
 }

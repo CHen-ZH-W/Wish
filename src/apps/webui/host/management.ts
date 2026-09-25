@@ -101,6 +101,13 @@ export async function startWebManagementHost(options: {
         json(response, 200, { token, instanceId: options.control.snapshot().inspection.instanceId, businessAvailable: !!handler }); return;
       }
       if (method === "GET" && path === "/api/management/plugins") { json(response, 200, options.control.snapshot()); return; }
+      if (method === "GET" && path.startsWith("/api/management/plugins/operations/")) {
+        const operationId = decodeURIComponent(path.slice("/api/management/plugins/operations/".length));
+        if (!operationId || operationId.includes("/")) throw new ManagementHttpError(400, "management_invalid_request");
+        const operation = options.control.operation(operationId);
+        if (!operation) throw new ManagementHttpError(404, "management_operation_missing");
+        json(response, 200, { operation, receipt: options.control.receipt(operation.requestId) ?? null }); return;
+      }
       if (method === "GET" && path === "/api/management/settings") { json(response, 200, options.settings.describe()); return; }
       if (method === "GET" && path === "/api/management/events") {
         if (clients.size >= 16) throw new ManagementHttpError(429, "management_stream_limit");
@@ -115,7 +122,12 @@ export async function startWebManagementHost(options: {
         json(response, 200, await options.lifecycle.collect(selection)); return;
       }
       if (method === "POST" && path === "/api/management/plugins/change") {
-        json(response, 200, await options.control.change(await body(request) as never)); return;
+        json(response, 202, { operation: await options.control.submit(await body(request) as never) }); return;
+      }
+      if (method === "POST" && path === "/api/management/plugins/cancel") {
+        const value = await body(request); only(value, ["operationId"]);
+        if (typeof value.operationId !== "string") throw new ManagementHttpError(400, "management_invalid_request");
+        json(response, 200, { cancelled: options.control.cancel(value.operationId) }); return;
       }
       if (method === "POST" && path === "/api/management/plugins/recover-disabled") {
         const value = await body(request); only(value, ["revision"]);

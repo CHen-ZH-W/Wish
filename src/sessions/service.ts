@@ -1,3 +1,4 @@
+import { registerPluginOwner } from "../boot/plugin-control/owner-registry.js";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -48,6 +49,8 @@ export class Sessions extends Service {
   private leases = 0;
   private state: "open" | "retiring" | "closed" = "open";
   private releaseDrain: (() => void) | undefined;
+  private suspended = false;
+  private closing: Promise<void> | undefined;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, "sessions");
@@ -56,7 +59,22 @@ export class Sessions extends Service {
     this.resources.set(this.dataDirectory, primary);
     this.manager = primary.public.manager;
     this.history = primary.public.history;
-    ctx.effect(() => async () => {
+    ctx.effect(() => () => this.close(), "sessions.close");
+    registerPluginOwner(ctx, {
+      replacement: "drain",
+      status: () => ({ disposition: this.closing ? "blocked" : this.leases > 0 ? "drain" : "direct",
+        code: this.closing ? "sessions_closed" : this.leases > 0 ? "sessions_leases_outstanding" : "sessions_idle",
+        counts: { leases: this.leases } }),
+      prepare: () => {
+        if (this.suspended || this.closing) throw new SessionPersistenceClosedError("sessions is unavailable");
+        this.suspended = true;
+        return { drained: Promise.resolve(), deactivate: () => this.close(), release: () => { if (!this.closing) this.suspended = false; } };
+      },
+    });
+  }
+
+  private close(): Promise<void> {
+    return this.closing ??= (async () => {
       this.state = "retiring";
       if (this.leases > 0) {
         await new Promise<void>((resolve) => {
@@ -71,7 +89,7 @@ export class Sessions extends Service {
         this.resources.clear();
         this.state = "closed";
       }
-    }, "sessions.close");
+    })();
   }
 
   /** Resolve a non-owning view within the current service generation. */
@@ -121,7 +139,7 @@ export class Sessions extends Service {
   }
 
   private assertOpen(): void {
-    if (this.state === "open") return;
+    if (this.state === "open" && !this.suspended) return;
     throw new SessionPersistenceClosedError(
       `Sessions service is ${this.state}`,
     );

@@ -56,6 +56,7 @@
     workflow: true
     workflowContinuations: true
     workflowScheduler: true
+    workflowGraphScheduler: true
     coordinator: true
     webSearch: true
     webFetch: true
@@ -175,7 +176,7 @@
 
     - id: skills-coordinator-controls
       name: 'cordis:skills-coordinator-controls'
-      disabled: !!js launch.environment.WISH_SKILLS_ENABLED === '0' || launch.environment.WISH_SKILLS_TOOLS_ENABLED === '0' || launch.environment.WISH_COORDINATOR_ENABLED === '0' || launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+      disabled: !!js launch.environment.WISH_SKILLS_ENABLED === '0' || launch.environment.WISH_SKILLS_TOOLS_ENABLED === '0' || launch.environment.WISH_COORDINATOR_ENABLED === '0'
 
     - id: skills-session-feature
       name: 'cordis:skills-session-feature'
@@ -210,7 +211,7 @@
 
     - id: memory-coordinator-controls
       name: 'cordis:memory-coordinator-controls'
-      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_COORDINATOR_ENABLED === '0' || launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_COORDINATOR_ENABLED === '0'
 
     - id: memory-session-feature
       name: 'cordis:memory-session-feature'
@@ -504,13 +505,19 @@
       config:
         backendId: file
 
+    - id: plan-mode-adapters
+      name: 'cordis:plan-mode-adapters'
+      disabled: !!js launch.environment.WISH_PLAN_ENABLED === '0'
+
     - id: coordinator-storage
       name: 'cordis:coordinator-storage'
-      disabled: !!js >-
-        launch.environment.WISH_COORDINATOR_ENABLED === '0' ||
-        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+      disabled: !!js launch.environment.WISH_COORDINATOR_ENABLED === '0'
       config:
         backendId: file
+
+    - id: coordinator-mode-adapters
+      name: 'cordis:coordinator-mode-adapters'
+      disabled: !!js launch.environment.WISH_COORDINATOR_ENABLED === '0'
 
     - id: tasks-storage
       name: 'cordis:tasks-storage'
@@ -532,8 +539,6 @@
       name: 'cordis:workflow-schedulers'
       disabled: !!js >-
         launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
-        launch.environment.WISH_TASKS_ENABLED === '0' ||
-        launch.environment.WISH_PLAN_ENABLED === '0' ||
         launch.environment.WISH_SUBAGENTS_ENABLED === '0'
       config:
         maxConcurrent: !!js >-
@@ -541,16 +546,30 @@
             ? undefined
             : Number(launch.environment.WISH_WORKFLOW_MAX_CONCURRENT)
 
+    - id: workflow-graph-scheduler
+      name: 'cordis:workflow-graph-scheduler'
+      disabled: !!js >-
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
     - id: workflow-plan-controls
       name: 'cordis:workflow-plan-controls'
       disabled: !!js launch.environment.WISH_WORKFLOW_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: tasks-plan-controls
+      name: 'cordis:tasks-plan-controls'
+      disabled: !!js >-
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_TASK_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_ENABLED === '0'
 
     - id: workflow-coordinator-controls
       name: 'cordis:workflow-coordinator-controls'
       disabled: !!js >-
         launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
-        launch.environment.WISH_COORDINATOR_ENABLED === '0' ||
-        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+        launch.environment.WISH_COORDINATOR_ENABLED === '0'
 
     - id: compaction
       name: 'cordis:compaction'
@@ -595,22 +614,23 @@
       name: 'cordis:subagent-tools'
       disabled: !!js >-
         launch.environment.WISH_SUBAGENT_TOOLS_ENABLED === '0' ||
-        launch.environment.WISH_SUBAGENTS_ENABLED === '0' ||
-        (launch.environment.WISH_WORKFLOW_ENABLED !== '0' &&
-         launch.environment.WISH_TASKS_ENABLED !== '0' &&
-         launch.environment.WISH_PLAN_ENABLED !== '0')
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
 
     - id: tool-workflow-subagents
       name: 'cordis:workflow-subagent-tools'
       disabled: !!js >-
         launch.environment.WISH_SUBAGENT_TOOLS_ENABLED === '0' ||
         launch.environment.WISH_SUBAGENTS_ENABLED === '0' ||
-        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
-        launch.environment.WISH_TASKS_ENABLED === '0' ||
-        launch.environment.WISH_PLAN_ENABLED === '0'
+        launch.environment.WISH_WORKFLOW_ENABLED === '0'
 
     - id: tool-tasks
       name: 'cordis:task-tools'
+      disabled: !!js >-
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_TASK_TOOLS_ENABLED === '0'
+
+    - id: tool-tasks-update
+      name: 'cordis:task-update-tool'
       disabled: !!js >-
         launch.environment.WISH_TASKS_ENABLED === '0' ||
         launch.environment.WISH_TASK_TOOLS_ENABLED === '0' ||
@@ -618,6 +638,19 @@
 
     - id: tool-workflow
       name: 'cordis:workflow-tools'
+      disabled: !!js >-
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_WORKFLOW_TOOLS_ENABLED === '0'
+
+    - id: tool-workflow-controls
+      name: 'cordis:workflow-control-tools'
+      disabled: !!js >-
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_WORKFLOW_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+
+    - id: tool-workflow-start
+      name: 'cordis:workflow-start-tool'
       disabled: !!js >-
         launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
         launch.environment.WISH_WORKFLOW_TOOLS_ENABLED === '0' ||
@@ -635,9 +668,7 @@
       name: 'cordis:coordinator-tools'
       disabled: !!js >-
         launch.environment.WISH_COORDINATOR_ENABLED === '0' ||
-        launch.environment.WISH_COORDINATOR_TOOLS_ENABLED === '0' ||
-        launch.environment.WISH_SUBAGENT_TOOLS_ENABLED === '0' ||
-        launch.environment.WISH_SUBAGENTS_ENABLED === '0'
+        launch.environment.WISH_COORDINATOR_TOOLS_ENABLED === '0'
 
     - id: tool-web-fetch
       name: 'cordis:web-fetch-tool'
@@ -705,8 +736,6 @@
       name: 'cordis:workflow-session-feature'
       disabled: !!js >-
         launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
-        launch.environment.WISH_TASKS_ENABLED === '0' ||
-        launch.environment.WISH_PLAN_ENABLED === '0' ||
         launch.environment.WISH_SUBAGENTS_ENABLED === '0'
 
     - id: cli

@@ -1,4 +1,5 @@
 import { Service, type Context } from "@deepseek-ai/cordis";
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { resolve } from "node:path";
 import { FileSubagentExchange } from "../../subagents/files.js";
 import type { SubagentResourceManifest } from "../../subagents/resources.js";
@@ -54,9 +55,13 @@ export class ChildSnapshotMemory {
 export default class ChildSnapshotMemoryService extends MemoryService {
   static readonly inject = ["launch"];
   private runtime: ChildSnapshotMemory | undefined;
-  private closing: Promise<void> | undefined;
+  private readonly work: PluginWorkOwner;
   get libraryId() { return this.ready().libraryId; }
-  constructor(ctx: Context) { super(ctx); ctx.effect(() => () => this.close(), "memory-child-snapshot.close"); }
+  constructor(ctx: Context) {
+    super(ctx);
+    this.work = new PluginWorkOwner(ctx, { code: "memory_child_snapshot", codeReload: true,
+      close: () => this.runtime?.close() });
+  }
   async [Service.init]() {
     const launch = this.ctx.launch;
     const environment = launch.environment;
@@ -69,13 +74,13 @@ export default class ChildSnapshotMemoryService extends MemoryService {
     if (!manifest || manifest.digest !== environment.WISH_CHILD_RESOURCES_DIGEST || manifest.owner.workspaceRoot !== launch.cwd) throw new Error("Child Memory snapshot does not match its Host grant");
     this.runtime = await ChildSnapshotMemory.open(exchange, manifest);
   }
-  state(signal?: AbortSignal) { return this.ready().state(signal); }
-  query(input?: MemoryQuery) { return this.ready().query(input); }
-  read(id: string, signal?: AbortSignal) { return this.ready().read(id, signal); }
-  snapshot(input?: MemoryQuery) { return this.ready().snapshot(input); }
-  propose(input: ProposeMemoryRequest) { return this.ready().propose(input); }
-  decide(input: DecideMemoryRequest) { return this.ready().decide(input); }
-  changeStatus(input: ChangeMemoryStatusRequest) { return this.ready().changeStatus(input); }
-  close() { return this.closing ??= this.runtime?.close() ?? Promise.resolve(); }
-  private ready() { if (!this.runtime || this.closing) throw new Error("Child Memory snapshot is not active"); return this.runtime; }
+  state(signal?: AbortSignal) { return this.work.run(() => this.runtime!.state(signal)); }
+  query(input?: MemoryQuery) { return this.work.run(() => this.runtime!.query(input)); }
+  read(id: string, signal?: AbortSignal) { return this.work.run(() => this.runtime!.read(id, signal)); }
+  snapshot(input?: MemoryQuery) { return this.work.run(() => this.runtime!.snapshot(input)); }
+  propose(input: ProposeMemoryRequest) { return this.work.run(() => this.runtime!.propose(input)); }
+  decide(input: DecideMemoryRequest) { return this.work.run(() => this.runtime!.decide(input)); }
+  changeStatus(input: ChangeMemoryStatusRequest) { return this.work.run(() => this.runtime!.changeStatus(input)); }
+  close() { return this.work.close(); }
+  private ready() { this.work.assertAttached(); if (!this.runtime) throw new Error("Child Memory snapshot is not active"); return this.runtime; }
 }

@@ -1,5 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
-import type {} from "../../boot/plugin-control/code-reload.js";
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 
 import type { Tmux, TmuxSessionSnapshot, TmuxTarget } from "../../tmux/index.js";
 import {
@@ -19,51 +19,40 @@ const PROVIDER_ID = "tmux";
 export class TmuxSubagentExecution extends SubagentExecutionService {
   static readonly inject = ["tmux"];
   readonly id = PROVIDER_ID;
-  private readonly requests = new Set<Promise<unknown>>();
-  private closed = false;
-  private fenced = false;
+  private readonly work: PluginWorkOwner;
   private readonly backend: TmuxSubagentExecutionBackend;
 
   constructor(ctx: Context) {
     super(ctx);
     this.backend = new TmuxSubagentExecutionBackend(ctx.tmux);
-    ctx.effect(() => async () => { this.closed = true; await Promise.allSettled([...this.requests]); }, "execution-adapter.close");
-    ctx.root.get("codeReload")?.register(ctx, { prepare: () => {
-      if (this.closed || this.fenced) throw Error("Execution adapter is closed");
-      this.fenced = true;
-      return { drained: Promise.allSettled([...this.requests]).then(() => {}), release: () => { if (!this.closed) this.fenced = false; } };
-    } });
+    this.work = new PluginWorkOwner(ctx, { code: "subagent_execution", codeReload: true });
   }
 
   async start(
     request: StartSubagentExecutionRequest,
   ): Promise<SubagentExecutionSnapshot> {
-    return this.track(() => this.backend.start(request));
+    return this.work.run(() => this.backend.start(request));
   }
 
   async inspect(
     target: SubagentExecutionTarget,
     signal?: AbortSignal,
   ): Promise<SubagentExecutionSnapshot | undefined> {
-    return this.track(() => this.backend.inspect(target, signal));
+    return this.work.runDuringActivation(this.ctx, () => this.backend.inspect(target, signal));
   }
 
   capture(request: CaptureSubagentExecutionRequest): Promise<string> {
-    return this.track(() => this.backend.capture(request));
+    return this.work.run(() => this.backend.capture(request));
   }
 
   send(request: SendSubagentExecutionRequest): Promise<void> {
-    return this.track(() => this.backend.send(request));
+    return this.work.run(() => this.backend.send(request));
   }
 
   stop(target: SubagentExecutionTarget, signal?: AbortSignal): Promise<void> {
-    return this.track(() => this.backend.stop(target, signal));
+    return this.work.run(() => this.backend.stop(target, signal));
   }
-  private async track<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.closed || this.fenced) throw Error("Execution adapter is closed");
-    const work = Promise.resolve().then(operation); this.requests.add(work);
-    try { return await work; } finally { this.requests.delete(work); }
-  }
+
 }
 
 /** Standalone adapter used by focused and deployment acceptance. */

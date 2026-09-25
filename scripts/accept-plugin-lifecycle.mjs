@@ -17,6 +17,7 @@ import Runtime from "../dist/composition/runtime-service.js";
 import Subagents, { SubagentRuntime } from "../dist/subagents/runtime.js";
 import { MemorySubagentRecordStore } from "../dist/subagents/store.js";
 import WorkflowSchedulers from "../dist/workflow/providers/schedulers.js";
+import WorkflowGraphScheduler from "../dist/workflow/providers/graph-scheduler.js";
 import WorkflowContinuations from "../dist/workflow/providers/continuations.js";
 import { WorkflowRuntime } from "../dist/workflow/runtime.js";
 import { MemoryWorkflowStore } from "../dist/workflow/store.js";
@@ -35,7 +36,7 @@ async function fixture(run, options) {
     const inspection = installPluginInspection(root);
     lifecycle = installPluginLifecycle(root, inspection, options);
     root.provide("launch", { cwd: directory, homeDirectory: directory, fail() {} });
-    Object.assign(root.loader.builtins, { group: Group, storage: StorageHub, file: FileStorage, runtime: Runtime, subagents: Subagents, schedulers: WorkflowSchedulers });
+    Object.assign(root.loader.builtins, { group: Group, storage: StorageHub, file: FileStorage, runtime: Runtime, subagents: Subagents, schedulers: WorkflowSchedulers, graphScheduler: WorkflowGraphScheduler });
     await run({ root, inspection, lifecycle, directory });
   } finally {
     await root.fiber.dispose();
@@ -297,6 +298,7 @@ test("real Subagents Provider observes starting records without probing processe
       await started.promise;
       const result = await lifecycle.collect(select(inspection, "children"));
       const status = owner(result, "children").status;
+      assert.equal(status.disposition, "drain");
       assert.equal(status.code, "subagents_unsettled_records");
       assert.equal(status.counts.pending_operations, 1);
       assert.equal(status.counts.live_records, 1);
@@ -324,6 +326,7 @@ test("real Workflow Scheduler query reads durable facts without dispatching or r
     await workflow.block(run.id, "private-block-reason");
     const before = await workflow.get(run.id);
     const result = await lifecycle.collect(select(inspection, "scheduler"));
+    assert.equal(owner(result, "scheduler").status.disposition, "drain");
     assert.equal(owner(result, "scheduler").status.code, "workflow_unsettled_work");
     assert.equal(owner(result, "scheduler").status.counts.unsettled_runs, 1);
     assert.deepEqual(await workflow.get(run.id), before);
@@ -357,16 +360,17 @@ test("a graph start waiting on Plan is visible before it creates any Workflow", 
     root.provide("plan", { async get() { reading.resolve(); await finish.promise; return undefined; } });
     for (const key of ["tasks", "permissions", "workspace", "agents"]) root.provide(key, {});
     await root.loader.create({ id: "scheduler", name: "cordis:schedulers" });
-    const starting = root.get("workflowScheduler").graphs.start({ owner: { parentSessionId: "private" } });
+    await root.loader.create({ id: "graph-scheduler", name: "cordis:graphScheduler" });
+    const starting = root.get("workflowGraphScheduler").graphs.start({ owner: { parentSessionId: "private" } });
     const rejected = assert.rejects(starting, /approved Plan/);
     try {
       await reading.promise;
-      const status = owner(await lifecycle.collect(select(inspection, "scheduler")), "scheduler").status;
-      assert.equal(status.disposition, "blocked");
+      const status = owner(await lifecycle.collect(select(inspection, "graph-scheduler")), "graph-scheduler").status;
+      assert.equal(status.disposition, "drain");
       assert.equal(status.counts.active_graph_starts, 1);
-      assert.equal(status.counts.unsettled_runs, 0);
+      assert.equal(status.counts.active_graph_projections, 0);
     } finally { finish.resolve(); await rejected; }
-    assert.equal(root.get("workflowScheduler").graphs.lifecycleSnapshot().activeStarts, 0);
+    assert.equal(root.get("workflowGraphScheduler").graphs.lifecycleSnapshot().activeStarts, 0);
   });
 });
 

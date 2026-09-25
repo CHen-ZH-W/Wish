@@ -1,12 +1,18 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { createSubagentTools } from "../../subagents/consumers/model-tools/tools.js";
-import type {} from "../../boot/plugin-control/code-reload.js";
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
+import { subagentRecordOutput } from "../../subagents/consumers/model-tools/tools.js";
+import type {} from "../../subagents/consumers/model-tools/dispatch.js";
 
-/** Optional model adapter. Removing it leaves both scheduling and Subagents usable by hosts. */
-export default { name: "workflow-subagent-tools", inject: ["tools", "subagents", "workflowScheduler"], apply(ctx: Context) {
-  ctx.root.get("codeReload")?.register(ctx);
-  for (const definition of createSubagentTools({ subagents: ctx.subagents,
-    dispatch: async (request, context, grant) => {
+/** Optional dispatch strategy. It never owns or duplicates the Subagent model Tools. */
+export default { name: "workflow-subagent-tools", inject: ["subagentToolDispatch", "subagents", "workflowScheduler"], apply(ctx: Context) {
+  let active = ctx.root.get("codeReload") === undefined;
+  let unregister = () => {};
+  const work = new PluginWorkOwner(ctx, { code: "workflow_subagent_dispatch", codeReload: true,
+    beforeDrain: () => { active = false; }, close: () => unregister() });
+  unregister = ctx.subagentToolDispatch.register({
+    id: "workflow",
+    active: () => active,
+    dispatch: (request, context, grant) => work.run(async () => {
       const profile = request.permissionProfile ?? context.permissions.profile;
       if (profile !== context.permissions.profile && profile !== "read-only") throw new Error("Child permission profile cannot exceed its parent");
       const scope = context.permissions.delegation ?? { availableTools: context.permissions.availableTools, allowedCapabilities: context.permissions.ceiling.allowedCapabilities };
@@ -25,7 +31,9 @@ export default { name: "workflow-subagent-tools", inject: ["tools", "subagents",
       if (!childId) return { content: [{ type: "text" as const, text: `Workflow ${run.id} ${run.status}: ${run.failureDigest ?? "queued within host concurrency limits; inspect with workflow_read, do not submit a duplicate"}` }] };
       const record = await ctx.subagents.inspect({ ...request, id: childId });
       if (!record) throw new Error(`Workflow ${run.id} child unavailable`);
-      return record;
-    },
-  })) ctx.tools.register(definition);
+      return subagentRecordOutput("Started", record);
+    }),
+  });
+  const reload = ctx.root.get("codeReload");
+  if (reload) reload.startWhenReady(ctx, () => { active = true; });
 } };

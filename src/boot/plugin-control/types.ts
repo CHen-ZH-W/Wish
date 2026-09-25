@@ -9,6 +9,30 @@ export type PluginPhase =
 
 /** The declared gate, without serializing trusted executable expressions. */
 export type PluginGate = "default" | "enabled" | "disabled" | "conditional";
+export type PluginManagementClass = "kernel" | "managed" | "structural" | "noncompliant";
+
+/** Browser-safe manifest facts; config schemas and local paths remain Host-side. */
+export interface WishPluginManifestView {
+  readonly apiVersion: "wish.plugin/v1";
+  readonly id: string;
+  readonly displayName: string | null;
+  readonly replacement: "drain" | "generation";
+  readonly capabilities: readonly (
+    | "filesystem.read"
+    | "filesystem.write"
+    | "process.exec"
+    | "network.connect"
+    | "web.search"
+    | "web.fetch"
+    | "external.side_effect"
+    | "runtime.read"
+    | "runtime.control"
+  )[];
+  readonly isolation: "trusted-in-process";
+  readonly state:
+    | { readonly mode: "stateless" }
+    | { readonly mode: "versioned"; readonly schemaVersion: number; readonly readableVersions: readonly number[] };
+}
 
 export interface PluginEntryView {
   /** Loader-qualified id, unique within this inspection's process instance. */
@@ -16,6 +40,10 @@ export interface PluginEntryView {
   readonly name: string;
   readonly parentId: string | null;
   readonly kind: "plugin" | "group";
+  /** Host authority classification; clients must not infer mutability from names or runtime state. */
+  readonly managementClass: PluginManagementClass;
+  /** Present only for an external entry admitted by a validated v1 manifest. */
+  readonly manifest: WishPluginManifestView | null;
   readonly gate: PluginGate;
   /** Loader's effective value, including ancestor gates; null if evaluation fails. */
   readonly enabled: boolean | null;

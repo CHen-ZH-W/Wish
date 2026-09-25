@@ -13,6 +13,7 @@ import Loader from "@deepseek-ai/cordis-plugin-loader";
 
 import { bootstrap } from "../dist/boot/bootstrap.js";
 import { installPluginInspection } from "../dist/boot/plugin-control/inspection.js";
+import { PluginManagementClassifier } from "../dist/boot/plugin-control/classification.js";
 
 const modules = {
   "provider.mjs": `export function apply(ctx, config) {
@@ -63,7 +64,11 @@ async function fixture(profile, run, prepare) {
     await root.plugin(Loader);
     root.loader.builtins.include = Include;
     root.loader.builtins.group = Group;
-    inspection = installPluginInspection(root);
+    inspection = installPluginInspection(root, new PluginManagementClassifier({
+      "cordis:include": "kernel", "cordis:group": "structural",
+      "./provider.mjs": "managed", "./consumer.mjs": "managed", "./leaf.mjs": "managed",
+      "./nested.mjs": "managed", "./failure.mjs": "managed", "./closing.mjs": "managed",
+    }));
     await prepare?.(root);
     await root.loader.create({ id: "include", name: "cordis:include", config: { path: "./cordis.yml" } });
     await root.loader.await();
@@ -87,6 +92,9 @@ test("inspection returns immutable config-free Loader facts and Root infrastruct
   await fixture(chain, async ({ root, inspection }) => {
     const snapshot = inspection.inspect();
     assert.equal(row(snapshot, "provider").phase, "active");
+    assert.equal(snapshot.entries.find(entry => entry.id === "include").managementClass, "kernel");
+    assert.equal(row(snapshot, "provider").managementClass, "managed");
+    assert.equal(row(snapshot, "dormant").managementClass, "noncompliant");
     assert.equal(row(snapshot, "consumer").gate, "default");
     assert.equal(row(snapshot, "dormant").enabled, false);
     assert.equal(row(snapshot, "dormant").phase, "absent");
@@ -178,6 +186,7 @@ test("same-named services in separate isolation realms have different dependency
   await fixture(group("alpha") + group("beta"), async ({ root, inspection, entry }) => {
     assert.deepEqual(affectedEntries(inspection.previewDisable("include:alpha-provider")), ["include:alpha-consumer", "include:alpha-provider"]);
     const impact = inspection.previewDisable("include:alpha");
+    assert.equal(row(impact.snapshot, "alpha").managementClass, "structural");
     assert.deepEqual(affectedEntries(impact), ["include:alpha-consumer", "include:alpha-provider"]);
     assert.equal(row(impact.snapshot, "alpha-provider").parentId, "include:alpha");
     await entry("alpha").update({ disabled: true });

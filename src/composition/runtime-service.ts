@@ -32,7 +32,7 @@ import type {
   RunFollowUp,
 } from "../core/runtime/continuation.js";
 import type { ModelRef } from "../core/model/model.js";
-import { registerPluginLifecycle } from "../boot/plugin-control/lifecycle.js";
+import { registerPluginOwner } from "../boot/plugin-control/owner-registry.js";
 import { StepExecutionCoordinator, StepExecutionError } from "./step-execution.js";
 import type {} from "../boot/plugin-control/code-reload.js";
 
@@ -115,6 +115,7 @@ export class Runtime extends Service {
   private readonly generations = new Set<WishRunGeneration>();
   private suspended = false;
   private closed = false;
+  private closing: Promise<void> | undefined;
 
   constructor(ctx: Context, config: Config = {}) {
     // Cordis reserves ctx.runtime for the current plugin runtime accessor.
@@ -126,35 +127,34 @@ export class Runtime extends Service {
         DEFAULT_RUN_GENERATION_DRAIN_TIMEOUT_MS,
       "Runtime generation drain timeout",
     );
-    ctx.effect(() => async () => {
-      this.closed = true;
-      // Retire owns cancellation. Wake queued acquisitions only after original
-      // Runs settle so a Host shutdown retains its explicit cancellation reason.
-      await Promise.all([...this.generations].map(generation => generation.retire()));
-      this.execution.close();
-    }, "runtime admission");
-    registerPluginLifecycle(ctx, () => {
-      const snapshot = this.lifecycleSnapshot();
-      return {
-        disposition: this.closed || snapshot.activeRuns > 0 || snapshot.retiring > 0 ? "blocked" : "direct",
-        code: this.closed ? "runtime_closed" : snapshot.retiring > 0 ? "runtime_retiring" : snapshot.activeRuns > 0 ? "runtime_active_runs" : "runtime_idle",
-        counts: { generations: snapshot.generations, active_runs: snapshot.activeRuns, retiring: snapshot.retiring },
-      };
-    }, () => {
-      if (this.suspended || this.closed) throw new Error("Runtime admission is closed");
-      this.suspended = true;
-      const generations = [...this.generations];
-      const release = generations.map(generation => generation.suspendAdmission());
-      let closing: Promise<void> | undefined;
-      return {
-        release: () => { if (!closing && !this.closed) { this.suspended = false; for (const resume of release) resume(); } },
-        close: () => closing ??= (async () => {
-          // Do not use retire's abort behavior as a substitute for stop approval.
-          if (this.lifecycleSnapshot().activeRuns > 0 || this.lifecycleSnapshot().retiring > 0) throw new Error("Runtime still owns work");
-          this.closed = true;
-          await Promise.all(generations.map(generation => generation.retire()));
-        })(),
-      };
+    ctx.effect(() => () => this.close(), "runtime admission");
+    registerPluginOwner(ctx, {
+      replacement: "generation",
+      status: () => {
+        const snapshot = this.lifecycleSnapshot();
+        return {
+          disposition: this.closed ? "blocked" : snapshot.activeRuns > 0 || snapshot.retiring > 0 ? "drain" : "direct",
+          code: this.closed ? "runtime_closed" : snapshot.retiring > 0 ? "runtime_retiring" : snapshot.activeRuns > 0 ? "runtime_active_runs" : "runtime_idle",
+          counts: { generations: snapshot.generations, active_runs: snapshot.activeRuns, retiring: snapshot.retiring },
+        };
+      },
+      prepare: () => {
+        if (this.suspended || this.closed) throw new Error("Runtime admission is closed");
+        this.suspended = true;
+        const generations = [...this.generations];
+        const release = generations.map(generation => generation.suspendAdmission());
+        return {
+          // Runs are explicit generations. Native teardown or disable retires
+          // them deterministically; no JavaScript stack is migrated.
+          drained: Promise.resolve(),
+          deactivate: () => this.close(),
+          release: () => {
+            if (this.closing || this.closed) return;
+            this.suspended = false;
+            for (const resume of release) resume();
+          },
+        };
+      },
     });
   }
 
@@ -164,6 +164,13 @@ export class Runtime extends Service {
     return Object.freeze({ generations: snapshots.length,
       activeRuns: snapshots.reduce((count, snapshot) => count + snapshot.activeRuns.length, 0),
       retiring: snapshots.filter(snapshot => snapshot.state === "retiring").length });
+  }
+
+  private close(): Promise<void> {
+    this.suspended = true;
+    this.closed = true;
+    return this.closing ??= Promise.all([...this.generations].map(generation => generation.retire()))
+      .then(() => { this.execution.close(); });
   }
 
   /** Stable Run owner; only execution resources are acquired anew per Step. */

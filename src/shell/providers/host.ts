@@ -5,6 +5,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 
 import {
   assertActiveCapabilityAuthorizationGrant,
@@ -215,25 +216,27 @@ export class HostShell extends ShellService {
 
   readonly policy: ShellPolicy;
   private readonly backend: HostShellBackend;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
     this.backend = new HostShellBackend(ctx.filesystem, config);
     this.policy = this.backend.policy;
+    this.work = new PluginWorkOwner(ctx, { code: "shell_host", codeReload: true });
   }
 
   preflight(
     request: PreflightShellCommandRequest,
   ): Promise<ShellCommandPreflight> {
-    return this.backend.preflight(request);
+    return this.work.run(() => this.backend.preflight(request));
   }
 
   resolve(request: ResolveShellCommandRequest): Promise<ShellCommandSpec> {
-    return this.backend.resolve(request);
+    return this.work.run(() => this.backend.resolve(request));
   }
 
   run(request: RunShellCommandRequest): Promise<ShellExecutionResult> {
-    return this.backend.run(request);
+    return this.work.run(() => this.backend.run(request));
   }
 }
 

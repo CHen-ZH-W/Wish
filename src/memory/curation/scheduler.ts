@@ -45,13 +45,21 @@ export class MemoryCurationScheduler {
     this.timeoutMs = positive(options.timeoutMs ?? 30_000, 300_000);
   }
   registerSource(source: CurationEvidenceSource): () => Promise<void> {
-    this.assertOpen();
+    if (!this.registrationWhileSuspended) this.assertOpen();
+    else if (this.closingSignal.signal.aborted) throw new Error("Memory curation is closed");
     if (this.sources.has(source.id)) throw new Error("Duplicate curation evidence source");
     const registration = { source, cancellation: new AbortController(), reads: new Set<Promise<readonly CurationEvidence[]>>() };
     this.sources.set(source.id, registration);
     return () => this.removeSource(registration);
   }
-  async state(signal?: AbortSignal): Promise<CurationState> { this.assertOpen(); return this.options.store.read(signal); }
+  private readonly stateReads = new Set<Promise<CurationState>>();
+  private registrationWhileSuspended = false;
+  async state(signal?: AbortSignal): Promise<CurationState> {
+    this.assertOpen();
+    const read = Promise.resolve().then(() => this.options.store.read(signal));
+    this.stateReads.add(read);
+    try { return await read; } finally { this.stateReads.delete(read); }
+  }
   async recover(): Promise<void> {
     this.assertOpen();
     if (this.ticking || this.active.size) throw new Error("Cannot recover while curation jobs are executing");
@@ -114,6 +122,7 @@ export class MemoryCurationScheduler {
     this.assertOpen(); positive(intervalMs, 3_600_000);
     if (this.timer) return;
     this.timer = setInterval(() => {
+      if (this.suspended) return;
       void this.scan().then(() => this.tick()).catch(error => {
         if (!this.closingSignal.signal.aborted) this.options.onError?.(error);
       });
@@ -122,14 +131,21 @@ export class MemoryCurationScheduler {
   }
   lifecycleSnapshot(): MemoryCurationLifecycleSnapshot {
     return Object.freeze({ activeJobs: this.active.size, scanning: this.scanning ? 1 : 0, ticking: this.ticking ? 1 : 0,
-      sourceReads: [...this.sources.values()].reduce((count, source) => count + source.reads.size, 0) });
+      sourceReads: [...this.sources.values()].reduce((count, source) => count + source.reads.size, this.stateReads.size) });
   }
-  suspendAdmissions(): () => void {
+  suspendAdmissions(options: { readonly allowRegistration?: boolean } = {}): () => void {
     this.assertOpen();
     if (this.suspended) throw new Error("Memory curation admission is already suspended");
     this.suspended = true;
+    this.registrationWhileSuspended = options.allowRegistration === true;
     let active = true;
-    return () => { if (active && !this.closing) this.suspended = false; active = false; };
+    return () => { if (active && !this.closing) { this.suspended = false; this.registrationWhileSuspended = false; } active = false; };
+  }
+  /** Only called with admissions suspended; accepted jobs retain live dependencies. */
+  async drain(): Promise<void> {
+    await Promise.allSettled([this.scanning, this.ticking, ...this.stateReads,
+      ...[...this.sources.values()].flatMap(source => [...source.reads])]);
+    await this.tail;
   }
   close(): Promise<void> {
     if (this.closing) return this.closing;
@@ -137,7 +153,7 @@ export class MemoryCurationScheduler {
     this.closingSignal.abort(new Error("Memory curation closed"));
     for (const controller of this.active.values()) controller.abort(this.closingSignal.signal.reason);
     return this.closing = (async () => {
-      await Promise.allSettled([this.scanning, this.ticking]);
+      await Promise.allSettled([this.scanning, this.ticking, ...this.stateReads]);
       await this.tail;
       await Promise.all([...this.sources.values()].map(source => this.removeSource(source)));
       await this.options.store.close();

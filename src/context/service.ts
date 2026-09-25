@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { Service, type Context as CordisContext } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 
 import type { ModelDependencies } from "../models/runtime.js";
 import type { ContextItem, ContextProvider } from "../core/context/projector.js";
@@ -79,6 +80,7 @@ export class ContextEngine extends Service {
 
   readonly reservedOutputTokens: number | undefined;
   readonly observations = new ContextObservations();
+  private readonly work: PluginWorkOwner;
   private readonly additionalProviders = new Map<
     string,
     ContextProvider<ContextInput>
@@ -86,6 +88,7 @@ export class ContextEngine extends Service {
 
   constructor(ctx: CordisContext, config: Config = {}) {
     super(ctx, "contextEngine");
+    this.work = new PluginWorkOwner(ctx, { code: "context_engine", codeReload: true });
     this.reservedOutputTokens = config.reservedOutputTokens;
   }
 
@@ -93,6 +96,7 @@ export class ContextEngine extends Service {
   registerProvider(
     provider: ContextProvider<ContextInput>,
   ): ContextProviderRegistration {
+    this.work.assertAttached();
     if (provider === null || typeof provider !== "object") {
       throw new TypeError("Context Provider must be an object");
     }
@@ -153,6 +157,7 @@ export class ContextEngine extends Service {
 
   /** Build one Application-facing Context graph from injected capability views. */
   open(input: OpenContextInput): ContextBundleHandle {
+    this.work.assertAttached();
     const archive = this.ctx.toolResultArchive.open({
       legacyLocatorRoot: resolve(input.dataDirectory),
     });
@@ -166,7 +171,7 @@ export class ContextEngine extends Service {
         ]),
         sessions: this.ctx.sessions.open(input.dataDirectory),
         archive,
-      }), archive);
+      }), archive, this.work);
     } catch (error: unknown) {
       archive.release();
       throw error;
@@ -184,17 +189,45 @@ function requireIdentifier(value: unknown, label: string): string {
 function createContextBundleHandle(
   bundle: ContextBundle,
   archive: ToolResultArchiveHandle,
+  work: PluginWorkOwner,
 ): ContextBundleHandle {
   let released = false;
-  return Object.freeze({
+  const assertOpen = () => {
+    work.assertOpen();
+    if (released) throw new Error("context_bundle_released");
+  };
+  // Bind the underlying projector so projectFromProviders -> project remains
+  // one admitted operation, even when a stop fence arrives between both calls.
+  const projector = new Proxy(bundle.projector, {
+    get(target, key) {
+      if (key === "project") return (...args: Parameters<typeof target.project>) => {
+        try { assertOpen(); } catch (error) { return Promise.reject(error); }
+        return work.run(() => target.project(...args));
+      };
+      if (key === "projectFromProviders") return (...args: Parameters<typeof target.projectFromProviders>) => {
+        try { assertOpen(); } catch (error) { return Promise.reject(error); }
+        return work.run(() => target.projectFromProviders(...args));
+      };
+      return Reflect.get(target, key, target);
+    },
+  });
+  return Object.freeze<ContextBundleHandle>({
     get configuration() { return bundle.configuration; },
-    projector: bundle.projector,
+    projector,
     get providers() { return bundle.providers; },
     historyPolicy: bundle.historyPolicy,
     toolResults: bundle.toolResults,
     budget: bundle.budget,
-    forStep: bundle.forStep,
-    createToolResultRenderer: bundle.createToolResultRenderer,
+    forStep: input => { assertOpen(); return bundle.forStep(input); },
+    createToolResultRenderer: options => {
+      work.assertAttached();
+      if (released) throw new Error("context_bundle_released");
+      const renderer = bundle.createToolResultRenderer(options);
+      return { render: input => {
+        assertOpen();
+        return work.run(() => renderer.render(input));
+      } };
+    },
     get released(): boolean {
       return released;
     },

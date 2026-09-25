@@ -158,6 +158,7 @@ test("Cordis Archive Provider controls Consumer availability", async () => {
   assert.equal(archive.release(), false);
   await storageProvider.dispose();
   assert.equal(root.get("toolResultArchive"), undefined);
+  assert.throws(() => generations[0].open(), /tool_result_archive_closed/);
   assert.equal(consumer.state, states.pending);
   assert.equal(provider.state, states.pending);
   await root.plugin(FileStorageProvider, {

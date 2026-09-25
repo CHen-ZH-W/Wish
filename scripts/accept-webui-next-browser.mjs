@@ -166,7 +166,7 @@ test("compact Session menu renames inline, separates archives and confirms delet
     await more().click(); page.once("dialog", dialog => dialog.accept());
     await page.getByRole("menuitem", { name: "删除会话", exact: true }).click();
     await navigation.locator(".session-link").waitFor({ state: "detached" });
-    await page.reload(); await page.locator(".empty-state").getByRole("button", { name: "新建会话", exact: true }).waitFor();
+    await page.reload(); await page.getByRole("heading", { name: "许个愿吧", exact: true }).waitFor();
     assert.equal((await booted.surfaceContext.get("sessions").manager.list()).length, 0);
 
     // Touch menu must remain open inside the navigation drawer; no double-click required.
@@ -537,7 +537,7 @@ test("real child Agent renders inline with owned identity, snapshot, attachment 
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     await createDefaultSession(page, booted, directory);
     await page.locator("#wish-composer").fill("委派一次模块边界检查，让我查看透明执行过程。");
-    await page.getByRole("button", { name: "发送请求", exact: true }).click();
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await page.locator(".ledger-tool").getByText("spawn_agent", { exact: true }).waitFor();
     await page.locator(".ledger-tool > .event-body > details > summary").click();
     await page.locator(".child-evidence").waitFor({ timeout: 10000 });
@@ -557,7 +557,7 @@ test("real child Agent renders inline with owned identity, snapshot, attachment 
     await page.setViewportSize({ width: 390, height: 844 });
     await capture(page, "mobile-inline-subagent");
     releaseChild();
-    await page.getByRole("button", { name: "发送请求", exact: true }).waitFor({ timeout: 10000 });
+    await page.getByRole("button", { name: "发送消息", exact: true }).waitFor({ timeout: 10000 });
     await page.locator(".child-result").filter({ hasText: "UI_CHILD_RESULT_OK" }).waitFor({ timeout: 10000 });
     assert.equal(childRequests, 1); assert.deepEqual(errors, []);
   } finally {
@@ -610,19 +610,19 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     await page.locator(".setting-commit-status").filter({ hasText: "已应用于新运行" }).waitFor();
     await page.getByRole("button", { name: "执行工作区", exact: true }).click();
     await createDefaultSession(page, booted, directory);
-    const composer = page.getByLabel("下一步要做什么？", { exact: true });
+    const composer = page.getByLabel("消息", { exact: true });
     await composer.fill("检查新版执行记录");
     await composer.dispatchEvent("compositionstart");
     await composer.press("Enter"); assert.equal(requests, 0);
     await composer.dispatchEvent("compositionend");
-    await page.getByRole("button", { name: "发送请求", exact: true }).click();
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await page.locator(".message-text").filter({ hasText: "已收到请求。" }).waitFor({ timeout: 6000 }).catch(async error => { throw new Error(JSON.stringify({ errors, requests, streamed, body: await page.locator("body").innerText() }), { cause: error }); });
     assert.equal(selectedModels[0], "secondary", "the next new Run samples the saved model setting");
     await page.locator("#wish-composer").fill("保留这段草稿");
     await page.getByRole("button", { name: "引导", exact: true }).waitFor();
     await capture(page, "desktop-busy-composer");
     release();
-    await page.getByRole("button", { name: "发送请求", exact: true }).waitFor();
+    await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
     await page.getByRole("button", { name: "执行工作区", exact: true }).click();
@@ -631,11 +631,11 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     await page.locator(".message-text").filter({ hasText: "这是一条本地验收回复。" }).waitFor();
     assert.equal(await page.locator(".ledger-assistant").count(), 1); assert.equal(requests, 1); assert.deepEqual(errors, []);
     await page.locator("#wish-composer").fill("将验收正文写入 approved.txt");
-    await page.getByRole("button", { name: "发送请求", exact: true }).click();
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await page.getByRole("region", { name: "工具审批 write", exact: true }).waitFor({ timeout: 6000 }).catch(async error => { throw new Error(JSON.stringify({ errors, requests, body: await page.locator("body").innerText() }), { cause: error }); });
     await capture(page, "desktop-approval");
     await page.getByRole("button", { name: "批准工具调用", exact: true }).click();
-    await page.getByRole("button", { name: "发送请求", exact: true }).waitFor();
+    await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
     await page.locator(".ledger-tool summary").click();
     await page.locator(".ledger-tool pre").filter({ hasText: "approved.txt" }).first().waitFor();
     assert.equal(await readFile(join(directory, "approved.txt"), "utf8"), "本地工具验收正文");
@@ -682,7 +682,7 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     assert.equal(await page.locator(".brand-control .connection-state").count(), 1);
     const offlineComposer = await page.locator(".composer").boundingBox();
     assert.ok(offlineComposer && offlineComposer.y + offlineComposer.height <= page.viewportSize().height + 1, "offline notice must leave the entire composer anchored inside the viewport");
-    const offlineSend = await page.getByRole("button", { name: "发送请求", exact: true }).boundingBox();
+    const offlineSend = await page.getByRole("button", { name: "发送消息", exact: true }).boundingBox();
     assert.ok(offlineSend && offlineSend.y + offlineSend.height <= page.viewportSize().height, "offline send control remains visible even while disabled");
     await capture(page, "mobile-offline");
     assert.equal(await page.locator("#wish-composer").inputValue(), "再检查一下失败恢复的处理");
@@ -695,8 +695,8 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     assert.equal(requests, 3, "reconnect must not replay a model or Tool request");
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator("#wish-composer").fill("查看 Skill 目录用于历史能力验收");
-    await page.getByRole("button", { name: "发送请求", exact: true }).click();
-    await page.getByRole("button", { name: "发送请求", exact: true }).waitFor();
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
     await page.locator(".ledger-tool strong").filter({ hasText: "list_skills" }).waitFor();
     // A visible Tool call is not a Run-completion barrier. Stop only after idle.
     await page.waitForFunction(() => document.querySelector(".run-state")?.textContent === "等待请求");

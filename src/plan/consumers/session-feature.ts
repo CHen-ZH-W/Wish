@@ -1,3 +1,4 @@
+import { registerManagedSessionFeature } from "../../apps/session-feature-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionFeature } from "../../apps/session-features.js";
 import type { Plan } from "../types.js";
@@ -33,5 +34,5 @@ export function createPlanSessionFeature(plan: Plan): SessionFeature {
 
 export default {
   name: "plan-session-feature", inject: ["application", "plan"],
-  apply(ctx: Context) { ctx.application.registerSessionFeature("plan", createPlanSessionFeature(ctx.plan)); },
+  apply(ctx: Context) { registerManagedSessionFeature(ctx, "plan", createPlanSessionFeature(ctx.plan), { codeReload: true }); },
 };

@@ -4,6 +4,11 @@ This module exposes the semantic `SubagentsService` to the model as six narrow
 Tools: `spawn_agent`, `list_agents`, `capture_agent`, `send_agent`,
 `stop_agent`, and `collect_agent`.
 
+One stable Consumer owns all six registrations. `spawn_agent` dispatches through
+`subagentToolDispatch`: an active Workflow adapter may contribute durable scheduling,
+while removing that adapter immediately falls back to direct `Subagents.spawn` without
+replacing the Tool Consumer or changing the model-visible Tool set.
+
 It is a Consumer owned by the Subagents domain, not part of `src/tools`.
 `WISH_SUBAGENT_TOOLS_ENABLED=0` independently unloads it. Disabling or deleting
 this Consumer leaves the Subagents capability intact.

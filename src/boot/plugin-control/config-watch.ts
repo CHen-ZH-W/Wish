@@ -22,7 +22,7 @@ export async function startManagedConfigurationWatch(root: Context, control: Man
         name: "managed-configuration-subscription",
         inject: ["hmr", "timer"],
         async apply(owner: Context) {
-          await owner.hmr.registerConfig(filename, async () => {
+          const refresh = async () => {
             try {
               // Coalesce editor write bursts before reading a complete revision.
               // Native HMR owns exact-path observation and serial refresh delivery.
@@ -31,10 +31,30 @@ export async function startManagedConfigurationWatch(root: Context, control: Man
             } catch (error) {
               if (owner.fiber.state === FiberState.ACTIVE || owner.fiber.state === FiberState.LOADING) throw error;
             }
-          });
+          };
+          const subscriptions = new Map<string, () => Promise<void>>();
+          let closing = false;
+          let syncing = Promise.resolve();
+          const sync = async () => {
+            if (closing) return;
+            const files = new Set(control.configurationFiles());
+            for (const file of files) if (!subscriptions.has(file)) {
+              subscriptions.set(file, await owner.hmr.registerConfig(file, refresh));
+            }
+            for (const [file, dispose] of subscriptions) if (!files.has(file)) {
+              subscriptions.delete(file); await dispose();
+            }
+          };
+          const schedule = () => { syncing = syncing.then(sync).catch(error => { owner.logger.warn(error); }); };
+          await sync();
+          const unsubscribe = control.subscribe(schedule);
           owner.effect(() => {
             control.setConfigurationWatching(true);
-            return () => control.setConfigurationWatching(false);
+            return async () => {
+              closing = true; unsubscribe(); control.setConfigurationWatching(false);
+              await syncing;
+              await Promise.all([...subscriptions.values()].map(dispose => dispose()));
+            };
           }, "managed configuration watch status");
         },
       });

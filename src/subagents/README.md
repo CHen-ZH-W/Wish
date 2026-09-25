@@ -5,18 +5,20 @@ execution reconciliation and completion events. It does not own a concrete App o
 implementation.
 
 ```text
-CLI launcher adapter ─> SubagentLauncher Service ─┐
-                                                  ├─> Subagents Runtime ─> Subagents Service
-tmux adapter ────────> SubagentExecution Service ─┤          │
-Storage Backend ──────────────────────────────────┘          └─> lifecycle events
+CLI launcher adapter ─> optional SubagentLauncher ─┐
+                                                   ├─> Subagents Runtime ─> Subagents Service
+tmux adapter ────────> SubagentExecution Service ──┤          │
+Storage Backend ───────────────────────────────────┘          └─> lifecycle events
 ```
 
 ## Contracts
 
 - `SubagentRuntime` is the concrete domain implementation. It owns record transitions,
   global/per-parent limits, reconciliation monitors and event publication.
-- `SubagentsRuntimeService` owns the Storage lease and composes the currently selected
-  `SubagentExecution` and `SubagentLauncher` Providers.
+- `SubagentsRuntimeService` owns the Storage lease and requires the selected
+  `SubagentExecution` Provider. It resolves `SubagentLauncher` only for spawn/result access:
+  without a Launcher, existing records and list/capture/send/stop/collect remain available,
+  while new spawn fails closed.
 - `SubagentExecutionTarget` is provider-neutral and serializable. It always exposes a visible
   target plus copyable attach/capture commands; Provider-specific reconstruction facts live in
   its opaque `locator`.
@@ -37,9 +39,10 @@ Storage Backend ─────────────────────�
   matching record before checking capacity. A conflicting task/owner/authority is rejected;
   a lost or failed record is never silently relaunched under the same key. Workflow owns
   the Attempt ↔ child binding and uses this address to repair dispatch/binding crash cuts.
-- The optional Tool dispatch port can use Workflow scheduling without replacing this
-  domain capability. The default product selects that Consumer when its prerequisites
-  are available; other host callers can still use Subagents directly.
+- The stable Tool Consumer dispatches through an optional strategy port. Workflow may
+  attach durable scheduling without registering another Tool set; removing that adapter
+  falls back to direct Subagents dispatch without replacing the Consumer. Other host
+  callers continue to use Subagents directly.
 
 ## Configuration
 
@@ -50,15 +53,15 @@ record facts, not proof that every external process is alive or stopped.
 Failed launches remain unresolved even when no execution target was recorded; absence of
 a target is not proof that launch had no side effects. The service's
 optional Host lifecycle query also tracks all in-flight public requests and reports
-unsettled work as blocked. Query registration belongs to that exact service Fiber and is
+unsettled work as `drain`. Query registration belongs to that exact service Fiber and is
 revoked on unload; it neither calls `stop` nor changes the existing `close` contract.
 Counts contain no parent/child identities, task text, locator or workspace path.
 
-The separate optional stop guard synchronously closes service admission, including stale
-references and subscriptions. It rechecks these counts before allowing cleanup; live,
-unresolved or in-flight work rejects the operation and releases the preflight fence.
-Allowed cleanup reuses the service's close Promise and lease release. It never calls
-execution `stop` or kills an independently hosted terminal to satisfy administrative cleanup.
+The stop guard synchronously closes service admission, including stale references and
+subscriptions. It pauses monitor admission, drains accepted API and record work, then reuses
+the service's close Promise and lease release. Live and unresolved records remain durable;
+administrative disable never calls execution `stop`, kills an independently hosted terminal,
+or treats an uncertain launch as resolved. A new Runtime reconciles those same records.
 
 All operations that may refresh a record (`list`, `inspect`, `capture`, `send`, `collect`,
 `resume`) share the Runtime's mutation queue with spawn, stop and monitor reconciliation.
@@ -78,7 +81,8 @@ upstream scheduler drain, the Runtime seals admission and lets existing monitor 
 without aborting commands. New instances reconcile saved targets. Workflow-owned parent
 relationships survive this replacement; the independent model Consumer's legacy result relay
 is not yet reloadable and therefore blocks a batch when present. Managed disable continues
-to refuse live/unresolved records. See `npm run test:stateful-code-reload:real` for real
+to drain live/unresolved records without stopping or relaunching their executions. See
+`npm run test:stateful-code-reload:real` for real
 parent Run/child PID/Attempt continuity and failed activation/receipt coverage.
 
 `WISH_SUBAGENTS_ENABLED=0` unloads the tmux execution adapter, CLI launcher and domain Runtime,
@@ -90,6 +94,11 @@ The CLI child uses a separate data directory and Storage root under
 permission profile and available Tool ceiling are inherited or narrowed explicitly.
 An explicit host capability ceiling is also passed to the child environment. Empty
 explicit Tool/capability scopes fail closed rather than becoming unrestricted defaults.
+
+The domain Runtime has no static dependency on the CLI launcher. If Sessions or the launcher
+adapter is unavailable, new `spawn` requests fail closed while durable record reads and
+execution-backed list/capture/send/stop/collect remain available. Reattaching the launcher
+restores spawn admission without replacing the Subagents Runtime.
 
 ## Host resource exchange
 

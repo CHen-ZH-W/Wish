@@ -121,8 +121,9 @@ test("native activation failure fences the Runtime without replaying the old Too
   assert.equal(f.booted.codeReload.snapshot().phase, "draining");
   f.probe.proceed.resolve(); const completion = await f.handle.completion;
   assert.equal(completion.status, "failed"); assert.deepEqual(f.probe.executions, [1]);
-  assert.equal(f.booted.codeReload.snapshot().phase, "recovery-required");
-  assert.equal(f.ctx.get("runEngine").execution.snapshot().phase, "failed");
+  assert.deepEqual({ phase: f.booted.codeReload.snapshot().phase, code: f.booted.codeReload.snapshot().code },
+    { phase: "rejected", code: "code_reload_candidate_rolled_back" });
+  assert.equal(f.ctx.get("runEngine").execution.snapshot().phase, "ready");
 }));
 
 test("a Tool can submit its own code edit and return acceptance without waiting for its Step replacement", { timeout: 18000 }, () => fixture("self", async f => {
@@ -138,15 +139,16 @@ test("a Tool can submit its own code edit and return acceptance without waiting 
   assert.equal(f.booted.codeReload.snapshot().phase, "succeeded");
 }));
 
-test("a stable Runtime owner code edit is rejected before disposal and the original Run continues", { timeout: 18000 }, () => fixture("model", async f => {
+test("a Runtime code edit retires the affected Run generation and activates a successor", { timeout: 18000 }, () => fixture("model", async f => {
   const runtime = f.booted.context.loader.resolve("include:runtime").fiber;
   const filename = join(f.directory, "dist/composition/runtime-service.js");
-  await writeFile(filename, await readFile(filename, "utf8") + "\n// unsupported stable owner edit\n");
-  await until(() => f.booted.codeReload.snapshot().phase === "rejected");
-  assert.equal(f.booted.codeReload.snapshot().code, "code_reload_owner_unsupported");
-  assert.ok(f.booted.context.loader.resolve("include:runtime").fiber === runtime);
+  await writeFile(filename, await readFile(filename, "utf8") + "\n// replace Runtime generation\n");
+  await until(() => f.booted.codeReload.snapshot().phase === "applying");
   f.probe.proceed.resolve();
-  assert.equal((await f.handle.completion).status, "completed");
-  assert.deepEqual(f.probe.executions, [1, 1]);
-  assert.ok(f.probe.signals.every(signal => !signal.aborted));
+  assert.equal((await f.handle.completion).status, "aborted");
+  await until(() => f.booted.codeReload.snapshot().phase === "succeeded");
+  assert.notEqual(f.booted.context.loader.resolve("include:runtime").fiber, runtime);
+  assert.equal(runtime.state, 4);
+  assert.deepEqual(f.probe.executions, []);
+  assert.ok(f.probe.signals.some(signal => signal.aborted));
 }));

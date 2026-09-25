@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -158,9 +159,11 @@ export class WishCliSubagentLauncher extends SubagentLauncherService {
   static readonly inject = ["launch", "sessions"];
   static readonly Config = Config;
   private readonly backend: WishCliSubagentLauncherBackend;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
+    this.work = new PluginWorkOwner(ctx, { code: "subagent_launcher", codeReload: true });
     this.backend = new WishCliSubagentLauncherBackend({
       dataDirectory: ctx.sessions.dataDirectory,
       prepareResources: (request, identity) => this.prepareResources(request, identity),
@@ -175,11 +178,11 @@ export class WishCliSubagentLauncher extends SubagentLauncherService {
   }
 
   resolve(request: SpawnSubagentRequest, identity: SubagentLaunchIdentity) {
-    return this.backend.resolve(request, identity);
+    return this.work.run(() => this.backend.resolve(request, identity));
   }
 
   override readResult(id: string, signal?: AbortSignal): Promise<SubagentResult | undefined> {
-    return this.backend.exchange.read(id, signal);
+    return this.work.runDuringActivation(this.ctx, () => this.backend.exchange.read(id, signal));
   }
 }
 

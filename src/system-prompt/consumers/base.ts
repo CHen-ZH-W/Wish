@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 
 /** Stable, capability-neutral instructions shared by every Wish Agent. */
@@ -5,6 +6,7 @@ export const BaseSystemPrompt = {
   name: "base-system-prompt",
   inject: ["systemPrompt"],
   apply(ctx: Context): void {
+    new PluginWorkOwner(ctx, { code: "system_prompt_base", codeReload: true });
     ctx.systemPrompt.register({
       id: "wish.identity",
       authority: "system",

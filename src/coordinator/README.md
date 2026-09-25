@@ -9,6 +9,9 @@ Plan and is not a second implementation of Subagents.
 - `CoordinatorRuntime` owns only `inactive -> active -> inactive` mode state.
 - `DomainCoordinatorStateStore` persists one CAS-protected record per parent
   Run through Storage KV.
+- The Storage Provider owns only durable Coordinator state. A separate mode-adapter
+  contributes Context and Permissions projections, so replacing either infrastructure
+  service does not replace Coordinator state.
 - `CoordinatorContextProvider` tells the model to delegate, observe, reconcile,
   and avoid overlapping child writes.
 - `createCoordinatorPermissionPolicy` narrows active Steps to read/search,
@@ -40,7 +43,7 @@ worktree isolation is not claimed here.
 - Set `WISH_COORDINATOR_ENABLED=0` to disable Coordinator.
 - Set `WISH_COORDINATOR_TOOLS_ENABLED=0` to retain host state while hiding its
   model control surface.
-- Coordinator is also disabled when `WISH_SUBAGENTS_ENABLED=0` because its
-  delegated execution capability is unavailable.
+- Disabling Subagents prevents entering a new Coordinator mode, but retained Coordinator
+  state plus `read_coordinator` and `exit_coordinator_mode` remain available.
 - Run `npm run test:coordinator` for focused state, persistence, Context, Tool,
   and hard-policy acceptance.

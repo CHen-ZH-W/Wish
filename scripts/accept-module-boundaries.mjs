@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   HOST_PLUGIN_CATALOG,
+  HOST_PLUGIN_MANAGEMENT,
   MODEL_TOOL_PLUGIN_CATALOG,
+  MODEL_TOOL_PLUGIN_MANAGEMENT,
 } from "../dist/boot/plugin-catalog.js";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -42,6 +44,11 @@ test("Host capabilities and model Tool Consumers use disjoint plugin catalogs", 
   assert.equal(tools.includes("subagent-tools"), true);
   assert.equal(tools.includes("plan-tools"), true);
   assert.equal(tools.includes("coordinator-tools"), true);
+  assert.deepEqual(Object.keys(HOST_PLUGIN_MANAGEMENT).sort(), host.sort(), "every Host alias has explicit management metadata");
+  assert.deepEqual(Object.keys(MODEL_TOOL_PLUGIN_MANAGEMENT).sort(), tools.sort(), "every Tool alias has explicit management metadata");
+  assert.deepEqual(Object.entries(HOST_PLUGIN_MANAGEMENT).filter(([, value]) => value !== "managed"), [
+    ["include", "kernel"], ["group", "structural"], ["timer", "kernel"], ["hmr", "kernel"],
+  ]);
 });
 
 test("converged source layout keeps shared contracts with their real owners", async () => {

@@ -8,7 +8,7 @@ import type {
   ModelFetch,
   ResolvedModel,
 } from "../types.js";
-import { ANTHROPIC_MESSAGES_PROTOCOL } from "./anthropic-messages.js";
+import { ANTHROPIC_MESSAGES_PROTOCOL } from "./protocols.js";
 import { mapAnthropicRequest } from "./anthropic-messages-request.js";
 
 export const ANTHROPIC_MESSAGES_TOKEN_COUNT_METHOD =

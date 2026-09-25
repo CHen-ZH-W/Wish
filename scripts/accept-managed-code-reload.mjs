@@ -31,7 +31,7 @@ async function fixture(stage, run) {
     yield { type: "start", model: request.model };
     yield { type: "text_delta", text: `request-${ordinal}` };
     if (ordinal === 1 && stage === "model") { probe.entered.resolve(); await probe.proceed.promise; }
-    if (ordinal <= 2) {
+    if (ordinal <= 2 && request.tools.some(tool => tool.name === "read")) {
       yield { type: "tool_call", call: { id: `read-${ordinal}`, name: "read", argumentsJson: JSON.stringify({ path: target }) } };
       yield { type: "done", finishReason: "tool_calls" };
     } else yield { type: "done", finishReason: "stop" };
@@ -60,6 +60,27 @@ async function fixture(stage, run) {
       `async execute(input, context, grant, signal) { await globalThis[${JSON.stringify(key)}].read();`);
     assert.match(f.readSource, /globalThis\[/);
     await writeFile(f.readPath, f.readSource);
+    f.readEntryPath = join(directory, "dist/filesystem/consumers/model-tools/read-entry.js");
+    f.readEntrySource = await readFile(f.readEntryPath, "utf8");
+    if (stage === "compatibility") {
+      f.readEntrySource = `import { createReadTool } from "./read.js";
+export default { inject: ["tools", "filesystem"], apply(ctx) {
+  const registration = ctx.tools.register(createReadTool({ filesystem: ctx.filesystem }));
+  let accepting = true, closed = false;
+  const status = () => ({ disposition: "direct", code: "compatibility_idle" });
+  const release = () => { if (!closed) accepting = true; };
+  ctx.root.pluginOwners.registerLifecycle(ctx, status, () => {
+    accepting = false;
+    return { close: async () => { registration.unregister(); closed = true; }, release };
+  });
+  ctx.root.pluginOwners.registerReplacement(ctx, { prepare: () => {
+    accepting = false;
+    return { drained: Promise.resolve(), release };
+  } });
+  ctx.effect(() => () => { registration.unregister(); closed = true; });
+} };\n`;
+      await writeFile(f.readEntryPath, f.readEntrySource);
+    }
     const { bootstrap } = await import(pathToFileURL(join(directory, "dist/boot/bootstrap.js")));
     const { managedWebUi } = await import(pathToFileURL(join(directory, "dist/apps/webui/host/composition.js")));
     f.boot = async () => {
@@ -83,17 +104,42 @@ async function fixture(stage, run) {
       }, body: JSON.stringify(value) });
       return { status: response.status, value: await response.json() };
     };
-    f.change = async preference => f.post("/api/management/plugins/change", {
-      requestId: randomUUID(), revision: (await f.snapshot()).revision, preference,
-      selection: { instanceId: f.authorization.instanceId, entryIds: ["include:tool-read"] },
-    });
+    f.change = async preference => {
+      const requestId = randomUUID();
+      const accepted = await f.post("/api/management/plugins/change", {
+        requestId, revision: (await f.snapshot()).revision, preference,
+        selection: { instanceId: f.authorization.instanceId, entryIds: ["include:tool-read"] },
+      });
+      if (accepted.status !== 202) return accepted;
+      let operation = accepted.value.operation;
+      try {
+        await until(async () => {
+          operation = (await f.get(`/api/management/plugins/operations/${operation.id}`)).operation;
+          return ["succeeded", "rejected", "recovery-required"].includes(operation.phase);
+        });
+      } catch (error) {
+        throw Error(`${error.message}: operation=${JSON.stringify(operation)}`);
+      }
+      const receipt = (await f.snapshot()).lastReceipt;
+      return { status: 200, value: receipt?.requestId === requestId ? receipt : {
+        requestId, status: operation.phase === "succeeded" ? "succeeded" : "rejected", code: operation.code,
+      } };
+    };
     f.edit = () => writeFile(f.readPath, f.readSource.replace("Read a UTF-8 text file", "Read managed version two UTF-8 file"));
+    f.breakActivation = () => writeFile(f.readEntryPath, f.readEntrySource.replace(
+      "owner.register(createReadTool({ filesystem: ctx.filesystem }));",
+      'owner.register(createReadTool({ filesystem: ctx.filesystem })); throw Error("PRIVATE_CANDIDATE_FAILURE");'));
+    f.restoreActivation = () => writeFile(f.readEntryPath, f.readEntrySource + "\n// corrected after rejected candidate\n");
     f.start = async () => {
       assert.equal((await f.post("/api/sessions", { sessionId: "session", workspaceRoot: directory })).status, 201);
       const result = await f.post("/api/sessions/session/runs", { text: "Read across managed HMR" });
       assert.equal(result.status, 202, JSON.stringify(result));
       f.runId = result.value.run.runId;
-      await until(() => probe.requests.length > 0);
+      try { await until(() => probe.requests.length > 0); }
+      catch (error) {
+        const run = await f.get(`/api/runs/${f.runId}`).catch(() => undefined);
+        throw Error(`${error.message}: run=${JSON.stringify(run)}`);
+      }
       await probe.entered.promise;
     };
     f.complete = async () => {
@@ -102,6 +148,7 @@ async function fixture(stage, run) {
       return view;
     };
     f.reconfigure = () => writeFile(profile, config + "\n# changed deployment while code batch is pending\n");
+    f.disableReadInConfiguration = () => writeFile(profile, config.replace("name: 'cordis:read'", "name: 'cordis:read'\n      disabled: true"));
     await f.boot();
     await run(f);
   } catch (error) { throw Error(`${error.message}\nReload: ${JSON.stringify(f.booted?.codeReload.snapshot())}`, { cause: error }); }
@@ -118,6 +165,11 @@ test("managed WebUI disable survives native code/config edits and re-enable uses
   assert.equal(disabled.status, 200); assert.equal(disabled.value.status, "succeeded", JSON.stringify(disabled));
   assert.equal(f.ctx.get("tools").registry.list().some(tool => tool.name === "read"), false);
   await f.edit(); await until(() => f.booted.codeReload.snapshot().phase === "succeeded");
+  await until(() => f.booted.context.pluginChanges.snapshot().last?.source === "hmr" &&
+    f.booted.context.pluginChanges.snapshot().last?.phase === "succeeded");
+  assert.deepEqual({ kind: f.booted.context.pluginChanges.snapshot().last.kind,
+    source: f.booted.context.pluginChanges.snapshot().last.source,
+    phase: f.booted.context.pluginChanges.snapshot().last.phase }, { kind: "replace", source: "hmr", phase: "succeeded" });
   assert.deepEqual(f.booted.codeReload.snapshot().entryIds, []);
   const before = await f.snapshot(); await f.reconfigure();
   await until(async () => (await f.snapshot()).configuration.digest !== before.configuration.digest);
@@ -129,7 +181,7 @@ test("managed WebUI disable survives native code/config edits and re-enable uses
   assert.match(f.ctx.get("tools").registry.list().find(tool => tool.name === "read").description, /managed version two/);
 }));
 
-test("managed WebUI Run drains a Step, rejects racing disable, notifies SSE and resumes new code after durable receipt", { timeout: 20000 }, () => fixture("model", async f => {
+test("managed WebUI Run drains a Step, queues racing disable, notifies SSE and resumes new code after durable receipt", { timeout: 20000 }, () => fixture("model", async f => {
   const stable = new Map(["runtime", "sessions", "models", "application", "tools", "webui"].map(id => [id, f.booted.context.loader.resolve(`include:${id}`).fiber]));
   const pid = process.pid;
   const stream = await fetch(f.base + "/api/management/events"), reader = stream.body.getReader();
@@ -142,12 +194,13 @@ test("managed WebUI Run drains a Step, rejects racing disable, notifies SSE and 
     assert.equal(draining.status, "working"); assert.equal(draining.pending, null);
     assert.equal(f.ctx.get("tools").registry.version, registryVersion);
     assert.deepEqual(draining.codeReload.entryIds, ["include:tool-read"]);
-    const racing = await f.change("disabled"); assert.equal(racing.status, 409);
-    assert.match(JSON.stringify(racing.value), /management_busy/);
+    const racing = f.change("disabled");
+    await until(async () => (await f.snapshot()).requests.some(request => request.phase === "queued"));
     await f.reconfigure(); await delay(250);
     assert.equal((await f.snapshot()).configuration.digest, initial.configuration.digest);
     assert.match(new TextDecoder().decode((await reader.read()).value), /event: invalidated/);
     f.probe.proceed.resolve();
+    assert.match(JSON.stringify((await racing).value), /management_revision_conflict/);
     const completed = await f.complete(); assert.equal(completed.status, "completed", JSON.stringify(completed));
     await until(async () => (await f.snapshot()).configuration.digest !== initial.configuration.digest);
     const after = await f.snapshot();
@@ -177,6 +230,23 @@ test("a directly addressed native HMR entry still cannot bypass the managed conf
   assert.equal((await f.snapshot()).lastReceipt.code, "management_code_reload_applied");
 }));
 
+test("managed native HMR rejects split compatibility declarations before disposal", { timeout: 20000 }, () => fixture("compatibility", async f => {
+  const oldFiber = f.booted.context.loader.resolve("include:tool-read").fiber;
+  const oldDescription = f.ctx.get("tools").registry.list().find(tool => tool.name === "read").description;
+  const before = await f.snapshot();
+  assert.deepEqual(before.protocols.find(protocol => protocol.entryId === "include:tool-read"), {
+    entryId: "include:tool-read", conformance: "incomplete", stop: "missing", codeUpdate: "missing",
+  });
+  await f.edit(); await until(() => f.booted.codeReload.snapshot().phase === "rejected");
+  assert.equal(f.booted.codeReload.snapshot().code, "code_reload_owner_unsupported");
+  assert.equal(f.booted.context.loader.resolve("include:tool-read").fiber, oldFiber);
+  assert.equal(f.ctx.get("tools").registry.list().find(tool => tool.name === "read").description, oldDescription);
+  const disabled = await f.change("disabled");
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.value.status, "rejected");
+  assert.equal(disabled.value.code, "management_plugin_nonconformant");
+}));
+
 test("managed native import failure keeps old owner and exposes only a safe code; corrected source can retry", { timeout: 20000 }, () => fixture("idle", async f => {
   const owner = f.booted.context.loader.resolve("include:tool-read").fiber;
   const before = await f.snapshot();
@@ -191,15 +261,58 @@ test("managed native import failure keeps old owner and exposes only a safe code
   assert.equal((await f.snapshot()).lastReceipt.code, "management_code_reload_applied");
 }));
 
-test("Read owns in-flight stop refusal; a later accepted WebUI disable really revokes the Tool", { timeout: 20000 }, () => fixture("tool", async f => {
+test("managed candidate activation failure restores the old generation and clears its durable intent", { timeout: 20000 }, () => fixture("idle", async f => {
+  const oldFiber = f.booted.context.loader.resolve("include:tool-read").fiber;
+  const oldTool = f.ctx.get("tools").registry.list().find(tool => tool.name === "read");
+  await f.breakActivation();
+  await until(() => f.booted.codeReload.snapshot().code === "code_reload_candidate_rolled_back");
+  await until(async () => (await f.snapshot()).status === "ready");
+  const restored = await f.snapshot(), restoredFiber = f.booted.context.loader.resolve("include:tool-read").fiber;
+  assert.equal(restored.codeReload.phase, "rejected");
+  assert.equal(restored.pending, null);
+  assert.equal(restored.lastReceipt.code, "management_code_reload_rolled_back");
+  assert.notEqual(restoredFiber, oldFiber); assert.equal(restoredFiber.state, 2);
+  assert.equal(f.ctx.get("tools").registry.list().find(tool => tool.name === "read").description, oldTool.description);
+  assert.equal(JSON.stringify(restored).includes("PRIVATE_CANDIDATE_FAILURE"), false);
+
+  await f.restoreActivation(); await until(() => f.booted.codeReload.snapshot().phase === "succeeded");
+  assert.notEqual(f.booted.context.loader.resolve("include:tool-read").fiber, restoredFiber);
+  assert.equal((await f.snapshot()).pending, null);
+}));
+
+test("a managed disable drains the current Step and commits before the next Step sees the removed Tool", { timeout: 20000 }, () => fixture("tool", async f => {
   await f.start();
-  const refused = await f.change("disabled");
-  assert.equal(refused.status, 200); assert.equal(refused.value.status, "rejected", JSON.stringify(refused));
+  const changing = f.change("disabled");
+  await until(async () => (await f.snapshot()).status === "working");
   assert.equal((await f.snapshot()).preferences["include:tool-read"], undefined);
   assert.equal(f.ctx.get("tools").registry.list().some(tool => tool.name === "read"), true);
-  f.probe.proceed.resolve(); assert.equal((await f.complete()).status, "completed");
-  assert.equal((await f.change("disabled")).value.status, "succeeded");
+  assert.equal(f.probe.requests.length, 1);
+  f.probe.proceed.resolve();
+  const changed = await changing;
+  assert.equal(changed.status, 200); assert.equal(changed.value.status, "succeeded", JSON.stringify(changed));
+  assert.equal((await f.complete()).status, "completed");
   assert.equal(f.ctx.get("tools").registry.list().some(tool => tool.name === "read"), false);
+  assert.equal(f.probe.requests[0].tools.some(tool => tool.name === "read"), true);
+  assert.equal(f.probe.requests[1].tools.some(tool => tool.name === "read"), false);
+  assert.equal(f.probe.receipts[1].pending, null);
+  assert.equal(f.probe.receipts[1].code, "management_saved");
+}));
+
+test("an actual configuration file change waits for the Step and commits before exposing the new tool set", { timeout: 20000 }, () => fixture("model", async f => {
+  await f.start();
+  const runtime = f.booted.context.loader.resolve("include:runtime").fiber;
+  await f.disableReadInConfiguration();
+  await until(async () => (await f.snapshot()).configuration.phase === "applying");
+  assert.equal(f.probe.requests.length, 1);
+  assert.equal(f.ctx.get("tools").registry.has("read"), true);
+  f.probe.proceed.resolve();
+  assert.equal((await f.complete()).status, "completed");
+  await until(async () => (await f.snapshot()).configuration.phase === "idle");
+  assert.equal(f.ctx.get("tools").registry.has("read"), false);
+  assert.equal(f.probe.requests[1].tools.some(tool => tool.name === "read"), false);
+  assert.equal(f.probe.receipts[1].pending, null);
+  assert.equal(f.probe.receipts[1].code, "management_configuration_applied");
+  assert.equal(f.booted.context.loader.resolve("include:runtime").fiber, runtime);
 }));
 
 test("managed receipt failure fences the next Step and restart quarantines the real owner until explicit HTTP recovery", { timeout: 25000 }, () => fixture("model", async f => {
@@ -232,4 +345,42 @@ test("managed receipt failure fences the next Step and restart quarantines the r
     assert.equal((await f.change("enabled")).value.status, "succeeded");
     assert.match(f.ctx.get("tools").registry.list().find(tool => tool.name === "read").description, /managed version two/);
   } finally { store.commit = commit; }
+}));
+
+test("HTTP cancellation while waiting for a Step reopens the unchanged generation", { timeout: 20000 }, () => fixture("model", async f => {
+  await f.start();
+  const owner = f.booted.context.loader.resolve("include:tool-read").fiber;
+  const changing = f.change("disabled");
+  let early, latest;
+  void changing.then(value => { early = value; });
+  try {
+    await until(async () => {
+      latest = await f.snapshot();
+      return early !== undefined || latest.requests.some(request => request.phase === "waiting");
+    });
+  } catch (error) {
+    throw Error(`${error.message}: ${JSON.stringify({ early, requests: latest?.requests, operations: latest?.operations?.slice(-2), status: latest?.status })}`);
+  }
+  assert.equal(early, undefined, `change settled before waiting: ${JSON.stringify(early)}`);
+  const queued = (await f.snapshot()).requests.find(request => request.phase === "waiting");
+  const cancelled = await f.post("/api/management/plugins/cancel", { operationId: queued.operationId });
+  assert.deepEqual(cancelled.value, { cancelled: true });
+  const response = await changing;
+  assert.match(JSON.stringify(response.value), /management_cancelled/);
+  assert.equal(f.booted.context.loader.resolve("include:tool-read").fiber, owner);
+  assert.equal((await f.snapshot()).pending, null);
+  try { await until(async () => (await f.snapshot()).status === "ready"); }
+  catch (error) {
+    const management = await f.snapshot(), coordinator = f.booted.context.pluginChanges.snapshot();
+    throw Error(`${error.message}: state=${JSON.stringify({ status: management.status, pending: management.pending,
+      requests: management.requests, operations: management.operations.slice(-2), lastReceipt: management.lastReceipt,
+      change: coordinator, codeReload: f.booted.codeReload.snapshot() })}`);
+  }
+  assert.equal((await f.snapshot()).status, "ready");
+  f.probe.proceed.resolve();
+  let completed;
+  try { completed = await f.complete(); }
+  catch (error) { throw Error(`${error.message}: run=${JSON.stringify(await f.get(`/api/runs/${f.runId}`))}`); }
+  assert.equal(completed.status, "completed");
+  assert.equal(f.probe.requests[1].tools.some(tool => tool.name === "read"), true);
 }));

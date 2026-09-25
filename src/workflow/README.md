@@ -12,11 +12,12 @@ one Storage CAS. Run creation and child dispatch use stable idempotency keys. A 
 Attempt cannot be overwritten by a late result from an older Attempt. Frozen graphs are
 admitted only after an exact human Plan Review approval; approval itself starts nothing.
 
-`TaskGraphScheduler` validates the approved graph reference, freezes its definitions and
-submits it to `ChildWorkflowScheduler`. The latter dispatches ready Steps through the
-Subagents port, binds Attempt ↔ child ids, observes structured results, projects Tasks
-states and delivers results through Core's generic RunContinuation port. It never parses
-terminal output as authoritative completion. Subagent output remains untrusted task data.
+`TaskGraphScheduler` validates the approved graph reference, freezes its definitions,
+submits it to `ChildWorkflowScheduler` and projects Attempt results into Tasks. The child
+scheduler independently dispatches ready Steps through the Subagents port, binds Attempt ↔
+child ids, observes structured results and delivers them through Core's generic
+RunContinuation port. It never parses terminal output as authoritative completion.
+Subagent output remains untrusted task data.
 
 Scheduler concurrency defaults to 4. For the same canonical workspace, any write task
 excludes other scheduled tasks; read-only tasks may run together. These are scheduler
@@ -50,12 +51,14 @@ their deadline duration. Same-Attempt recovery never resets it.
   the stable dispatch address. Disposing the scheduler leaves tmux processes observable;
   restarting the host reconnects them. Parent Run abort releases result waiting but does
   not implicitly cancel a durable Workflow; use `workflow_cancel` for that operation.
-- Workflow continuity is distinct from rebuilding the old conversation Run. After a
-  process restart, `workflow_read` with an id in the same Agent/Session reconnects result
-  delivery to the new Run. It does not automatically reconstruct the old LLM turn.
+- Workflow continuity is distinct from rebuilding the old conversation Run.
+  `workflow_read` is deliberately a pure durable-ledger read and does not depend on the
+  Scheduler. Scheduler-backed start/retry paths attach result delivery only to a current
+  continuation; they do not reconstruct an old LLM turn after process restart.
 
-Scheduler shutdown seals both child and graph admission synchronously and awaits accepted
-submit/retry/cancel requests, active ticks, graph lookups and pending result reads. A graph
+Child-scheduler shutdown seals child admission synchronously and awaits accepted
+submit/retry/cancel requests, active ticks and pending result reads. Graph-scheduler shutdown
+independently seals graph admission and result projection, then awaits graph lookups. A graph
 lookup completing after close cannot newly freeze or submit work. An already-started freeze
 may finish durably, but no late graph submission is allowed; approved frozen graphs can be
 explicitly started again. A submission already committing a Workflow may leave prepared work
@@ -77,8 +80,9 @@ The storage/scheduler Providers and reviewed Consumers declare code reload suppo
 optional Host interfaces. The Host drains Steps, then Consumers before Providers. Activation
 reconciles saved Attempts but delays new dispatch until the durable reload receipt; failed
 replacement does not release parent holds or restart dispatch. Managed disable is different:
-unsettled work still refuses stop. The continuation owner itself is stable and cannot be
-code-reloaded; parent Runs are not reconstructed across process restarts. Custom deployment
+it drains admitted scheduler work and leaves durable Runs, Attempts, external children and
+parent holds intact for a later Scheduler generation. The continuation owner itself is stable
+and cannot be code-reloaded; parent Runs are not reconstructed across process restarts. Custom deployment
 profiles must include `cordis:workflow-continuations` and isolate `workflowContinuations`;
 the default profile supplies both without changing existing Entry IDs.
 
@@ -87,22 +91,27 @@ the default profile supplies both without changing existing Entry IDs.
 `ChildWorkflowScheduler.lifecycleSnapshot(signal)` reads durable Workflow/Attempt facts
 and current request, tick and parent-wait counts without pumping the scheduler or querying
 child processes. `TaskGraphScheduler.lifecycleSnapshot()` also counts starts awaiting Plan
-or Tasks before a Workflow exists. The scheduler Provider optionally contributes these
-read-only counts to Host lifecycle inspection, bound to its exact Fiber. Unsettled work
-is blocked, not implicitly cancelled; query cancellation does not cancel a Workflow.
+or Tasks before a Workflow exists. The independent child and graph Providers contribute
+their own read-only counts to Host lifecycle inspection, bound to their exact Fibers. Unsettled work
+reports `drain`, not implicit cancellation; query cancellation does not cancel a Workflow.
 These observations expose no task body, owner identity or raw failure message, and are not
 an execution lock or a complete stop protocol.
 
-The separate optional stop guard suspends both scheduler admission paths: new graph starts,
-child submit/retry/cancel/watch and new timer/event ticks. Suspension does not cancel or
-rewrite already admitted work. A pending graph start, request, tick, parent hold or unsettled
-durable record blocks cleanup. Before commitment the fence is reversible; allowed cleanup
-closes both schedulers, so old references cannot create work after unload. Admission fences
-are local scheduler interfaces, not a second Workflow state authority.
+Each Provider's stop guard suspends only its own admission path. Disabling the graph adapter
+drains graph starts/projections and detaches Tasks projection without stopping child dispatch.
+Disabling the child Provider also affects the graph consumer through its declared service
+dependency; dependency ordering drains graph starts before child admission closes. Parent
+holds and durable records remain with their independent owners. A successor reconciles
+existing Attempts without duplicate dispatch. Before commitment the fences are reversible.
+Admission fences are local scheduler interfaces, not a second Workflow state authority.
 
-Model Consumers: `workflow_read`, `workflow_start`, `workflow_retry`, `workflow_cancel`.
-The default `spawn_agent` Consumer uses the same scheduler for a one-Step child Workflow;
-its existing list/capture/send/stop/collect controls remain backed by Subagents. Queueing
+Model Consumers are independently owned: `workflow_read` depends only on durable Workflow
+state; `workflow_retry` and `workflow_cancel` additionally depend on the child Scheduler;
+`workflow_start` is registered separately with the Plan/Tasks graph adapter.
+The stable Subagent Tool Consumer uses this scheduler strategy for a one-Step child Workflow;
+the Workflow adapter never registers a second Tool set. Removing the adapter switches
+`spawn_agent` back to direct Subagents dispatch without replacing any of the six Tools;
+list/capture/send/stop/collect remain backed by Subagents throughout. Queueing
 returns a durable Workflow id; do not submit another child merely because it is queued.
 CLI `/review` and the WebUI Session Features panel expose the execution ledger and exact
 Attempt reconciliation controls. Direct host APIs remain usable without model Tools.
@@ -110,8 +119,9 @@ Attempt reconciliation controls. Direct host APIs remain usable without model To
 `WISH_WORKFLOW_ENABLED=0` disables the capability; `WISH_WORKFLOW_TOOLS_ENABLED=0` hides
 Workflow model controls only. Existing Subagent Tool exposure remains controlled by
 `WISH_SUBAGENT_TOOLS_ENABLED`. `WISH_WORKFLOW_MAX_CONCURRENT` configures 1–256 scheduler
-slots. The default scheduler requires Plan, Tasks and Subagents; disabling a prerequisite
-disables this adapter without moving the other modules' capabilities. Child CLIs disable
+slots. The child scheduler requires Workflow and Subagents; Plan and Tasks are required only
+by the graph adapter and `workflow_start`. Disabling either leaves one-Step `spawn_agent` and
+the remaining Workflow controls available. Child CLIs disable
 Tasks/Workflow and recursive Subagents, with isolated data and Storage directories.
 
 Storage domain `workflow/runs` uses one atomic global KV snapshot, bounded to 4096 Runs.
@@ -127,6 +137,6 @@ observation recovery without duplicate dispatch. It uses dedicated temporary dat
 paths, does not test forced Host crashes, external Providers, active parent-Run HMR or browser UI.
 `npm run test:stateful-code-reload:real` covers native managed code reload with the same real
 parent Run and tmux child, single/batched changes, in-flight commands, stable Coordinator mode,
-blocked administrative disable, failed activation and failed durable receipts. It verifies
-one dispatch/one result and unchanged child PID, Attempt id and deadline. All model calls are
+managed dependency-cascade disable/re-enable, failed activation and failed durable receipts. It
+verifies one dispatch/one result and unchanged child PID, Attempt id and deadline. All model calls are
 deterministic loopback fixtures, not external Provider or browser acceptance.

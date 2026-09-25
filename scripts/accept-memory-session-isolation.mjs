@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Context } from "@deepseek-ai/cordis";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,7 @@ import { hash } from "../dist/memory/validation.js";
 test("Memory proposal follows the Application Session lease, never the default data root", async () => {
   const root = await mkdtemp(join(tmpdir(), "wish-memory-session-isolation-"));
   const memory = new MemoryRuntime(new InMemoryStateStore());
+  const owner = new Context();
   try {
     const defaults = createFileSessionResources(join(root, "default"));
     const custom = createFileSessionResources(join(root, "custom"));
@@ -25,7 +27,10 @@ test("Memory proposal follows the Application Session lease, never the default d
     }] });
     const registry = new ToolRegistry();
     // A default manager with identical logical IDs must not be used by this Consumer.
-    MemoryWriteTool.apply({ memory, tools: { register: definition => registry.register(definition) }, sessions: defaults });
+    owner.provide("memory", memory);
+    owner.provide("tools", { register: definition => registry.register(definition) });
+    owner.provide("sessions", defaults);
+    await owner.plugin(MemoryWriteTool);
     const ref = { provider: "fixture", model: "fixture" };
     let invocations = 0;
     const context = createContextBundle({ history: custom.history.context,
@@ -58,7 +63,7 @@ test("Memory proposal follows the Application Session lease, never the default d
     assert.equal(prefix[0].message.content, "CUSTOM ACTUAL EVIDENCE");
     assert.equal(defaultHistory.records.length, 1);
     assert.equal((await memory.query()).length, 0);
-  } finally { await memory.close(); await rm(root, { recursive: true, force: true }); }
+  } finally { await owner.fiber.dispose(); await memory.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("Memory evidence fails closed without a Host port or with a foreign Session", async () => {

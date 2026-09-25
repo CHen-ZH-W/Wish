@@ -70,6 +70,33 @@ export class DomainSessionReasoningStore implements SessionReasoningStore {
   }
 }
 
+/** Resolve and pin the current Backend generation for exactly one operation.
+ * This keeps Models independent of a particular Storage Fiber while ensuring
+ * Provider retirement can drain every admitted read/write lease.
+ */
+export class LeasedSessionReasoningStore implements SessionReasoningStore {
+  constructor(private readonly current: () => { readonly storage: StorageBackendResolver; readonly backendId: string }) {}
+
+  get(sessionId: string, signal?: AbortSignal) {
+    return this.withStore(store => store.get(sessionId, signal));
+  }
+
+  put(selection: SessionReasoningSelection, revision: string | undefined, signal?: AbortSignal): Promise<void> {
+    return this.withStore(store => store.put(selection, revision, signal));
+  }
+
+  delete(sessionId: string, revision: string, signal?: AbortSignal): Promise<void> {
+    return this.withStore(store => store.delete(sessionId, revision, signal));
+  }
+
+  private async withStore<T>(action: (store: DomainSessionReasoningStore) => Promise<T>): Promise<T> {
+    const current = this.current();
+    const lease = current.storage.acquire(current.backendId, domainSpec.requirements);
+    try { return await action(new DomainSessionReasoningStore(lease, current.backendId)); }
+    finally { lease.release(); }
+  }
+}
+
 /** Validation belongs to Models; callers never supply arbitrary Provider JSON. */
 export class SessionReasoningSelections implements SessionReasoningPort {
   constructor(private readonly configuredModel: ConfiguredModel, private readonly store: SessionReasoningStore) {}

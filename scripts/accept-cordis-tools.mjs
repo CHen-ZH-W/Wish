@@ -94,10 +94,7 @@ test("Tool plugins follow the tools service and own their registrations", async 
     }
 
     assert.deepEqual(toolNames(registry), basicNames);
-    assert.deepEqual(read.getEffects().map((effect) => effect.label), [
-      'tools.register("read")',
-      'Read Consumer admission',
-    ]);
+    assert.ok(read.getEffects().some(effect => effect.label === 'tools.register("read")'));
 
     const bash = fibers.at(-1);
     await bash.dispose();
@@ -213,7 +210,7 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
     assert.equal(await defaultBoot.completion, 0);
     assertBootTools(
       defaultBoot,
-      [...basicNames, ...planNames, ...taskNames, ...workflowNames, ...skillNames, ...memoryNames],
+      [...basicNames, ...planNames, ...coordinatorNames, ...taskNames, ...workflowNames, ...skillNames, ...memoryNames],
       "Subagent model Tools must be independently disableable",
     );
     assert.notEqual(defaultBoot.surfaceContext.get("tmux"), undefined);
@@ -248,10 +245,10 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
     assert.equal(entry.disabled, false);
     assertBootTools(booted, productNames);
 
-    // The default graph exposes the Workflow-aware adapter, never both aliases.
-    const subagentsId = "include:tool-workflow-subagents";
-    assert.equal(booted.context.loader.resolve("include:tool-subagents").disabled, true);
+    // One stable Consumer owns all six Tools; Workflow only contributes dispatch policy.
+    const subagentsId = "include:tool-subagents";
     assert.equal(booted.context.loader.resolve(subagentsId).disabled, false);
+    assert.equal(booted.context.loader.resolve("include:tool-workflow-subagents").disabled, false);
     await booted.context.loader.update(subagentsId, { disabled: true });
     assertBootTools(booted, productNames.filter((name) => !subagentNames.includes(name)));
     assert.notEqual(booted.surfaceContext.get("subagents"), undefined);

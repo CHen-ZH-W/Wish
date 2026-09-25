@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 import { Service, type Context } from "@deepseek-ai/cordis";
 
 import type {
@@ -19,14 +20,17 @@ import {
 
 /** Cordis lifecycle hub for replaceable, named Storage Backends. */
 export class StorageHub extends Service implements StorageBackendResolver {
+  private readonly work: PluginWorkOwner;
   private readonly backends = new Map<string, BackendRecord>();
 
   constructor(ctx: Context) {
     super(ctx, "storage");
+    this.work = new PluginWorkOwner(ctx, { code: "storage_hub", codeReload: true });
   }
 
   /** Register one Backend for exactly the lifetime of the calling plugin fiber. */
   register(backend: StorageBackend): StorageBackendRegistration {
+    this.work.assertAttached();
     validateBackend(backend);
     if (this.backends.has(backend.id)) {
       throw new StorageConflictError(
@@ -96,6 +100,7 @@ export class StorageHub extends Service implements StorageBackendResolver {
     backendId: string,
     requirement: StorageBackendRequirement = {},
   ): StorageBackendLease {
+    this.work.assertAttached();
     const id = requireBackendId(backendId);
     const record = this.backends.get(id);
     if (record === undefined || record.state !== "active" || record.fences.size > 0) {
@@ -108,6 +113,7 @@ export class StorageHub extends Service implements StorageBackendResolver {
     backendId: string,
     requirement: StorageBackendRequirement = {},
   ): StorageBackend {
+    this.work.assertAttached();
     const id = requireBackendId(backendId);
     const record = this.backends.get(id);
     if (record === undefined || record.state !== "active" || record.fences.size > 0) {

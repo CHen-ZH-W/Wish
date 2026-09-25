@@ -1,0 +1,25 @@
+{
+  "apiVersion": "wish.plugin/v1",
+  "id": "example.greeting-tool",
+  "displayName": "Greeting Tool",
+  "entry": "./tool.mjs",
+  "managementClass": "managed",
+  "replacement": "drain",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "permissions": {
+    "capabilities": []
+  },
+  "sandbox": {
+    "isolation": "trusted-in-process",
+    "filesystem": "none",
+    "process": "none",
+    "network": "none"
+  },
+  "state": {
+    "mode": "stateless"
+  }
+}

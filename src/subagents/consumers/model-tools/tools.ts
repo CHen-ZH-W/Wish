@@ -184,7 +184,7 @@ export function createSubagentTools(
               ...(signal === undefined ? {} : { signal }),
             });
           }
-          return recordOutput("Started", record);
+          return subagentRecordOutput("Started", record);
         } catch (error: unknown) {
           throw toolError(error);
         }
@@ -265,7 +265,7 @@ export function createSubagentTools(
       "stop_agent",
       "Stop a child Agent through its execution Provider. The operation is idempotent.",
       "stop",
-      async (input, context, signal) => recordOutput(
+      async (input, context, signal) => subagentRecordOutput(
         "Stopped",
         await subagents.stop({
           id: input.id,
@@ -455,7 +455,7 @@ function owner(
   };
 }
 
-function recordOutput(action: string, record: SubagentRecord): AgentToolOutput {
+export function subagentRecordOutput(action: string, record: SubagentRecord): AgentToolOutput {
   return Object.freeze({
     content: Object.freeze([Object.freeze({
       type: "text" as const,

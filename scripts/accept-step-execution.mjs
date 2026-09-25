@@ -8,6 +8,14 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const definition = { id: "agent" };
 const input = { scope: "session", payload: { text: "first" } };
 
+test("a Host-proven unchanged rejection reopens Step admission", async () => {
+  const boundary = new StepExecutionCoordinator();
+  await assert.rejects(boundary.replace(async () => { throw Error("validation rejected"); }, { unchanged: () => true }), /validation rejected/);
+  assert.equal(boundary.snapshot().phase, "ready");
+  const lease = await boundary.source(() => ({ pipeline: {}, release() {} })).acquire({ signal: new AbortController().signal });
+  lease.release(); assert.equal(boundary.snapshot().activeSteps, 0);
+});
+
 test("one Run pins the old pipeline through durable Step finish, then uses the new implementation with its queues and memory intact", async () => {
   const boundary = new StepExecutionCoordinator(), entered = deferred(), finish = deferred(), committing = deferred(), committed = deferred();
   const calls = [], releases = []; let version = 1, changed = false;

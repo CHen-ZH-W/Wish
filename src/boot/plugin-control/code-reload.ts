@@ -1,9 +1,21 @@
-import { FiberState, type Context, type Fiber, type Plugin } from "@deepseek-ai/cordis";
+import { FiberState, type Context, type Plugin } from "@deepseek-ai/cordis";
 import Hmr from "@deepseek-ai/cordis-plugin-hmr";
 import type { PluginInspection, PluginInspectionSnapshot } from "./types.js";
+import {
+  getOrInstallPluginOwnerRegistry,
+  type PluginChangeGuard,
+  type PluginOwnerRecord,
+  type PluginOwnerRegistry,
+  type PluginReplacementParticipant,
+} from "./owner-registry.js";
+import {
+  getOrInstallPluginChangeCoordinator,
+  type PluginChangeCoordinator,
+  type PluginChangeScope,
+} from "./change-coordinator.js";
 
 interface ExecutionBoundary {
-  replace(update: () => Promise<void>, options: { readonly signal: AbortSignal }): Promise<void>;
+  replace(update: () => Promise<void>, options: { readonly signal: AbortSignal; readonly unchanged?: () => boolean }): Promise<void>;
   snapshot(): { readonly phase: string };
 }
 type Batch = ReadonlyMap<Plugin, { readonly filename: string; readonly runtime?: Plugin.Runtime }>;
@@ -19,6 +31,8 @@ export interface CodeReloadInspection {
 }
 /** Host-only persistence permit, valid only inside its serialized native batch. */
 export interface CodeReloadPermit {
+  /** Shared top-level scope; only the Host and code-reload adapter consume it. */
+  readonly change: PluginChangeScope;
   apply(entryIds: readonly string[], update: () => Promise<void>): Promise<void>;
 }
 export interface CodeReloadTransaction {
@@ -28,34 +42,38 @@ export interface CodeReloadTransaction {
  * Called consumer-first after all current Steps complete. Must seal admission
  * synchronously; admitted work drains against still-live dependencies.
  */
-export interface CodeReloadParticipant {
-  prepare(): { readonly drained: Promise<void>; release(): void | Promise<void> };
-}
+export type CodeReloadParticipant = PluginReplacementParticipant;
 declare module "@deepseek-ai/cordis" {
   interface Context { codeReload: CodeReloadCoordinator }
 }
 
 export function installCodeReload(root: Context, inspection: PluginInspection): CodeReloadInspection {
-  if (Hmr.coordinationVersion !== 3) throw new Error("Cordis HMR coordination patch missing; run npm run build before starting Wish");
-  const coordinator = new CodeReloadCoordinator(root, inspection);
+  if (Hmr.coordinationVersion !== 5) throw new Error("Cordis HMR coordination patch missing; run npm run build before starting Wish");
+  const coordinator = new CodeReloadCoordinator(root, inspection, getOrInstallPluginOwnerRegistry(root),
+    getOrInstallPluginChangeCoordinator(root));
   root.provide("codeReload", coordinator);
   return Object.freeze({ snapshot: () => coordinator.snapshot(), subscribe: (listener: () => void) => coordinator.subscribe(listener) });
 }
 
 /** Root-owned lifecycle adapter. Native HMR still owns module analysis, caches and replacement. */
 class CodeReloadCoordinator implements CodeReloadInspection {
-  private readonly safe = new Map<number, { fiber: Fiber; participant?: CodeReloadParticipant }>();
   private readonly boundaries = new Map<number, ExecutionBoundary>();
-  private readonly starts = new Map<number, () => void>();
+  private readonly starts = new Map<number, Set<() => void>>();
   private readonly closing = new AbortController();
   private readonly listeners = new Set<() => void>();
   private configRevision = 0;
   private busy = false;
+  private configurationApplying = false;
   private transaction?: CodeReloadTransaction;
   private permit: CodeReloadPermit | undefined;
   private view: CodeReloadSnapshot = Object.freeze({ phase: "idle", revision: 0, code: null, entryIds: Object.freeze([]) });
 
-  constructor(private readonly root: Context, private readonly inspection: PluginInspection) {
+  constructor(
+    private readonly root: Context,
+    private readonly inspection: PluginInspection,
+    private readonly owners: PluginOwnerRegistry,
+    private readonly changes: PluginChangeCoordinator,
+  ) {
     const coordinator = this;
     root.on("internal/config", function (_config, next) {
       const value = next();
@@ -77,7 +95,8 @@ class CodeReloadCoordinator implements CodeReloadInspection {
     root.on("hmr/reload-prepare", (batch, signal, next) => this.coordinate(batch, signal, next), { global: true, prepend: true });
     root.on("hmr/reload-failed", (_error, phase) => {
       if (this.closing.signal.aborted || this.view.phase === "recovery-required" || (phase === "prepare" && this.view.phase === "rejected")) return;
-      this.set(phase === "apply" ? "recovery-required" : "rejected", `code_reload_${phase}_failed`);
+      this.set(phase === "apply" ? "recovery-required" : "rejected",
+        phase === "restored" ? "code_reload_candidate_rolled_back" : `code_reload_${phase}_failed`);
     }, { global: true });
     root.on("hmr/restart", () => {
       // A framework/Boot edit must not silently exit a Host with live Runs.
@@ -96,51 +115,127 @@ class CodeReloadCoordinator implements CodeReloadInspection {
   }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   register(owner: Context, participant?: CodeReloadParticipant): void {
-    const id = this.ownerId(owner);
-    owner.effect(() => { this.safe.set(id, { fiber: owner.fiber, ...(participant ? { participant } : {}) }); return () => { this.safe.delete(id); }; }, "code-reloadable owner");
+    this.ownerId(owner);
+    this.owners.registerReplacement(owner, participant);
   }
   registerBoundary(owner: Context, boundary: ExecutionBoundary): void {
     const id = this.ownerId(owner);
     owner.effect(() => { this.boundaries.set(id, boundary); return () => { this.boundaries.delete(id); }; }, "code reload execution boundary");
   }
+  registerRestartBoundary(owner: Context): void {
+    this.ownerId(owner);
+    this.owners.registerRestart(owner);
+  }
+  /** Declaration coverage only; dependency and busy-state validation is separate. */
+  coverage(id: number): "registered" | "restart" | "unregistered" {
+    return this.owners.coverage(id).codeReload;
+  }
   /** New background dispatchers must not start before the durable receipt.
    * Reconciliation/Service.init must finish without waiting for this callback.
    * The callback only opens local admission; it must not throw or await work.
-   */
+    */
   startWhenReady(owner: Context, start: () => void): void {
     const id = this.ownerId(owner);
-    if (!this.safe.has(id)) throw Error("code_reload_owner_unsupported");
-    if (this.view.phase !== "applying" && this.view.phase !== "recovery-required") { start(); return; }
-    owner.effect(() => { this.starts.set(id, start); return () => { this.starts.delete(id); }; }, "post-reload activation");
+    if (this.coverage(id) !== "registered") throw Error("code_reload_owner_unsupported");
+    if (!this.configurationApplying && this.view.phase !== "applying" && this.view.phase !== "recovery-required") { start(); return; }
+    let dispose = () => {};
+    const activate = () => { dispose(); start(); };
+    dispose = owner.effect(() => {
+      const starts = this.starts.get(id) ?? new Set<() => void>();
+      starts.add(activate); this.starts.set(id, starts);
+      return () => { starts.delete(activate); if (!starts.size && this.starts.get(id) === starts) this.starts.delete(id); };
+    }, "post-reload activation");
+  }
+
+  /** Configuration and code changes share the same Step admission boundary.
+   * Stable owners selected for retirement use their own idle-Run stop guards.
+   */
+  async pauseConfiguration<T>(affected: readonly number[], action: () => Promise<T>, options: {
+    readonly signal: AbortSignal; readonly uncertain: () => boolean;
+  }): Promise<T> {
+    if (this.busy || this.view.phase === "recovery-required" || this.closing.signal.aborted) throw Error("code_reload_unavailable");
+    this.busy = true;
+    const boundaries = [...this.boundaries].filter(([id]) => !affected.includes(id)).map(([, boundary]) => boundary);
+    const signal = AbortSignal.any([options.signal, this.closing.signal]);
+    let result!: T;
+    let committed = false;
+    const enter = async (index: number): Promise<void> => {
+      if (index < boundaries.length) return boundaries[index]!.replace(() => enter(index + 1), {
+        signal, unchanged: () => !committed && !options.uncertain(),
+      });
+      signal.throwIfAborted();
+      this.configurationApplying = true;
+      result = await action();
+      committed = true;
+      const starts = [...this.starts.values()].flatMap(starts => [...starts]); this.starts.clear();
+      for (const start of starts) start();
+      this.configurationApplying = false;
+    };
+    try { await enter(0); return result; }
+    catch (error) {
+      if (committed || options.uncertain() || boundaries.some(boundary => boundary.snapshot().phase === "failed")) {
+        this.set("recovery-required", "code_reload_configuration_failed");
+      } else this.configurationApplying = false;
+      throw error;
+    } finally { this.busy = false; }
   }
   private ownerId(owner: Context): number {
     if (owner.root !== this.root.root || owner.fiber.uid === null || this.closing.signal.aborted) throw Error("code_reload_owner_unavailable");
     return owner.fiber.uid;
   }
-  private async coordinate(batch: Batch, signal: AbortSignal, apply: () => Promise<void>): Promise<void> {
+  private coordinate(batch: Batch, signal: AbortSignal, apply: () => Promise<void>): Promise<void> {
     if (this.transaction && !this.permit) throw Error("code_reload_transaction_required");
+    if (this.permit) return this.coordinateWithin(batch, signal, apply, this.permit.change);
+    return this.changes.run({ kind: "replace", source: "hmr" },
+      scope => this.coordinateWithin(batch, signal, apply, scope), { signal });
+  }
+  private async coordinateWithin(batch: Batch, signal: AbortSignal, apply: () => Promise<void>, scope: PluginChangeScope): Promise<void> {
     if (this.busy || this.view.phase === "recovery-required" || this.closing.signal.aborted) throw Error("code_reload_unavailable");
     this.busy = true;
-    let applying = false;
+    let applying = false, rolledBack = false;
     try {
-      const before = this.inspection.inspect(), configRevision = this.configRevision;
+      const before = this.inspection.inspect(), configRevision = this.configRevision, ownerRevision = this.owners.revision;
       const affected = this.affected(batch, before);
+      const records = new Map<number, PluginOwnerRecord>();
       const entries = before.fibers.filter(fiber => affected.has(fiber.id) && fiber.entryId).map(fiber => fiber.entryId!);
+      await scope.target([...new Set(entries)].sort());
       this.set("draining", null, [...new Set(entries)].sort());
       for (const id of affected) {
-        if (!this.safe.has(id) || this.boundaries.has(id)) throw Error("code_reload_owner_unsupported");
+        if (this.owners.coverage(id).codeReload === "restart") throw Error("code_reload_restart_required");
+        const record = this.owners.record(id);
+        const fiber = before.fibers.find(item => item.id === id);
+        const entry = fiber?.entryId ? before.entries.find(item => item.id === fiber.entryId) : undefined;
+        if (!record?.canReplace || (entry?.managementClass === "managed" && !record.canonical)) {
+          throw Error("code_reload_owner_unsupported");
+        }
+        records.set(id, record);
       }
-      const boundaries = [...this.boundaries.values()];
+      // A replaced execution-boundary owner cannot coordinate its own disposal.
+      // Other live Runtime boundaries still protect this update.
+      const boundaries = [...this.boundaries].filter(([id]) => !affected.has(id)).map(([, boundary]) => boundary);
       const combined = AbortSignal.any([signal, this.closing.signal]);
+      await scope.phase("waiting-safe-point");
       const applyAtBoundary = async (index: number): Promise<void> => {
-        if (index < boundaries.length) return boundaries[index]!.replace(() => applyAtBoundary(index + 1), { signal: combined });
+        if (index < boundaries.length) return boundaries[index]!.replace(() => applyAtBoundary(index + 1), {
+          signal: combined,
+          // Native HMR has already disposed the rejected candidate, restored
+          // the retained generation, and verified it before raising this code.
+          unchanged: () => rolledBack,
+        });
         combined.throwIfAborted();
-        if (configRevision !== this.configRevision || JSON.stringify(before) !== JSON.stringify(this.inspection.inspect())) {
+        if (ownerRevision !== this.owners.revision || configRevision !== this.configRevision ||
+          JSON.stringify(before) !== JSON.stringify(this.inspection.inspect())) {
           throw Error("code_reload_graph_changed");
         }
         const update = async () => {
-          applying = true; this.set("applying", null);
+          applying = true; await scope.phase("switching"); this.set("applying", null);
           await apply();
+          if (this.view.phase === "rejected" && this.view.code === "code_reload_candidate_rolled_back") {
+            rolledBack = true;
+            throw Error("code_reload_candidate_rolled_back");
+          }
+          await scope.phase("retiring");
+          await scope.phase("verifying");
           const after = this.inspection.inspect();
           // Stable owners must survive; newly activated owners must renew their
           // declaration before the barrier admits another Step.
@@ -151,28 +246,34 @@ class CodeReloadCoordinator implements CodeReloadInspection {
           }
           for (const entryId of entries) {
             const current = after.entries.find(entry => entry.id === entryId);
-            if (!current || current.phase !== "active" || current.fiberId === null || !this.safe.has(current.fiberId)) {
+            const owner = current?.fiberId === null || current?.fiberId === undefined ? undefined : this.owners.record(current.fiberId);
+            if (!current || current.phase !== "active" || current.fiberId === null ||
+              this.owners.coverage(current.fiberId).codeReload !== "registered" ||
+              (current.managementClass === "managed" && !owner?.canonical)) {
               throw Error("code_reload_owner_not_restored");
             }
           }
         };
         // The durable success receipt must land before the Step barrier reopens.
-        const prepared: ReturnType<CodeReloadParticipant["prepare"]>[] = [];
+        const prepared: PluginChangeGuard[] = [];
         try {
+          await scope.phase("fencing");
+          await scope.phase("draining");
           for (const id of this.consumerOrder(affected, before)) {
             combined.throwIfAborted();
-            const participant = this.safe.get(id)?.participant;
-            if (!participant) continue;
-            const fence = participant.prepare(); prepared.push(fence);
+            const record = records.get(id)!;
+            const fence = this.owners.prepare(record, { kind: "replace", source: "hmr" }); prepared.push(fence);
             await fence.drained;
           }
           combined.throwIfAborted();
-          if (configRevision !== this.configRevision || JSON.stringify(before) !== JSON.stringify(this.inspection.inspect())) {
+          if (ownerRevision !== this.owners.revision || configRevision !== this.configRevision ||
+            JSON.stringify(before) !== JSON.stringify(this.inspection.inspect())) {
             throw Error("code_reload_graph_changed");
           }
+          await scope.phase("staging");
           if (this.permit) await this.permit.apply([...new Set(entries)].sort(), update);
           else await update();
-          const starts = [...this.starts.values()]; this.starts.clear();
+          const starts = [...this.starts.values()].flatMap(starts => [...starts]); this.starts.clear();
           for (const start of starts) start();
         } finally {
           // Before disposal the old implementations can resume. Once apply has
@@ -184,8 +285,15 @@ class CodeReloadCoordinator implements CodeReloadInspection {
       this.set("succeeded", "code_reload_applied");
     } catch (error) {
       const fenced = [...this.boundaries.values()].some(boundary => boundary.snapshot().phase === "failed");
-      if (!this.closing.signal.aborted) this.set(applying || fenced ? "recovery-required" : "rejected",
-        error instanceof Error && /^code_reload_[a-z_]+$/.test(error.message) ? error.message : "code_reload_failed");
+      const code = error instanceof Error && /^code_reload_[a-z_]+$/.test(error.message) ? error.message : "code_reload_failed";
+      const restored = code === "code_reload_candidate_rolled_back";
+      if (restored) {
+        const starts = [...this.starts.values()].flatMap(starts => [...starts]); this.starts.clear();
+        for (const start of starts) start();
+      }
+      if (!this.closing.signal.aborted) this.set(!restored && (applying || fenced) ? "recovery-required" : "rejected", code);
+      if (!restored && (applying || fenced)) await scope.recovery(code);
+      else await scope.reject(code);
       throw error;
     } finally { this.busy = false; }
   }

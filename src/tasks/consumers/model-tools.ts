@@ -1,3 +1,4 @@
+import { ManagedToolOwner } from "../../tools/managed.js";
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolDefinition } from "../../core/tools/tool.js";
 import { assertActiveToolAuthorizationGrant } from "../../core/tools/authorization.js";
@@ -6,8 +7,10 @@ import type { Plan } from "../../plan/types.js";
 import { normalizeTasks, readyTasks } from "../graph.js";
 import type { Tasks, TaskSpec } from "../types.js";
 
-export function createTaskTools(tasks: Tasks, plan: Plan): readonly ToolDefinition<string, any, unknown, WishToolExecutionContext>[] {
-  return ["tasks_read", "tasks_update"].map((name) => ({
+type TaskToolName = "tasks_read" | "tasks_update";
+
+function definitions(tasks: Tasks, names: readonly TaskToolName[], plan?: Plan): readonly ToolDefinition<string, any, unknown, WishToolExecutionContext>[] {
+  return names.map((name) => ({
     name, description: name === "tasks_read" ? "Read the versioned task graph and runtime-owned execution states."
       : "In Plan mode, replace the task graph and attach its exact version to the saved Plan. Requires a saved Plan first. Each task declares dependencies and execution role/readOnly/timeoutMs. Does not execute tasks.",
     inputSchemaJson: JSON.stringify(name === "tasks_read" ? { type: "object", properties: {}, additionalProperties: false } : {
@@ -34,11 +37,11 @@ export function createTaskTools(tasks: Tasks, plan: Plan): readonly ToolDefiniti
       assertActiveToolAuthorizationGrant(grant!);
       const sessionId = context.permissions.subject.sessionId;
       if (name === "tasks_update") {
-        const current = await plan.get({ sessionId });
+        const current = await plan!.get({ sessionId });
         if (!current?.active || !current.document) throw new Error("Save a Plan before editing tasks");
-        await plan.feedback({ sessionId, text: "Task graph is being revised", actor: "tasks-consumer" });
+        await plan!.feedback({ sessionId, text: "Task graph is being revised", actor: "tasks-consumer" });
         const graph = await tasks.replace(sessionId, input.tasks, input.expectedVersion);
-        await plan.update({ sessionId, expectedPlanVersion: current.document.version, markdown: current.document.markdown, artifacts: [
+        await plan!.update({ sessionId, expectedPlanVersion: current.document.version, markdown: current.document.markdown, artifacts: [
           ...(current.document.artifacts ?? []).filter((ref) => ref.kind !== "tasks"),
           { kind: "tasks", id: sessionId, version: graph.version, digest: graph.digest },
         ] });
@@ -49,9 +52,14 @@ export function createTaskTools(tasks: Tasks, plan: Plan): readonly ToolDefiniti
   }));
 }
 
-export default { name: "task-tools", inject: ["tools", "tasks", "plan"], apply(ctx: Context) {
-  for (const tool of createTaskTools(ctx.tasks, ctx.plan)) {
-    ctx.plan.registerModeControl({ toolName: tool.name, resourcePrefix: "tasks." });
-    ctx.tools.register(tool);
-  }
+export function createTaskReadTool(tasks: Tasks) { return definitions(tasks, ["tasks_read"])[0]!; }
+export function createTaskUpdateTool(tasks: Tasks, plan: Plan) { return definitions(tasks, ["tasks_update"], plan)[0]!; }
+/** Standalone composition compatibility; product entries register these slices separately. */
+export function createTaskTools(tasks: Tasks, plan: Plan): readonly ToolDefinition<string, any, unknown, WishToolExecutionContext>[] {
+  return definitions(tasks, ["tasks_read", "tasks_update"], plan);
+}
+
+export default { name: "task-tools", inject: ["tools", "tasks"], apply(ctx: Context) {
+  const owner = new ManagedToolOwner(ctx, { code: "task_read_tool", codeReload: true });
+  owner.register(createTaskReadTool(ctx.tasks));
 } };

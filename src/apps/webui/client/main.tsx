@@ -83,7 +83,7 @@ export async function mountWishBrowser(element: HTMLElement): Promise<() => Prom
   // Tool exposure is independent of UI code availability.
   for (const name of ["read", "write", "edit", "grep", "bash"]) root.effect(() => bindToolAvailability(root, [name], [`include:tool-${name}`]));
   root.effect(() => bindToolAvailability(root, ["list_skills", "read_skill"], ["include:skills-tools"]));
-  root.effect(() => bindToolAvailability(root, ["spawn_agent", "list_agents", "capture_agent", "send_agent", "collect_agent"], ["include:tool-subagents", "include:tool-workflow-subagents"]));
+  root.effect(() => bindToolAvailability(root, ["spawn_agent", "list_agents", "capture_agent", "send_agent", "stop_agent", "collect_agent"], ["include:tool-subagents"]));
   await root.plugin(TrajectoryClientUi);
   const renderer = createRoot(element); renderer.render(<LanguageProvider model={root.get("wishSettings")!}><Shell slots={slots} connection={connection} /></LanguageProvider>);
   try {

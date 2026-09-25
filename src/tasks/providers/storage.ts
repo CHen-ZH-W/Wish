@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 import { TasksService } from "../service.js";
@@ -18,10 +19,12 @@ export default class StorageTasks extends TasksService {
     super(ctx);
     const lease = ctx.storageBackend.acquire(config.backendId ?? ctx.storageBackend.id, { kv: { list: false } });
     const runtime = new TaskRuntime(new DomainTaskStore(lease, lease.id));
-    this.get = runtime.get.bind(runtime); this.replace = runtime.replace.bind(runtime);
-    this.freeze = runtime.freeze.bind(runtime); this.transition = runtime.transition.bind(runtime);
-    let closing: Promise<void> | undefined;
-    this.close = () => closing ??= runtime.close().finally(() => lease.release());
-    ctx.effect(() => () => this.close(), "tasks.close");
+    const work = new PluginWorkOwner(ctx, { code: "tasks", codeReload: true,
+      close: () => runtime.close().finally(() => lease.release()) });
+    this.get = (...args) => work.run(() => runtime.get(...args));
+    this.replace = (...args) => work.run(() => runtime.replace(...args));
+    this.freeze = (...args) => work.run(() => runtime.freeze(...args));
+    this.transition = (...args) => work.run(() => runtime.transition(...args));
+    this.close = () => work.close();
   }
 }

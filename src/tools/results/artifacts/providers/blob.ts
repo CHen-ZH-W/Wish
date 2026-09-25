@@ -1,5 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { PluginWorkOwner } from "../../../../boot/plugin-control/work-owner.js";
 
 import type { ToolResultArtifact } from "../../../../core/tools/tool.js";
 import type { BlobReference, BlobStorageBackend } from "../../../../storage/blob.js";
@@ -30,6 +31,7 @@ export class BlobToolOutputArtifacts extends ToolOutputArtifactsService {
   private readonly lease: StorageBackendLease;
   private readonly blob: BlobStorageBackend;
   private released = false;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
@@ -38,13 +40,21 @@ export class BlobToolOutputArtifacts extends ToolOutputArtifactsService {
       blob: { contentAddressed: true },
     });
     this.blob = this.lease.resolve(backendId, "blob");
-    ctx.effect(() => () => {
+    this.work = new PluginWorkOwner(ctx, { code: "tool_output_artifacts", codeReload: true, close: () => {
       this.released = true;
       this.lease.release();
-    }, "tool-output-artifacts.release");
+    } });
   }
 
-  async put(request: PutToolOutputArtifactRequest): Promise<ToolResultArtifact> {
+  put(request: PutToolOutputArtifactRequest): Promise<ToolResultArtifact> {
+    return this.work.run(() => this.putAccepted(request));
+  }
+
+  get(request: GetToolOutputArtifactRequest): Promise<Uint8Array | undefined> {
+    return this.work.run(() => this.getAccepted(request));
+  }
+
+  private async putAccepted(request: PutToolOutputArtifactRequest): Promise<ToolResultArtifact> {
     this.assertOpen();
     validatePutRequest(request);
     const reference = await this.blob.put({
@@ -64,7 +74,7 @@ export class BlobToolOutputArtifacts extends ToolOutputArtifactsService {
     });
   }
 
-  async get(
+  private async getAccepted(
     request: GetToolOutputArtifactRequest,
   ): Promise<Uint8Array | undefined> {
     this.assertOpen();

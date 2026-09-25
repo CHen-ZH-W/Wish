@@ -1,5 +1,4 @@
-import { FiberState, type Context, type Fiber } from "@deepseek-ai/cordis";
-import type { Entry } from "@deepseek-ai/cordis-plugin-loader";
+import { FiberState, type Context } from "@deepseek-ai/cordis";
 import type { PluginInspection } from "./types.js";
 import type {
   PluginLifecycleCollection, PluginLifecycleInspection, PluginLifecycleOwnerView,
@@ -7,19 +6,22 @@ import type {
 } from "./management-types.js";
 import { previewPluginSelection } from "./selection.js";
 import { PluginStopAdmissionUncertainError, type PreparePluginStop, type PluginStopGuard } from "./stop-contract.js";
+import {
+  getOrInstallPluginOwnerRegistry,
+  registerPluginOwner,
+  type PluginLifecycleCoverage,
+  type PluginOwnerRecord,
+  type PluginOwnerRegistry,
+} from "./owner-registry.js";
+import type { PluginChange } from "./change-coordinator.js";
 
 /** Module-owned query; must observe without reconciliation, admission changes or writes. */
 export type PluginLifecycleQuery = (signal: AbortSignal) => PluginLifecycleStatus | Promise<PluginLifecycleStatus>;
+export type { PluginLifecycleCoverage } from "./owner-registry.js";
 
-interface Registration {
-  readonly id: number;
-  readonly fiber: Fiber;
+interface QueryState {
   readonly fiberId: number;
-  readonly entry: Entry | undefined;
-  readonly query: PluginLifecycleQuery;
-  readonly prepare: PreparePluginStop | undefined;
   readonly pending: Set<AbortController>;
-  active: boolean;
   running: boolean;
 }
 
@@ -32,6 +34,32 @@ export function registerPluginLifecycle(owner: Context, query: PluginLifecycleQu
   owner.root.get("pluginLifecycle")?.register(owner, query, prepare);
 }
 
+/** One declaration for owners whose existing stop guard is also their code-change fence.
+ * Native HMR owns deactivation after every affected Consumer has been fenced; disable
+ * continues to close Consumer -> Provider through the lifecycle coordinator.
+ */
+export function registerReplaceablePluginLifecycle(
+  owner: Context,
+  query: PluginLifecycleQuery,
+  prepare: PreparePluginStop,
+  replacement: "drain" | "generation" = "drain",
+): void {
+  registerPluginOwner(owner, {
+    status: query,
+    replacement,
+    prepare: () => {
+      const guard = prepare();
+      return {
+        // Long-lived leases are released by affected Consumers during native
+        // teardown. Waiting for them before teardown would deadlock Providers.
+        drained: Promise.resolve(),
+        deactivate: () => Promise.resolve().then(() => guard.close()),
+        release: () => guard.release(),
+      };
+    },
+  });
+}
+
 export function installPluginLifecycle(
   root: Context,
   inspection: PluginInspection,
@@ -40,31 +68,43 @@ export function installPluginLifecycle(
   if (root.fiber.uid !== 0) throw new Error("Plugin lifecycle must be installed on the process Root");
   if (root.get("pluginLifecycle") !== undefined) throw new Error("Plugin lifecycle is already installed");
   if (root.get("pluginInspection") !== inspection) throw new Error("Plugin lifecycle requires this Root's inspection");
-  const registry = new PluginLifecycleRegistry(root, inspection, options.queryTimeoutMs ?? 1000);
+  const registry = new PluginLifecycleRegistry(root, inspection, options.queryTimeoutMs ?? 1000,
+    getOrInstallPluginOwnerRegistry(root));
   root.provide("pluginLifecycle", registry);
   // Keep the external Host read port distinct from the in-process registration seam.
   return Object.freeze({ collect: (selection: PluginSelection) => registry.collect(selection) });
 }
 
-/** Owns query/guard registrations, not plugin instances or resource state. */
+/** Compatibility read/stop adapter over the Root-owned Owner Registry. */
 export class PluginLifecycleRegistry implements PluginLifecycleInspection {
-  private readonly registrations = new Map<Fiber, Registration>();
-  private nextId = 0;
+  private readonly queryStates = new Map<number, QueryState>();
   private revision = 0;
   private closed = false;
   private readonly observations = new WeakMap<PluginLifecycleCollection, number>();
+  private readonly unsubscribeOwners: () => void;
 
   constructor(
     private readonly root: Context,
     private readonly inspection: PluginInspection,
     private readonly queryTimeoutMs: number,
+    private readonly owners: PluginOwnerRegistry,
   ) {
     if (!Number.isSafeInteger(queryTimeoutMs) || queryTimeoutMs < 1 || queryTimeoutMs > 30_000) {
       throw new TypeError("Plugin lifecycle query timeout must be between 1 and 30000 ms");
     }
+    this.unsubscribeOwners = owners.subscribe(fiberId => {
+      this.revision += 1;
+      for (const [id, state] of this.queryStates) {
+        if (state.fiberId !== fiberId) continue;
+        for (const controller of state.pending) controller.abort();
+        if (!state.running) this.queryStates.delete(id);
+      }
+    });
     root.effect(() => () => {
       this.closed = true;
-      for (const record of [...this.registrations.values()]) this.remove(record);
+      this.unsubscribeOwners();
+      for (const state of this.queryStates.values()) for (const controller of state.pending) controller.abort();
+      this.queryStates.clear();
     }, "plugin lifecycle registry");
     root.on("internal/update", async (_config, _noSave, next) => {
       this.revision += 1;
@@ -74,24 +114,12 @@ export class PluginLifecycleRegistry implements PluginLifecycleInspection {
 
   register(owner: Context, query: PluginLifecycleQuery, prepare?: PreparePluginStop): void {
     this.assertOpen();
-    if (owner.root !== this.root.root) throw new Error("Plugin lifecycle owner belongs to another Root");
-    const fiber = owner.fiber;
-    if (fiber.uid === null || (fiber.state !== FiberState.LOADING && fiber.state !== FiberState.ACTIVE)) {
-      throw new Error("Plugin lifecycle owner is not active");
-    }
-    if (typeof query !== "function") throw new TypeError("Plugin lifecycle requires a query");
-    if (prepare !== undefined && typeof prepare !== "function") throw new TypeError("Plugin stop requires a preparation function");
-    if (this.registrations.has(fiber)) throw new Error("Plugin lifecycle owner is already registered");
-    const record: Registration = {
-      id: ++this.nextId, fiber, fiberId: fiber.uid, entry: fiber.entry, query, prepare,
-      pending: new Set(), active: true, running: false,
-    };
-    owner.effect(() => {
-      this.registrations.set(fiber, record);
-      this.revision += 1;
-      return () => this.remove(record);
-    }, "plugin lifecycle query");
+    this.owners.registerLifecycle(owner, query, prepare);
   }
+  coverage(id: number): PluginLifecycleCoverage {
+    return this.owners.coverage(id).lifecycle;
+  }
+  registered(id: number): boolean { return this.coverage(id) !== "unregistered"; }
 
   async collect(selection: PluginSelection): Promise<PluginLifecycleCollection> {
     this.assertOpen();
@@ -102,7 +130,7 @@ export class PluginLifecycleRegistry implements PluginLifecycleInspection {
       if (impact.gatedEntryIds.includes(entry.id) && entry.fiberId !== null) wanted.add(entry.fiberId);
     }
     const revision = this.revision;
-    const selected = [...this.registrations.values()].filter(record => wanted.has(record.fiberId));
+    const selected = this.owners.recordsWithStatus().filter(record => wanted.has(record.fiberId));
     let owners: readonly PluginLifecycleOwnerView[] = await Promise.all(selected.map(async record => {
       const view = observation.fibers.find(fiber => fiber.id === record.fiberId);
       const status = await this.query(record);
@@ -136,8 +164,13 @@ export class PluginLifecycleRegistry implements PluginLifecycleInspection {
   }
 
   /** Internal execution seam. Never export guards or accept owner ids over the wire. */
-  prepareStop(collection: PluginLifecycleCollection, selection: PluginSelection): {
-    readonly guards: readonly PluginStopGuard[]; current(): boolean; release(): void;
+  prepareStop(collection: PluginLifecycleCollection, selection: PluginSelection,
+    change: PluginChange = { kind: "disable", source: "standalone-stop" }): {
+    readonly guards: readonly PluginStopGuard[];
+    /** Fence the next owner only after the previous Consumer has finished cleanup. */
+    advance(): PluginStopGuard | undefined;
+    currentOwnerStatus(): Promise<PluginLifecycleStatus>;
+    current(): boolean; release(): void;
   } {
     this.assertOpen();
     const revision = this.observations.get(collection);
@@ -146,15 +179,15 @@ export class PluginLifecycleRegistry implements PluginLifecycleInspection {
       JSON.stringify(observation) === JSON.stringify(this.inspection.inspect());
     if (!current()) throw new Error("stop_observation_changed");
     const impact = previewPluginSelection(observation, selection);
-    const records = new Map([...this.registrations.values()].map(record => [record.fiberId, record]));
+    const records = new Map(this.owners.recordsWithStatus().map(record => [record.fiberId, record]));
     const wanted = new Set(impact.affected.map(item => item.fiberId));
     // Child/consumer cleanup must precede its owned parent/provider. Reject cycles.
-    const ordered: Registration[] = [], visiting = new Set<number>(), visited = new Set<number>();
+    const ordered: PluginOwnerRecord[] = [], visiting = new Set<number>(), visited = new Set<number>();
     const visit = (id: number) => {
       if (visited.has(id)) return;
       if (visiting.has(id)) throw new Error("stop_dependency_cycle");
       const record = records.get(id);
-      if (!record?.prepare || !this.live(record) ||
+      if (!record?.canDisable || !this.live(record) ||
         !collection.owners.some(owner => owner.registrationId === record.id && owner.fiberId === id)) {
         throw new Error("stop_owner_unsupported");
       }
@@ -173,33 +206,44 @@ export class PluginLifecycleRegistry implements PluginLifecycleInspection {
       }
       if (failed) throw new PluginStopAdmissionUncertainError();
     };
-    try {
-      for (const record of ordered) {
-        const guard = record.prepare!();
-        if (!guard || typeof guard.close !== "function" || typeof guard.release !== "function") {
-          throw new PluginStopAdmissionUncertainError();
-        }
-        guards.push(guard);
-      }
-    } catch (error) {
+    let next = 0;
+    const advance = () => {
+      if (!current()) throw new Error("stop_observation_changed");
+      const record = ordered[next];
+      if (!record) return undefined;
+      const prepared = this.owners.prepare(record, change);
+      const guard: PluginStopGuard = {
+        close: async () => { await prepared.drained; await prepared.deactivate(); },
+        release: () => prepared.release(),
+      };
+      guards.push(guard); next++;
+      return guard;
+    };
+    try { advance(); } catch (error) {
       release();
       throw error;
     }
-    return { guards: Object.freeze(guards), current, release };
+    // Simultaneously fencing Providers would interrupt an admitted Consumer
+    // that calls its dependencies later while draining.
+    return { get guards() { return Object.freeze([...guards]); }, advance, current, release,
+      currentOwnerStatus: () => this.query(ordered[next - 1]!),
+    };
   }
 
-  private live(record: Registration): boolean {
-    return !this.closed && record.active && this.registrations.get(record.fiber) === record &&
+  private live(record: PluginOwnerRecord): boolean {
+    return !this.closed && this.owners.current(record) &&
       record.fiber.uid === record.fiberId && record.fiber.entry === record.entry &&
       record.fiber.state === FiberState.ACTIVE;
   }
 
-  private async query(record: Registration): Promise<PluginLifecycleStatus> {
+  private async query(record: PluginOwnerRecord): Promise<PluginLifecycleStatus> {
     if (!this.live(record)) return blocked("lifecycle_owner_inactive");
-    if (record.running) return blocked("lifecycle_query_pending");
-    record.running = true;
+    const state = this.queryStates.get(record.id) ?? { fiberId: record.fiberId, pending: new Set<AbortController>(), running: false };
+    this.queryStates.set(record.id, state);
+    if (state.running) return blocked("lifecycle_query_pending");
+    state.running = true;
     const controller = new AbortController();
-    record.pending.add(controller);
+    state.pending.add(controller);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
     try {
@@ -213,28 +257,21 @@ export class PluginLifecycleRegistry implements PluginLifecycleInspection {
         // Both branches handle late completion/rejection after timeout or disposal.
         void Promise.resolve().then(() => {
           if (!this.live(record) || controller.signal.aborted) return blocked("lifecycle_owner_changed");
-          return record.query(controller.signal);
+          return record.status!(controller.signal);
         }).then(value => {
-          record.running = false;
+          state.running = false;
           resolve(this.live(record) && !controller.signal.aborted ? snapshotStatus(value) : blocked("lifecycle_owner_changed"));
         }, () => {
-          record.running = false;
+          state.running = false;
           resolve(blocked("lifecycle_query_failed"));
         });
       });
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       if (onAbort !== undefined) controller.signal.removeEventListener("abort", onAbort);
-      record.pending.delete(controller);
+      state.pending.delete(controller);
+      if (!state.running && !state.pending.size) this.queryStates.delete(record.id);
     }
-  }
-
-  private remove(record: Registration): void {
-    if (!record.active) return;
-    record.active = false;
-    if (this.registrations.get(record.fiber) === record) this.registrations.delete(record.fiber);
-    this.revision += 1;
-    for (const controller of record.pending) controller.abort();
   }
 
   private assertOpen(): void {

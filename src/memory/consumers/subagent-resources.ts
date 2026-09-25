@@ -1,4 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { FileSubagentExchange } from "../../subagents/files.js";
 import type { Subagents, SubagentLaunchIdentity, SpawnSubagentRequest, SubagentRecord, SubagentOwner } from "../../subagents/types.js";
 import type { SubagentResource } from "../../subagents/resources.js";
@@ -130,9 +131,12 @@ export default {
         finally { handle.release(); }
       } },
     });
-    ctx.subagentLauncher.registerResourceProvider({ id: "memory", prepare: (request, identity) => resources.prepare(request, identity) });
     let closed = false;
     let scanning: Promise<void> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    const work = new PluginWorkOwner(ctx, { code: "memory_subagent_resources", codeReload: true,
+      close: async () => { closed = true; unsubscribe?.(); await resources.close(); } });
+    ctx.subagentLauncher.registerResourceProvider({ id: "memory", prepare: (request, identity) => work.run(() => resources.prepare(request, identity)) });
     const deletedParentReported = new Set<string>();
     const report = (error: unknown) => { if (!closed) process.stderr.write(`wish: Memory child proposal import failed: ${String(error)}\n`); };
     const reportScan = (error: unknown) => { if (!closed) process.stderr.write(`wish: Memory child recovery scan failed: ${String(error)}\n`); };
@@ -186,13 +190,13 @@ export default {
       })().finally(() => { scanning = undefined; });
       return scanning;
     };
-    ctx.effect(() => {
-      // Subscribe first, then reconcile the durable backlog exactly once. Live
-      // child completion is delivered by Subagents; a timer need not replay all
-      // historical Runs, including deleted Sessions, every five seconds.
-      const unsubscribe = ctx.subagents.subscribe(event => { void consume(event.record).catch(report); });
-      void scan().catch(reportScan);
-      return async () => { closed = true; unsubscribe(); await resources.close(); await scanning?.catch(() => undefined); };
-    }, "memory-subagent-resources.close");
+    // Subscribe during activation, but admit reads only after the durable
+    // receipt. The subsequent scan reconciles events arriving while fenced.
+    unsubscribe = ctx.subagents.subscribe(event => { void work.run(() => consume(event.record)).catch(report); });
+    const start = () => {
+      void work.run(scan).catch(reportScan);
+    };
+    if (ctx.root.get("codeReload")) ctx.root.get("codeReload")!.startWhenReady(ctx, start);
+    else start();
   },
 };

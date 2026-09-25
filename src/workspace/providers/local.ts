@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, open, realpath, stat } from "node:fs/promises";
@@ -66,9 +67,11 @@ export class LocalWorkspace extends WorkspaceService {
 
   private readonly baseDirectory: string;
   private readonly config: ResolvedConfig;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
+    this.work = new PluginWorkOwner(ctx, { code: "workspace", codeReload: true });
     this.baseDirectory = resolve(ctx.launch.cwd);
     this.config = resolveConfig(config);
   }
@@ -76,6 +79,10 @@ export class LocalWorkspace extends WorkspaceService {
   async resolve(
     request: ResolveWorkspaceRequest,
   ): Promise<WorkspaceSnapshot> {
+    return this.work.run(() => this.resolveAccepted(request));
+  }
+
+  private async resolveAccepted(request: ResolveWorkspaceRequest): Promise<WorkspaceSnapshot> {
     const inputRoot = requireRoot(request);
     throwIfAborted(request.signal);
     const requestedRoot = resolve(this.baseDirectory, inputRoot);

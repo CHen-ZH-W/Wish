@@ -6,7 +6,7 @@ import s from "@deepseek-ai/schemastery";
 
 import { StorageBackendService } from "../../binding.js";
 import { FileStorageBackend } from "./backend.js";
-import { registerPluginLifecycle } from "../../../boot/plugin-control/lifecycle.js";
+import { registerPluginOwner } from "../../../boot/plugin-control/owner-registry.js";
 
 export interface Config {
   readonly id?: string;
@@ -42,24 +42,29 @@ export class FileStorageProvider extends StorageBackendService {
         : { journalTornTailRecovery: config.journalTornTailRecovery }),
     });
     const registration = ctx.storage.register(this.file);
-    registerPluginLifecycle(ctx, () => {
-      const snapshot = registration.snapshot();
-      return {
-        disposition: snapshot.state !== "active" ? "blocked"
-          : snapshot.leases > 0 ? "drain" : "direct",
-        code: snapshot.state === "failed" ? "storage_close_failed"
-          : snapshot.state === "closed" ? "storage_closed"
-          : snapshot.state === "retiring" ? "storage_retiring"
-          : snapshot.leases > 0 ? "storage_leases_outstanding" : "storage_idle",
-        counts: { leases: snapshot.leases },
-      };
-    }, () => {
-      const resume = registration.suspendAcquisitions();
-      let closing: Promise<void> | undefined;
-      return {
-        release: () => { if (!closing) resume(); },
-        close: () => closing ??= registration.unregister().then(() => {}),
-      };
+    registerPluginOwner(ctx, {
+      replacement: "drain",
+      status: () => {
+        const snapshot = registration.snapshot();
+        return {
+          disposition: snapshot.state !== "active" ? "blocked"
+            : snapshot.leases > 0 ? "drain" : "direct",
+          code: snapshot.state === "failed" ? "storage_close_failed"
+            : snapshot.state === "closed" ? "storage_closed"
+            : snapshot.state === "retiring" ? "storage_retiring"
+            : snapshot.leases > 0 ? "storage_leases_outstanding" : "storage_idle",
+          counts: { leases: snapshot.leases },
+        };
+      },
+      prepare: () => {
+        const resume = registration.suspendAcquisitions();
+        let closing: Promise<void> | undefined;
+        return {
+          drained: Promise.resolve(),
+          release: () => { if (!closing) resume(); },
+          deactivate: () => closing ??= registration.unregister().then(() => {}),
+        };
+      },
     });
   }
 }

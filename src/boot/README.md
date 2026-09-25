@@ -86,16 +86,17 @@ shell <- Linux Native provider <- filesystem policy generation
 tmux <- local tmux provider <- private synchronous command runner
 subagentExecution <- tmux adapter <- tmux
 subagentLauncher <- CLI adapter <- launch + sessions
-subagents <- domain Runtime <- subagentExecution + subagentLauncher + storageBackend
+subagents <- domain Runtime <- subagentExecution + storageBackend; launcher is optional for spawn/results
 approval <- process-surface answerer hub
 approvalRules <- Storage Domain provider <- storageBackend KV
 sandboxPolicy <- default preflight provider <- filesystem + shell policy generation
 permissions <- default policy provider <- approval + approvalRules + sandboxPolicy
-plan <- Session-keyed Storage Domain + Permissions policy + Context provider
-coordinator <- Run-keyed Storage Domain + Permissions policy + Context provider + subagents
+plan <- Session-keyed Storage Domain; optional mode adapter -> Permissions + Context
+coordinator <- Run-keyed Storage Domain; optional mode adapter -> Permissions + Context
 tasks <- Session-keyed versioned graph Storage Domain
 workflow <- Run snapshot + Attempt ledger Storage Domain
-workflowScheduler <- workflow + tasks + plan + subagents + current permission/workspace checks
+workflowScheduler <- workflow + subagents + current permission/workspace checks
+workflowGraphScheduler <- workflowScheduler + workflow + tasks + plan
 models <- model adapter plugins + modelAttemptLedger
 contextEngine + compaction
 tools <- read/write/edit consumers <- filesystem
@@ -104,6 +105,7 @@ tools <- read/write/edit consumers <- filesystem
       <- subagent Tool consumer <- subagents + runtime completion control
       <- Plan Tool consumer <- plan
       <- Tasks / Workflow Tool consumers <- independent capability services
+      <- workflow_start consumer <- workflowGraphScheduler
       <- Coordinator Tool consumer <- coordinator
 agentLoop <- runtimeLifecycle
 runEngine <- sessions + models + runtimeLifecycle (每 Step 动态获取 agentLoop)
@@ -256,21 +258,25 @@ HMR 的 `base` 相对 profile 目录解析；把默认 profile 复制到别处�
 `base` / `root`，不要意外监视工作区之外的父目录。
 业务插件的稳定 `cordis:` 别名由 Loader 按需导入，并参与原生 HMR 模块图分析；
 共享实现文件可能使多个入口一起替换，并不保证每个条目都是独立重载单元。
-完整构建会重写多个已加载文件，原生监听并不按内容摘要排除未变文件；因此一次全量编译
-可能触及不可重载的状态所有者并被拒绝，不能将编译成功当作局部在线替换成功。
+HMR 补丁版本 4 在分析模块图之前比较已加载文件的内容摘要；重写相同构建产物不会
+触发替换或重启。真正修改共享基础设施仍可能需要重启，编译成功不代表热更新成功。
 原生 HMR 的 `hmr/reload-prepare` 在实际卸载之前调用 Root 协调器，等待所有已登记 Runtime
 的完整 Step 收尾，再按 Consumer → Provider 的依赖顺序暂停新调用、排空在途操作，
-然后删除旧注册、等待 Loader 的完整异步激活链结束。当前声明支持 AgentLoop、Read、
-Workflow 存储/调度、Subagents Runtime、tmux Provider/执行适配器及其已审查 Consumers。
+然后删除旧注册、等待 Loader 的完整异步激活链结束。当前声明支持 AgentLoop、五个基础 Tool 与 FS/Search/Shell、Web/Skills/Memory、
+Context/SystemPrompt/Compaction、Plan/Tasks/Coordinator、权限与沙箱 Provider、协议 Adapter、
+Workflow 存储/调度、Subagents Runtime、tmux Provider/执行适配器，以及 Runtime、Sessions、
+Storage、Models、Agents、Application、Approval、Runtime Journal 和 CLI/WebUI surface。
 未声明的目标及依赖传播影响一律拒绝，不按插件名称猜测安全性。Runtime、Session、Application、
-Workflow 父 Run 等待关系所有者仍不可通过此路径在线替换。独立 Subagent result relay 和
-Memory Workflow evidence 等未声明 Consumer 被启用时，相关依赖重载仍会拒绝。
+Workflow 父 Run 等待关系分别通过 generation、lease 和持久状态 owner 收尾，不再固定要求重启。
+Subagent result relay 仍有待送达结果时拒绝替换，避免丢失父 Run 的回调。
 三种在途时机（模型输出、审批、Tool 执行）下同一 Run 跨 Step 使用新实现已由原生文件修改测试覆盖。
 Tool 自己修改代码时应返回“已受理”，不能等待需要它所在 Step 完成的替换结果。
 
 `BootstrappedProcess.codeReload` 是只读状态与订阅端口，区分等待 Step、应用、成功、拒绝及恢复要求；
-不暴露配置正文、模块对象或修改权限。导入失败保留旧实例；开始卸载后的初始化失败或超时会封闭
-后续 Step 与重载批次，不自动回装旧插件或重放业务副作用。HMR 的 `reloadTimeout` 默认为 30000ms，
+不暴露配置正文、模块对象或修改权限。导入失败保留旧实例；开始卸载后的确定性候选初始化失败
+会先清理候选，再用保留的 module namespace/plugin callback 重建并核验旧代；核验成功后以拒绝
+回执重新开放 Step。清理／初始化超时或旧代恢复失败会封闭后续 Step 与重载批次，不重放业务
+副作用。HMR 的 `reloadTimeout` 默认为 30000ms，
 只限制卸载/激活，不限制等待用户审批的时间；超时后的迟到清理不会继续激活新插件。
 框架/启动入口修改只报告需要显式重启，不自动退出宿主。
 Browser UI 使用独立的版本化 ESM 模块清单，不由 Host HMR 卸载；业务 UI 构建、失败隔离、
@@ -279,10 +285,27 @@ Browser UI 使用独立的版本化 ESM 模块清单，不由 Host HMR 卸载；
 业务副作用回滚。`disabled` 会卸载目标 fiber。
 
 managed 配置监听独立于业务树，与 WebUI 启停共用同一个协调器。每次组合最新部署内容
-和已保存偏好，保留用户停用及部署约束；只接受结构、名称与 ID 不变的普通 Entry 更新。
-受影响的活动所有者必须先通过现有准入与收尾检查，忙碌或不支持者拒绝更新，不隐式中止 Run。
-无效文件保留最后接受版本，仍可基于该版本执行受控启停；清理或激活后的失败保留 pending
-隔离意图，要求显式恢复，不自动重放。API 的 `configuration` 区分监听、应用、拒绝与恢复状态，
+和已保存偏好，支持普通 Entry 的新增、删除、配置更新、实现名称替换，以及原生 Group 的
+增删、嵌套移动、元数据更新、条目重排，以及普通插件与原生 Group 的双向类型转换。
+身份未变时保留用户偏好与部署约束，删除／更换实现名称或类型后清除旧偏好。组变化会展开为
+受影响后代；移动先收尾再绑定目标作用域，纯重排保留业务 Fiber。类型转换重新创建 Entry，
+完整移除旧树及 subgroup 引用；保留的后代可在同一版配置中迁出。
+managed Include 被递归读取并组合为同一管理树中的原生 Group，统一计算所有文件的摘要、
+监听和偏好；拒绝文件环、重复 ID 和未命中的 patch。相对插件路径按来源文件解析。
+Catalog 外部插件必须通过 `management.manifest` 引用 `wish.plugin/v1` 静态规范；仅声明
+`class: managed` 不再获得 managed 权限。Host 在导入前核对实际入口、Config Schema、权限上限、
+Sandbox 模式、drain/generation 和状态版本，并把 manifest 纳入同一摘要/监听。激活后仍以真实
+Owner/Fiber 覆盖为准，替换模式不一致会回滚。manifest 不复制 Cordis inject，也不授予权限；
+v1 只接受明确可信的进程内插件，不可信实现仍需尚未提供的 Worker/子进程隔离。
+自定义／带额外 inject 或非配置子 Fiber 的 Group、其他独立 EntryTree 仍需单独迁移。删除 Provider 后依赖方保持 pending，加回 Provider 后由 Cordis
+自动重新初始化。受影响的活动所有者必须先通过现有准入与收尾检查，忙碌或不支持者拒绝
+更新，不隐式中止 Run；稳定且没有 effects 的未激活实例允许直接修改或删除。
+无效文件保留最后接受版本，仍可基于该版本执行受控启停；确定性候选失败会尝试重建并核验
+最后接受版本，成功则保存回滚拒绝回执；清理未知、提交不确定或恢复失败保留 pending 隔离意图，
+要求显式恢复且不自动重放。结构变更意图记录前后部署摘要与条目身份，类型转换
+额外记录转换前后的类型。重启可以核对已经删除的目标，不强求条目存在；其余普通目标保持停用，
+原生 Group 保持挂载以便寻址和
+恢复子条目。API 的 `configuration` 区分监听、应用、拒绝与恢复状态，
 只提供已接受版本摘要和稳定诊断 code，不返回配置正文。
 
 managed 模式下，原生 `hmr/reload-batch` 在模块分析、缓存更新与导入前取得同一写锁，
@@ -294,13 +317,14 @@ managed 模式下，原生 `hmr/reload-batch` 在模块分析、缓存更新与�
 只核对持久记录，不能同步等待自身重载事务；`startWhenReady()` 在成功回执之后开放其准入。
 保存失败时新调度器保持停接，父 Run 等待关系保留，允许显式取消，不偷偷重派发。
 仅更新已停用实现的缓存不创建活动目标意图，也不打开 gate。
-保存结果不确定或卸载后失败沿用重启隔离与显式保持停用的恢复入口，不重放 Run/Tool。
+确定性候选激活失败在候选清理和旧代核验完成后保存回滚拒绝回执；保存结果不确定、清理超时
+或旧代恢复失败沿用重启隔离与显式保持停用的恢复入口，不重放 Run/Tool。
 `snapshot().codeReload` 随现有管理 API/SSE 提供稳定 code 和 Entry IDs，不返回源码或原始错误。
 
 HMR 的最小框架扩展固定于 `@deepseek-ai/cordis-plugin-hmr@1.0.17`，源码、运行产物和类型补丁
 保存在 `scripts/patches/`。安装、构建、类型检查都会应用补丁；版本和文件摘要不匹配时拒绝继续，
 升级 Cordis 后必须重新核对接口及生命周期验收，不允许仅手改 `node_modules`。
-Boot 会核对框架协调接口版本 3，缺少补丁时拒绝启动，不能通过跳过安装脚本退回无保护重载。
+Boot 会核对框架协调接口版本 5，缺少补丁时拒绝启动，不能通过跳过安装脚本退回无保护重载。
 补丁安装器支持精确摘要匹配的前一补丁版本升级，其余未知改动仍拒绝覆盖。
 验证入口为 `npm run test:code-reload` 与 `npm run test:managed-code-reload`。后者覆盖真实管理
 HTTP、同一 Run、停用偏好、并发文件修改、SSE 通知和保存失败后的新 Root 隔离恢复；不等于
@@ -310,7 +334,9 @@ Coordinator 状态、在途命令、多文件更新、激活失败及回执保�
 跨进程 Run 恢复或浏览器 UI 代码替换已经验收。
 
 WebUI generation 切换会串行释放旧 Server，避免两个 generation 同时占用监听端口。
-CLI 交互进程不承诺原地重载，配置变化后应退出并重新启动。
+Loader 同时更新 Provider/Consumer 配置时，受管 Fiber 按 UID 串行，并在执行自己的 restart
+前等待依赖传播中的代际稳定，防止配置已更新但插件主体仍运行旧代。CLI 的 owner 同样支持
+Host 存活期间的停启与换代；一次性命令完成后仍按正常进程语义退出。
 
 ## Run generation 安全边界
 

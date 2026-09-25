@@ -17,9 +17,11 @@ import {
   type Surface,
 } from "./launch.js";
 import { resolveWishConfiguration } from "./configuration.js";
-import { installWishPluginCatalog } from "./plugin-catalog.js";
+import { createWishPluginManagementClassifier, installWishPluginCatalog } from "./plugin-catalog.js";
 import { installPluginInspection } from "./plugin-control/inspection.js";
 import type { PluginInspection } from "./plugin-control/types.js";
+import { installPluginOwnerRegistry } from "./plugin-control/owner-registry.js";
+import { installPluginChangeCoordinator } from "./plugin-control/change-coordinator.js";
 import { installPluginLifecycle } from "./plugin-control/lifecycle.js";
 import { installPluginStopControl } from "./plugin-control/stop.js";
 import type { PluginLifecycleInspection, PluginStopControl } from "./plugin-control/management-types.js";
@@ -103,7 +105,10 @@ export async function bootstrap(
     installConfigDiagnostics(root);
     await root.plugin(Loader);
     installWishPluginCatalog(root);
-    const plugins = installPluginInspection(root);
+    const pluginClassifications = createWishPluginManagementClassifier();
+    const plugins = installPluginInspection(root, pluginClassifications);
+    installPluginOwnerRegistry(root);
+    installPluginChangeCoordinator(root);
     const codeReload = installCodeReload(root, plugins);
     const pluginLifecycle = installPluginLifecycle(root, plugins);
     let management: ManagedPluginControl | undefined;
@@ -116,8 +121,8 @@ export async function bootstrap(
       root.effect(() => () => management!.close(), "managed plugin persistence");
       const stop = await options.management.start(root, management, pluginLifecycle);
       root.effect(() => stop, "independent management surface");
-      const source = new ManagedProfileSource(fileURLToPath(configuration.url), ROOT_INCLUDE_ID, store.snapshot());
-      root.loader.builtins["wish-managed-profile"] = managedProfilePlugin(source, profile => management!.attach(profile));
+      const source = new ManagedProfileSource(fileURLToPath(configuration.url), ROOT_INCLUDE_ID, store.snapshot(), undefined, pluginClassifications);
+      root.loader.builtins["wish-managed-profile"] = managedProfilePlugin(source, profile => management!.attach(profile), pluginClassifications);
     } else pluginStops = installPluginStopControl(root, plugins);
 
     const rootInclude: EntryOptions = {

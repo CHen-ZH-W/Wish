@@ -3,11 +3,13 @@ import { access, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { Context } from "@deepseek-ai/cordis";
 
 import { ToolExecutor, ToolRegistry } from "../dist/core/tools/scheduler.js";
 import { SubagentNotRunningError } from "../dist/subagents/index.js";
 import {
   createSubagentTools,
+  SubagentToolDispatchService,
   SubagentResultRelay,
   SUBAGENT_TOOL_NAMES,
 } from "../dist/subagents/consumers/model-tools/index.js";
@@ -210,6 +212,34 @@ test("Subagent Tool parsing and service failures remain stable Tool failures", a
   assert.equal(failed.ok, false);
   assert.equal(failed.error.code, "conflict");
   assert.match(failed.error.message, /not running/u);
+});
+
+test("the stable dispatch port switches committed scheduler strategies without replacing Tools", async () => {
+  const root = new Context();
+  const calls = [];
+  const direct = { async spawn() { calls.push("direct"); return record; } };
+  try {
+    const dispatch = new SubagentToolDispatchService(root, direct);
+    const request = { task: "review" }, context = {}, grant = {};
+    assert.equal(dispatch.activeStrategy, "direct");
+    assert.equal(await dispatch.dispatch(request, context, grant), record);
+
+    let oldActive = true, successorActive = false;
+    const removeOld = dispatch.register({ id: "workflow", active: () => oldActive,
+      async dispatch() { calls.push("workflow-old"); return { content: [] }; } });
+    const removeSuccessor = dispatch.register({ id: "workflow", active: () => successorActive,
+      async dispatch() { calls.push("workflow-new"); return { content: [] }; } });
+    assert.equal(dispatch.activeStrategy, "workflow");
+    await dispatch.dispatch(request, context, grant);
+    successorActive = true;
+    await dispatch.dispatch(request, context, grant);
+    removeSuccessor();
+    await dispatch.dispatch(request, context, grant);
+    oldActive = false;
+    await dispatch.dispatch(request, context, grant);
+    removeOld();
+    assert.deepEqual(calls, ["direct", "workflow-old", "workflow-new", "workflow-old", "direct"]);
+  } finally { await root.fiber.dispose(); }
 });
 
 test("Subagent result relay holds the parent and injects one structured follow-up", async () => {

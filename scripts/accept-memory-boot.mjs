@@ -97,7 +97,7 @@ test("curation requires its opt-in and evidence adapters follow available provid
   assert.equal(f.enabled("memory-runtime-evidence"), true);
   assert.equal(f.enabled("memory-workflow-evidence"), false);
   assert.equal(f.enabled("memory-subagent-resources"), false);
-  assert.equal(f.enabled("memory-coordinator-controls"), false);
+  assert.equal(f.enabled("memory-coordinator-controls"), true);
   assert.deepEqual((await f.context.memoryCuration.scheduler.state()).jobs, []);
 });
 

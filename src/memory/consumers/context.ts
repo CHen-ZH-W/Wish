@@ -1,4 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
+import { registerManagedContextProvider } from "../../context/managed.js";
 import type { ContextItem, ContextProvider } from "../../core/context/projector.js";
 import type { ContextInput } from "../../context/types.js";
 import type { Memory } from "../types.js";
@@ -25,4 +26,4 @@ export class MemoryContextProvider implements ContextProvider<ContextInput> {
       message: Object.freeze({ role: "assistant" as const, content }) })]);
   }
 }
-export default { name: "memory-context", inject: ["memory", "contextEngine"], apply(ctx: Context) { ctx.contextEngine.registerProvider(new MemoryContextProvider(ctx.memory)); } };
+export default { name: "memory-context", inject: ["memory", "contextEngine"], apply(ctx: Context) { registerManagedContextProvider(ctx, new MemoryContextProvider(ctx.memory)); } };

@@ -9,6 +9,9 @@ business capability, not a folder under `src/tools` and not a Workflow alias.
 - `PlanRuntime` owns Session mode, document revisions and durable human review.
 - `DomainPlanStateStore` persists one CAS-protected record per Session through
   Storage KV; Plan data is not encoded as a fake chat message.
+- The Storage Provider owns only durable Plan state. A separate mode-adapter plugin
+  contributes Context and Permissions projections, so replacing either infrastructure
+  service does not replace Plan state.
 - `PlanContextProvider` projects active-mode instructions on every Step.
 - `createPlanPermissionPolicy` can only narrow Permissions. Entering Plan mode
   therefore blocks stale write/bash calls immediately, while leaving Plan mode

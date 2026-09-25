@@ -1,6 +1,6 @@
 import { Service, type Context as CordisContext } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
-import type {} from "../boot/plugin-control/code-reload.js";
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 
 import type {
   WishAgentConfiguration,
@@ -419,15 +419,19 @@ export class AgentLoop extends Service {
   static readonly Config = Config;
 
   readonly maxParallelCalls: number | undefined;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: CordisContext, config: Config = {}) {
     super(ctx, "agentLoop");
-    ctx.root.get("codeReload")?.register(ctx);
+    this.work = new PluginWorkOwner(ctx, { code: "agent_loop", codeReload: true });
     this.maxParallelCalls = config.maxParallelCalls;
   }
 
   /** Build one Application generation from the currently injected services. */
   open(input: OpenAgentLoopInput): AgentLoopResources {
+    // Returned pipeline leases belong to Runtime's Step boundary. Waiting for
+    // them during involuntary dependency loss would deadlock authority teardown.
+    this.work.assertOpen();
     const sessions = this.ctx.sessions.acquire(input.dataDirectory);
     let context: ContextBundleHandle | undefined;
     try {
@@ -441,15 +445,15 @@ export class AgentLoop extends Service {
         dataDirectory: input.dataDirectory,
         models,
         configuration: {
-          reservedOutputTokens: input.reservedOutputTokens,
+          reservedOutputTokens: this.ctx.contextEngine.reservedOutputTokens ?? input.reservedOutputTokens,
         },
       });
       const ownedContext = context;
       const compaction = this.ctx.compaction.open({
         dataDirectory: input.dataDirectory,
         models,
-        keepRecentTokens: input.keepRecentTokens,
-        summaryMaxOutputTokens: input.summaryMaxOutputTokens,
+        keepRecentTokens: this.ctx.compaction.keepRecentTokens ?? input.keepRecentTokens,
+        summaryMaxOutputTokens: this.ctx.compaction.summaryMaxOutputTokens ?? input.summaryMaxOutputTokens,
       });
       const maxParallelCalls = input.maxParallelCalls ?? this.maxParallelCalls;
       const stepPipeline = createAgentLoopPipeline({
@@ -502,8 +506,8 @@ export class AgentLoop extends Service {
         },
       });
     } catch (error: unknown) {
-      context?.release();
-      sessions.release();
+      try { context?.release(); }
+      finally { sessions.release(); }
       throw error;
     }
   }

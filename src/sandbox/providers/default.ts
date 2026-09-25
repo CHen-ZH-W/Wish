@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { createHash } from "node:crypto";
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -176,9 +177,11 @@ export class DefaultSandboxPolicy extends SandboxPolicyService {
 
   readonly policy: SandboxPolicyDescriptor;
   private readonly backend: DefaultSandboxPolicyBackend;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context) {
     super(ctx);
+    this.work = new PluginWorkOwner(ctx, { code: "sandbox_policy", codeReload: true });
     this.backend = new DefaultSandboxPolicyBackend(ctx.filesystem, ctx.shell);
     this.policy = this.backend.policy;
   }
@@ -187,7 +190,7 @@ export class DefaultSandboxPolicy extends SandboxPolicyService {
     input: SandboxAuthorizationInput,
     signal?: AbortSignal,
   ): Promise<SandboxPreflightResult> {
-    return this.backend.preflight(input, signal);
+    return this.work.run(() => this.backend.preflight(input, signal));
   }
 
   revalidate(
@@ -195,7 +198,7 @@ export class DefaultSandboxPolicy extends SandboxPolicyService {
     input: SandboxAuthorizationInput,
     signal?: AbortSignal,
   ): Promise<SandboxPreflightResult> {
-    return this.backend.revalidate(effective, input, signal);
+    return this.work.run(() => this.backend.revalidate(effective, input, signal));
   }
 }
 

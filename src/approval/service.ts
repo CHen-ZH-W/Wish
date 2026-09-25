@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 import { Service, type Context } from "@deepseek-ai/cordis";
 
 import type { ToolAuthorizationInput } from "../core/tools/authorization.js";
@@ -31,9 +32,19 @@ interface PendingApprovalRequest {
 /** Cordis lifecycle hub joining policy requests to the active process surface. */
 export class ApprovalHub extends Service {
   private readonly answerers: RegisteredAnswerer[] = [];
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context) {
     super(ctx, "approval");
+    this.work = new PluginWorkOwner(ctx, {
+      code: "approval_hub",
+      codeReload: true,
+      beforeDrain: () => this.cancelAll("Tool approval was cancelled because its owner is changing"),
+      close: () => {
+        this.cancelAll("Tool approval was cancelled because its owner was closed");
+        this.answerers.splice(0);
+      },
+    });
   }
 
   /** Register one answerer for exactly the lifetime of the calling plugin fiber. */
@@ -41,6 +52,7 @@ export class ApprovalHub extends Service {
     answerer: ToolApprovalPort<ApprovalContext>,
     options: ApprovalRegistrationOptions = {},
   ): ApprovalRegistration {
+    this.work.assertAttached();
     validateAnswerer(answerer);
     const id = requireIdentifier(options.id ?? "default", "Approval owner id");
     const current = this.answerers.at(-1);
@@ -95,6 +107,7 @@ export class ApprovalHub extends Service {
   }
 
   hasAnswerer(): boolean {
+    this.work.assertOpen();
     return this.answerers.length > 0;
   }
 
@@ -102,57 +115,68 @@ export class ApprovalHub extends Service {
     input: ToolAuthorizationInput<ApprovalContext>,
     signal?: AbortSignal,
   ): Promise<ToolApprovalResponse> {
-    throwIfAborted(signal);
-    const answerer = this.answerers.at(-1);
-    if (answerer === undefined) {
-      return denied(
-        "Tool approval is unavailable because no answerer is registered",
-      );
-    }
-    const controller = new AbortController();
-    let settled = false;
-    let cancellationReason: string | undefined;
-    let settleCancellation!: (response: ToolApprovalResponse) => void;
-    let rejectCancellation!: (reason: unknown) => void;
-    const cancellation = new Promise<ToolApprovalResponse>((resolve, reject) => {
-      settleCancellation = resolve;
-      rejectCancellation = reject;
-    });
-    const abort = () => {
-      if (settled) return;
-      const reason = abortReason(signal);
-      controller.abort(reason);
-      rejectCancellation(reason);
-    };
-    const pending: PendingApprovalRequest = Object.freeze({
-      cancel(reason: string): void {
-        if (settled) return;
-        cancellationReason ??= reason;
-        controller.abort(new Error(reason));
-        settleCancellation(denied(reason));
-      },
-    });
-    answerer.pending.add(pending);
-    signal?.addEventListener("abort", abort, { once: true });
-    let response: Promise<ToolApprovalResponse>;
+    // Route to the current answerer synchronously before the caller can retire
+    // that answerer's Fiber; the hold still owns the asynchronous response.
+    const release = this.work.hold();
     try {
-      response = Promise.resolve(answerer.answer(
-        input as ToolAuthorizationInput<unknown>,
-        controller.signal,
-      ));
-    } catch (error: unknown) {
-      response = Promise.reject(error);
-    }
-    try {
-      const result = await Promise.race([response, cancellation]);
       throwIfAborted(signal);
-      if (cancellationReason !== undefined) return denied(cancellationReason);
-      return snapshotApprovalResponse(result);
+      const answerer = this.answerers.at(-1);
+      if (answerer === undefined) {
+        return denied(
+          "Tool approval is unavailable because no answerer is registered",
+        );
+      }
+      const controller = new AbortController();
+      let settled = false;
+      let cancellationReason: string | undefined;
+      let settleCancellation!: (response: ToolApprovalResponse) => void;
+      let rejectCancellation!: (reason: unknown) => void;
+      const cancellation = new Promise<ToolApprovalResponse>((resolve, reject) => {
+        settleCancellation = resolve;
+        rejectCancellation = reject;
+      });
+      const abort = () => {
+        if (settled) return;
+        const reason = abortReason(signal);
+        controller.abort(reason);
+        rejectCancellation(reason);
+      };
+      const pending: PendingApprovalRequest = Object.freeze({
+        cancel(reason: string): void {
+          if (settled) return;
+          cancellationReason ??= reason;
+          controller.abort(new Error(reason));
+          settleCancellation(denied(reason));
+        },
+      });
+      answerer.pending.add(pending);
+      signal?.addEventListener("abort", abort, { once: true });
+      let response: Promise<ToolApprovalResponse>;
+      try {
+        response = Promise.resolve(answerer.answer(
+          input as ToolAuthorizationInput<unknown>,
+          controller.signal,
+        ));
+      } catch (error: unknown) {
+        response = Promise.reject(error);
+      }
+      try {
+        const result = await Promise.race([response, cancellation]);
+        throwIfAborted(signal);
+        if (cancellationReason !== undefined) return denied(cancellationReason);
+        return snapshotApprovalResponse(result);
+      } finally {
+        settled = true;
+        answerer.pending.delete(pending);
+        signal?.removeEventListener("abort", abort);
+      }
     } finally {
-      settled = true;
-      answerer.pending.delete(pending);
-      signal?.removeEventListener("abort", abort);
+      release();
     }
+  }
+
+  private cancelAll(reason: string): void {
+    for (const answerer of this.answerers) cancelPending(answerer, reason);
   }
 }
 

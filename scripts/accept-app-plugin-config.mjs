@@ -307,6 +307,10 @@ test("stable Agent config updates replace the downstream Application generation"
       agentId: "second-agent",
       permissionProfile: "approval-required",
     });
+    await waitFor(
+      () => configurations.length === 2,
+      () => "Application consumer did not reactivate after Agents replacement",
+    );
     await consumerFiber.await();
     assert.equal(disposals, 1);
     assert.equal(configurations.length, 2);
@@ -520,7 +524,7 @@ try { process.exitCode = await booted.completion; } finally { await booted.dispo
     );
     // Group rollback reactivates the surface before the watcher has necessarily
     // finished its transaction. Keep the next edit in a distinct HMR generation.
-    await delay(500);
+    await delay(1_500);
 
     await replaceProfile(profile, webProfile({
       port: secondPort,

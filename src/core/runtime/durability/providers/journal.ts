@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../../../boot/plugin-control/work-owner.js";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
@@ -38,6 +39,7 @@ export class JournalRuntimeLifecycleProvider
   private startupReport: RuntimeLifecycleRecoveryReport | undefined;
   private startupSnapshot: RuntimeLifecycleStartupSnapshot | undefined;
   private closePromise: Promise<void> | undefined;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
@@ -59,10 +61,15 @@ export class JournalRuntimeLifecycleProvider
       lease.release();
       throw error;
     }
-    ctx.effect(() => () => this.close(), "Runtime lifecycle Journal");
+    this.work = new PluginWorkOwner(ctx, {
+      code: "runtime_lifecycle_journal",
+      codeReload: true,
+      close: () => this.closeAuthority(),
+    });
   }
 
   get startupRecovery(): RuntimeLifecycleStartupSnapshot {
+    this.work.assertAttached();
     if (this.startupSnapshot === undefined) {
       throw new Error("Runtime lifecycle startup recovery is not ready");
     }
@@ -75,120 +82,135 @@ export class JournalRuntimeLifecycleProvider
 
   /** Keep the Fiber LOADING, and all consumers PENDING, until recovery is durable. */
   async [Service.init](): Promise<void> {
-    try {
-      const recovery = await this.authority.recoverInterrupted(
-        "provider_startup",
-      );
-      this.startupReport = recovery;
-      const events = await this.authority.readEvents();
-      this.startupSnapshot = buildRuntimeLifecycleStartupSnapshot(
-        recovery,
-        events,
-      );
-      // During an in-place Cordis update the provider Fiber remains ACTIVE,
-      // so the readiness predicate must be re-evaluated explicitly.
-      this.ctx.reflect.notify(["runtimeLifecycle"]);
-    } catch (error: unknown) {
+    return this.work.runAttached(async () => {
       try {
-        await this.close();
-      } catch {
-        // Preserve the recovery failure that explains why the Fiber failed.
+        const recovery = await this.authority.recoverInterrupted(
+          "provider_startup",
+        );
+        this.startupReport = recovery;
+        const events = await this.authority.readEvents();
+        this.startupSnapshot = buildRuntimeLifecycleStartupSnapshot(
+          recovery,
+          events,
+        );
+        // During an in-place Cordis update the provider Fiber remains ACTIVE,
+        // so the readiness predicate must be re-evaluated explicitly.
+        this.ctx.reflect.notify(["runtimeLifecycle"]);
+      } catch (error: unknown) {
+        try {
+          await this.closeAuthority();
+        } catch {
+          // Preserve the recovery failure that explains why the Fiber failed.
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   openRun(
     ...args: Parameters<RuntimeLifecycleService<unknown, unknown>["openRun"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.openRun(...args));
+    return this.work.run(() => this.authority.openRun(...args));
   }
 
   finishRun(
     ...args: Parameters<RuntimeLifecycleService<unknown, unknown>["finishRun"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.finishRun(...args));
+    return this.work.run(() => this.authority.finishRun(...args));
   }
 
   openUserTurn(
     ...args: Parameters<RuntimeLifecycleService<unknown, unknown>["openUserTurn"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.openUserTurn(...args));
+    return this.work.run(() => this.authority.openUserTurn(...args));
   }
 
   finishUserTurn(
     ...args: Parameters<RuntimeLifecycleService<unknown, unknown>["finishUserTurn"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.finishUserTurn(...args));
+    return this.work.run(() => this.authority.finishUserTurn(...args));
   }
 
   openStep(
     ...args: Parameters<RuntimeLifecycleService<unknown, unknown>["openStep"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.openStep(...args));
+    return this.work.run(() => this.authority.openStep(...args));
   }
 
   finishStep(
     ...args: Parameters<RuntimeLifecycleService<unknown, unknown>["finishStep"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.finishStep(...args));
+    return this.work.run(() => this.authority.finishStep(...args));
   }
 
   prepare(
     ...args: Parameters<ToolExecutionLifecycle<unknown>["prepare"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.prepare(...args));
+    return this.work.run(() => this.authority.prepare(...args));
   }
 
   markDispatched(
     ...args: Parameters<ToolExecutionLifecycle<unknown>["markDispatched"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.markDispatched(...args));
+    return this.work.run(() => this.authority.markDispatched(...args));
   }
 
   finish(
     ...args: Parameters<ToolExecutionLifecycle<unknown>["finish"]>
   ): Promise<void> {
-    return Promise.resolve(this.authority.finish(...args));
+    return this.work.run(() => this.authority.finish(...args));
   }
 
   recoverInterrupted(
     reason?: string,
   ): Promise<RuntimeLifecycleRecoveryReport> {
-    return this.authority.recoverInterrupted(reason);
+    return this.work.run(() => this.authority.recoverInterrupted(reason));
   }
 
   async recoverySnapshot(
     signal?: AbortSignal,
   ): Promise<RuntimeLifecycleStartupSnapshot> {
-    const recovery = this.startupReport;
-    if (recovery === undefined) {
-      throw new Error("Runtime lifecycle startup recovery is not ready");
-    }
-    const snapshot = buildRuntimeLifecycleStartupSnapshot(
-      recovery,
-      await this.authority.readEvents(undefined, signal),
-    );
-    this.startupSnapshot = snapshot;
-    return snapshot;
+    return this.work.run(async () => {
+      const recovery = this.startupReport;
+      if (recovery === undefined) {
+        throw new Error("Runtime lifecycle startup recovery is not ready");
+      }
+      const snapshot = buildRuntimeLifecycleStartupSnapshot(
+        recovery,
+        await this.authority.readEvents(undefined, signal),
+      );
+      this.startupSnapshot = snapshot;
+      return snapshot;
+    });
   }
 
   async resolveReconciliation(
     request: ResolveRuntimeReconciliationRequest,
   ): Promise<RuntimeReconciliationCommit> {
-    const commit = await this.authority.resolveReconciliation(request);
-    await this.recoverySnapshot(request.signal);
-    return commit;
+    return this.work.run(async () => {
+      const commit = await this.authority.resolveReconciliation(request);
+      const recovery = this.startupReport;
+      if (recovery === undefined) throw new Error("Runtime lifecycle startup recovery is not ready");
+      this.startupSnapshot = buildRuntimeLifecycleStartupSnapshot(
+        recovery,
+        await this.authority.readEvents(undefined, request.signal),
+      );
+      return commit;
+    });
   }
 
   readEvents(
     runId?: string,
     signal?: AbortSignal,
   ): Promise<readonly DurableRuntimeLifecycleEvent[]> {
-    return this.authority.readEvents(runId, signal);
+    return this.work.run(() => this.authority.readEvents(runId, signal));
   }
 
   close(): Promise<void> {
+    return this.work.close();
+  }
+
+  private closeAuthority(): Promise<void> {
     return this.closePromise ??= this.authority.close().finally(() => {
       this.lease.release();
     });

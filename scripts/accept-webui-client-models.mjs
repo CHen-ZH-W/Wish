@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { RefreshQueue, SnapshotStore, freezeWire } from "../dist/apps/webui/client/model/store.js";
 import { ComposerDrafts } from "../dist/apps/webui/client/ui/drafts.js";
 import { NewSessionClientModel } from "../dist/apps/webui/client/model/new-session.js";
@@ -16,6 +18,7 @@ import { ModelsClientUi } from "../dist/models/consumers/webui/index.js";
 import { ModelsSettingsClientModel, parseCapacity } from "../dist/models/consumers/webui/model.js";
 import { bindAppearance, bindTheme, selectedFontSize, selectedLanguage, selectedTheme } from "../dist/apps/webui/client/theme.js";
 import { ComposerPreferences } from "../dist/apps/webui/host/preferences.js";
+import { PluginPage } from "../dist/apps/webui/client/ui/plugins.js";
 
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 test("WebUI appearance settings expose live language and font-size choices without replacing theme", () => {
@@ -33,6 +36,66 @@ test("shipped WebUI stylesheet scales fixed text sizes for both larger choices",
   assert.match(css, /:root\[data-font-size=extra-large\]\{--wish-font-scale:1\.285714\}/);
   assert.match(css, /font-size:calc\(14px \* var\(--wish-font-scale\)\)/);
   assert.doesNotMatch(css, /font-size:\d+px/);
+  assert.match(css, /\.configuration-readonly[^}]*color:var\(--muted\)/);
+  assert.match(css, /\.configuration-incomplete[^}]*color:var\(--warning\)/);
+});
+test("plugin page renders Host-classified Kernel as a gray read-only control", () => {
+  const entry = { id: "include:timer", name: "cordis:timer", parentId: "include", kind: "plugin", managementClass: "kernel",
+    gate: "default", enabled: true, fiberId: 2, phase: "active" };
+  const snapshot = { data: { owners: [], requests: [], codeReload: null,
+    protocols: [], inspection: { instanceId: "instance", entries: [entry], fibers: [] }, revision: "revision", preferences: {}, controls: {},
+    pending: null, status: "ready", writable: true, operation: null, lastReceipt: null,
+    configuration: { watching: true, phase: "idle", digest: "digest", code: null } }, loading: false, error: null, pending: false };
+  const model = { getSnapshot: () => snapshot, subscribe: () => () => {}, preview: async () => {}, change: async () => {}, cancel: async () => {}, recover: async () => {} };
+  const connection = { getSnapshot: () => ({ online: true }), subscribe: () => () => {} };
+  const html = renderToStaticMarkup(createElement(PluginPage, { model, connection }));
+  assert.match(html, /class="configuration-toggle configuration-readonly" disabled="" aria-label="内核只读 include:timer"/u);
+  assert.match(html, />Kernel · 只读<\/button>/u);
+  assert.doesNotMatch(html, /aria-pressed=/u);
+});
+test("plugin page exposes a managed protocol failure as an amber disabled warning", () => {
+  const entry = { id: "include:unsafe", name: "./unsafe.mjs", parentId: "include", kind: "plugin", managementClass: "managed",
+    gate: "default", enabled: true, fiberId: 3, phase: "active" };
+  const snapshot = { data: { owners: [{ fiberId: 3, lifecycle: "unregistered", codeReload: "unregistered" }], requests: [], codeReload: null,
+    protocols: [{ entryId: entry.id, conformance: "incomplete", stop: "missing", codeUpdate: "missing" }],
+    inspection: { instanceId: "instance", entries: [entry], fibers: [] }, revision: "revision", preferences: {}, controls: {},
+    pending: null, status: "ready", writable: true, operation: null, lastReceipt: null,
+    configuration: { watching: true, phase: "idle", digest: "digest", code: null } }, loading: false, error: null, pending: false };
+  const model = { getSnapshot: () => snapshot, subscribe: () => () => {}, preview: async () => {}, change: async () => {}, cancel: async () => {}, recover: async () => {} };
+  const connection = { getSnapshot: () => ({ online: true }), subscribe: () => () => {} };
+  const html = renderToStaticMarkup(createElement(PluginPage, { model, connection }));
+  assert.match(html, /class="configuration-toggle configuration-incomplete" disabled="" aria-label="插件协议不完整 include:unsafe" aria-pressed="true"/u);
+  assert.match(html, />协议不完整<\/button>/u);
+  assert.match(html, />缺少安全停用协议<\/small>/u);
+});
+test("plugin page keeps an enabled managed plugin actionable while it waits for dependencies", () => {
+  const entry = { id: "include:consumer", name: "cordis:consumer", parentId: "include", kind: "plugin", managementClass: "managed",
+    gate: "default", enabled: true, fiberId: 5, phase: "pending" };
+  const snapshot = { data: { owners: [], requests: [], codeReload: null,
+    protocols: [{ entryId: entry.id, conformance: "inactive", stop: "inactive", codeUpdate: "inactive" }],
+    inspection: { instanceId: "instance", entries: [entry], fibers: [] }, revision: "revision", preferences: {},
+    controls: { [entry.id]: { managementClass: "managed", canEnable: false, canDisable: true, canReplace: false } },
+    pending: null, status: "ready", writable: true, operation: null, lastReceipt: null,
+    configuration: { watching: true, phase: "idle", digest: "digest", code: null } }, loading: false, error: null, pending: false };
+  const model = { getSnapshot: () => snapshot, subscribe: () => () => {}, preview: async () => {}, change: async () => {}, cancel: async () => {}, recover: async () => {} };
+  const connection = { getSnapshot: () => ({ online: true }), subscribe: () => () => {} };
+  const html = renderToStaticMarkup(createElement(PluginPage, { model, connection }));
+  assert.match(html, /class="configuration-toggle configuration-enabled" aria-label="停用 include:consumer" aria-pressed="true"/u);
+  assert.match(html, />等待依赖<\/span>/u);
+});
+test("plugin page exposes an undeclared entry as noncompliant instead of Kernel", () => {
+  const entry = { id: "include:external", name: "./external.mjs", parentId: "include", kind: "plugin", managementClass: "noncompliant",
+    gate: "default", enabled: true, fiberId: 4, phase: "active" };
+  const snapshot = { data: { owners: [], requests: [], codeReload: null, protocols: [],
+    inspection: { instanceId: "instance", entries: [entry], fibers: [] }, revision: "revision", preferences: {}, controls: {},
+    pending: null, status: "ready", writable: true, operation: null, lastReceipt: null,
+    configuration: { watching: true, phase: "idle", digest: "digest", code: null } }, loading: false, error: null, pending: false };
+  const model = { getSnapshot: () => snapshot, subscribe: () => () => {}, preview: async () => {}, change: async () => {}, cancel: async () => {}, recover: async () => {} };
+  const connection = { getSnapshot: () => ({ online: true }), subscribe: () => () => {} };
+  const html = renderToStaticMarkup(createElement(PluginPage, { model, connection }));
+  assert.match(html, /class="configuration-toggle configuration-incomplete" disabled="" aria-label="未声明托管分类 include:external"/u);
+  assert.match(html, />未声明 · 不合规<\/button>/u);
+  assert.doesNotMatch(html, /Kernel · 只读/u);
 });
 test("a UI owner can choose the initial panel without overriding later navigation", () => {
   const slots = new UiSlots(), View = () => null;
@@ -277,6 +340,35 @@ test("plugin confirmation uses the displayed generation/revision and cannot subm
   await assert.rejects(model.change(["include:feature"], "disabled", { instanceId: "new-root", revision: "old-version" }), /management_revision_conflict/);
   model.close(); await assert.rejects(model.change(["include:feature"], "disabled", { instanceId: "new-root", revision: "new-version" }), /管理状态不可用/);
   assert.equal(writes, 0);
+});
+test("plugin change follows the accepted durable operation before reading its receipt", async () => {
+  const operationId = "operation-id";
+  let receipt = null, polls = 0, submittedRequestId;
+  const data = () => ({ owners: [], requests: [], operations: [], codeReload: null, protocols: [],
+    inspection: { instanceId: "root", entries: [], fibers: [] }, revision: "revision", preferences: {}, controls: {},
+    pending: null, status: "ready", writable: true, operation: null, lastReceipt: receipt,
+    configuration: { watching: true, phase: "idle", digest: "digest", code: null } });
+  const connection = { onInvalidation() { return () => {}; }, getSnapshot: () => ({ online: true }), async request(path, body) {
+    if (path === "/api/management/plugins") return data();
+    if (path.endsWith("/change")) {
+      submittedRequestId = body.requestId;
+      return { operation: { id: operationId, kind: "disable", source: "management",
+        requestId: body.requestId, entryIds: body.selection.entryIds, fingerprint: "a".repeat(64), submittedRevision: body.revision,
+        phase: "queued", code: null, cancellable: true } };
+    }
+    if (path.endsWith(`/operations/${operationId}`)) {
+      polls++;
+      receipt = { requestId: submittedRequestId, fingerprint: "a".repeat(64), status: "succeeded", code: "management_saved" };
+      return { operation: { id: operationId, kind: "disable", source: "management", requestId: submittedRequestId,
+        entryIds: ["include:feature"], fingerprint: "a".repeat(64), submittedRevision: "revision",
+        phase: "succeeded", code: null, cancellable: false }, receipt };
+    }
+    throw Error(`unexpected path ${path}`);
+  } };
+  const model = new PluginManagementModel(connection); await model.refresh();
+  const result = await model.change(["include:feature"], "disabled", { instanceId: "root", revision: "revision" });
+  assert.equal(result.status, "succeeded"); assert.equal(polls, 1);
+  model.close();
 });
 test("historical Tool availability comes from known Host entries, never from missing renderers", async () => {
   class Probe extends SnapshotStore { update(value) { this.publish(value); } }

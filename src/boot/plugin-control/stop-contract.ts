@@ -29,6 +29,10 @@ export interface PluginDisableReservation {
   current(): boolean;
   apply(): Promise<void>;
   verify(): Promise<boolean>;
+  /** Recreate the last committed configuration after confirmed cleanup. */
+  restore(): Promise<void>;
+  /** Prove that the replacement old generation is healthy before reopening work. */
+  verifyRestored(): Promise<boolean>;
   release(): void;
 }
 

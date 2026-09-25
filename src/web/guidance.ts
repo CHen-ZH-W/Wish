@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 
 /** Model policy for external Web content; transport and arguments stay in schemas. */
@@ -5,6 +6,7 @@ export const WebToolGuidance = {
   name: "web-tool-guidance",
   inject: ["systemPrompt"],
   apply(ctx: Context): void {
+    new PluginWorkOwner(ctx, { code: "web_guidance", codeReload: true });
     ctx.systemPrompt.register({
       id: "web.search",
       order: 300,

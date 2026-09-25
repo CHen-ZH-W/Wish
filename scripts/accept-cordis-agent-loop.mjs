@@ -213,8 +213,18 @@ test("Loader updates and disables AgentLoop by stable id", async () => {
       fiberState.active,
     );
     assert.throws(() => booted.surfaceContext.get("runEngine").open({}), { code: "step_execution_unavailable" });
+    let applicationOpened = false;
+    const waitingApplication = booted.surfaceContext.get("application").open().then(application => {
+      applicationOpened = true;
+      return application;
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(applicationOpened, false, "Application.open must wait for the AgentLoop generation");
 
     await booted.context.loader.update(id, { disabled: false });
+    const openedApplication = await waitingApplication;
+    assert.equal(applicationOpened, true);
+    await openedApplication.runGeneration.retire();
     await booted.context.loader.resolve("include:application").fiber.await();
     assert.equal(entry.disabled, false);
     assert.equal(booted.surfaceContext.get("agentLoop").maxParallelCalls, 3);

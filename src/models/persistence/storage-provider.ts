@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
@@ -20,18 +21,22 @@ export class DomainModelCatalogProvider extends ModelCatalogPersistence {
   static readonly inject = ["storageBackend"];
   static readonly Config = Config;
 
-  private readonly store: DomainModelCatalogStore;
+  private readonly store: ModelCatalogStore;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
     const backendId = config.backendId ?? ctx.storageBackend.id;
-    this.store = new DomainModelCatalogStore({
+    this.work = new PluginWorkOwner(ctx, { code: "model_catalog", codeReload: true });
+    const store = new DomainModelCatalogStore({
       storage: ctx.storageBackend,
       backendId,
     });
+    this.store = { load: () => this.work.run(() => store.load()), save: value => this.work.run(() => store.save(value)) };
   }
 
   open(): ModelCatalogStore {
+    this.work.assertAttached();
     return this.store;
   }
 }

@@ -1,50 +1,82 @@
 {
   "src/index.ts": {
     "before": "5d9ea00ede52a1b03abbf10a0df75d886403debe25a2a0495c6814dc6842220b",
-    "after": "ed39fbdabee70b1a6fb8f73149953376fdf8d56efe4bdfb744e8184cc06ac9c7",
-    "previous": "3cbb38cd3f6b27ecf6523a70575f13dd9d6b3070e198a05233aba573b64bc763",
+    "after": "e6da9f74f86cdf48c3b36c91608f10867a41329372fd18214f63e63e934bb9d6",
+    "previous": "70eacbbb895bc3f452495be7270de9e8020768a990b73f64566cbb1896f631bf",
     "upgrade": [
       {
-        "from": "    const reloads = new Map<Plugin, Reload>()",
-        "to": "    const reloads = new Map<Plugin, Reload>()\n    const reloadDependencies: Set<string>[] = []"
+        "from": "'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply'): void",
+        "to": "'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply' | 'restored'): void"
       },
       {
-        "from": "      dependencies.forEach(dep => this.accepted.add(dep))",
-        "to": "      reloadDependencies.push(new Set(dependencies))"
+        "from": "coordinationVersion = 4",
+        "to": "coordinationVersion = 5"
       },
       {
-        "from": "      reloads.set(plugin, {\n        filename: job.url,\n        runtime: this.ctx.registry.get(plugin),\n      })\n    }\n\n    /**\n     * Clear module caches for all accepted files before re-importing.",
-        "to": "      reloads.set(plugin, {\n        filename: job.url,\n        runtime: this.ctx.registry.get(plugin),\n      })\n    }\n\n    // Select every reload root against the original change set. Expanding the\n    // cache-clear set while selecting makes later, unrelated plugins match a\n    // dependency that merely happens to be shared with an earlier root.\n    for (const dependencies of reloadDependencies) {\n      dependencies.forEach(dep => this.accepted.add(dep))\n    }\n\n    /**\n     * Clear module caches for all accepted files before re-importing."
+        "from": "    let started = false\n",
+        "to": "    let started = false, timedOut = false, restored = false\n"
+      },
+      {
+        "from": "          timer = setTimeout(() => {\n            const error",
+        "to": "          timer = setTimeout(() => {\n            timedOut = true\n            const error"
+      },
+      {
+        "from": "        try { await Promise.race([apply(), deadline]) }\n        finally { clearTimeout(timer!) }",
+        "to": "        try {\n          await Promise.race([apply(), deadline])\n        } catch (reason) {\n          if (timedOut || this.closing.signal.aborted) throw reason\n          const error = reason instanceof Error ? reason : new Error(String(reason))\n          try {\n            const callbacks = [...new Set(Object.values(attempts))]\n            const candidateFibers = callbacks.flatMap(callback => [...this.ctx.registry.get(callback)?.fibers ?? []])\n            for (const callback of callbacks) this.ctx.registry.delete(callback)\n            await Promise.all(candidateFibers.map(async fiber => {\n              while (fiber.inertia) await fiber.inertia\n              if (fiber.uid !== null) throw new Error('HMR candidate generation did not dispose')\n            }))\n            rollback()\n            const replacements = targets.map(({ plugin, fiber: oldFiber, config }) => {\n              const fiber = oldFiber.parent.registry.plugin(plugin, config, this.getOuterStack)\n              fiber.entry = oldFiber.entry\n              if (fiber.entry) fiber.entry.fiber = fiber\n              return fiber\n            })\n            await Promise.all(replacements.map(fiber => fiber.await()))\n            await this.ctx.loader.await()\n            if (replacements.some(fiber => fiber.state !== ACTIVE)) throw new Error('HMR previous generation did not reactivate')\n            restored = true\n            this.ctx.logger.warn(error)\n            this.ctx.emit('hmr/reload-failed', error, 'restored')\n          } catch (rollbackReason) {\n            this.ctx.logger.warn(rollbackReason)\n            throw reason\n          }\n        } finally { clearTimeout(timer!) }"
+      },
+      {
+        "from": "      // Import/preparation failure can restore caches. Once cleanup has started,\n      // business effects are not reversible; fence subsequent batches, no replay.\n      if (!started) rollback()\n      else this.halted = true\n      const error = reason instanceof Error ? reason : new Error(String(reason))\n      this.ctx.logger.warn(error)\n      this.ctx.emit('hmr/reload-failed', error, started ? 'apply' : 'prepare')",
+        "to": "      if (!started) rollback()\n      const error = reason instanceof Error ? reason : new Error(String(reason))\n      // A restored candidate failure is reported through the managed\n      // middleware, which rejects its durable intent after the old generation\n      // is healthy. Do not treat that deliberate rejection as a second failure.\n      if (restored) return\n      if (started) this.halted = true\n      this.ctx.logger.warn(error)\n      this.ctx.emit('hmr/reload-failed', error, started ? 'apply' : 'prepare')"
+      },
+      {
+        "from": "\n    this.ctx.emit('hmr/reload', reloads)",
+        "to": "\n    if (restored) return\n    this.ctx.emit('hmr/reload', reloads)"
       }
     ]
   },
   "lib/index.js": {
     "before": "7ec3296a902154a2b9906dceb4d81b996ff4c8373709e116ea8dac69058ee2b1",
-    "after": "2c4e5c174ab85b25735de402668fa8991b06d58dc7a5e3ade221a72539c507b0",
-    "previous": "f3059b1941a0f47ae01641a09605335473c968239682088977c4caafde386a29",
+    "after": "ea56c04c29d10cdaae8429ebbd5e94d40e58198eae2464c2a6cf7127f7909a8f",
+    "previous": "02f301be12e6b1c6936fdb6e59377fef6f968e95f9d8f44afa8177d062e1c322",
     "upgrade": [
       {
-        "from": "    const reloads = /* @__PURE__ */ new Map();",
-        "to": "    const reloads = /* @__PURE__ */ new Map();\n    const reloadDependencies = [];"
+        "from": "coordinationVersion = 4",
+        "to": "coordinationVersion = 5"
       },
       {
-        "from": "      dependencies.forEach((dep) => this.accepted.add(dep));",
-        "to": "      reloadDependencies.push(new Set(dependencies));"
+        "from": "    let started = false;\n",
+        "to": "    let started = false, timedOut = false, restored = false;\n"
       },
       {
-        "from": "      reloads.set(plugin, {\n        filename: job.url,\n        runtime: this.ctx.registry.get(plugin)\n      });\n    }\n    const esmBackup = /* @__PURE__ */ Object.create(null);",
-        "to": "      reloads.set(plugin, {\n        filename: job.url,\n        runtime: this.ctx.registry.get(plugin)\n      });\n    }\n    // Select every reload root against the original change set. Expanding the\n    // cache-clear set while selecting makes later, unrelated plugins match a\n    // dependency that merely happens to be shared with an earlier root.\n    for (const dependencies of reloadDependencies) {\n      dependencies.forEach((dep) => this.accepted.add(dep));\n    }\n    const esmBackup = /* @__PURE__ */ Object.create(null);"
+        "from": "          timer = setTimeout(() => {\n            const error",
+        "to": "          timer = setTimeout(() => {\n            timedOut = true;\n            const error"
+      },
+      {
+        "from": "        try {\n          await Promise.race([apply(), deadline]);\n        } finally {\n          clearTimeout(timer);\n        }",
+        "to": "        try {\n          await Promise.race([apply(), deadline]);\n        } catch (reason) {\n          if (timedOut || this.closing.signal.aborted) throw reason;\n          const error = reason instanceof Error ? reason : new Error(String(reason));\n          try {\n            const callbacks = [...new Set(Object.values(attempts))];\n            const candidateFibers = callbacks.flatMap((callback) => [...this.ctx.registry.get(callback)?.fibers ?? []]);\n            for (const callback of callbacks) this.ctx.registry.delete(callback);\n            await Promise.all(candidateFibers.map(async (fiber) => {\n              while (fiber.inertia) await fiber.inertia;\n              if (fiber.uid !== null) throw new Error(\"HMR candidate generation did not dispose\");\n            }));\n            rollback();\n            const replacements = targets.map(({ plugin, fiber: oldFiber, config }) => {\n              const fiber = oldFiber.parent.registry.plugin(plugin, config, this.getOuterStack);\n              fiber.entry = oldFiber.entry;\n              if (fiber.entry) fiber.entry.fiber = fiber;\n              return fiber;\n            });\n            await Promise.all(replacements.map((fiber) => fiber.await()));\n            await this.ctx.loader.await();\n            if (replacements.some((fiber) => fiber.state !== ACTIVE)) throw new Error(\"HMR previous generation did not reactivate\");\n            restored = true;\n            this.ctx.logger.warn(error);\n            this.ctx.emit(\"hmr/reload-failed\", error, \"restored\");\n          } catch (rollbackReason) {\n            this.ctx.logger.warn(rollbackReason);\n            throw reason;\n          }\n        } finally {\n          clearTimeout(timer);\n        }"
+      },
+      {
+        "from": "      if (!started) rollback();\n      else this.halted = true;\n      const error = reason instanceof Error ? reason : new Error(String(reason));\n      this.ctx.logger.warn(error);\n      this.ctx.emit(\"hmr/reload-failed\", error, started ? \"apply\" : \"prepare\");",
+        "to": "      if (!started) rollback();\n      const error = reason instanceof Error ? reason : new Error(String(reason));\n      if (restored) return;\n      if (started) this.halted = true;\n      this.ctx.logger.warn(error);\n      this.ctx.emit(\"hmr/reload-failed\", error, started ? \"apply\" : \"prepare\");"
+      },
+      {
+        "from": "\n    this.ctx.emit(\"hmr/reload\", reloads);",
+        "to": "\n    if (restored) return;\n    this.ctx.emit(\"hmr/reload\", reloads);"
       }
     ]
   },
   "lib/types/index.d.ts": {
     "before": "7a7d64c5630d7fab2a8675166c317c10ed67ca50d83556781d46dd07f85684eb",
-    "after": "e3b0a92eba9cd0997ec71f7fedace81057c0b2a29f131c7d85fcfd0162e0e977",
-    "previous": "a8229bc95ea7a6639e0b41635e73a424ab1ace4d6e321ef51e28b79a42452a37",
+    "after": "b5e29480e3035d5e2bda268b4de16ea2a852478158adae115233c9e784ed10b0",
+    "previous": "19ba755e142839e3df2d37baf6c40130604e307ff2dbb455dba52ac9907e1122",
     "upgrade": [
       {
-        "from": "static readonly coordinationVersion = 2",
-        "to": "static readonly coordinationVersion = 3"
+        "from": "'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply'): void;",
+        "to": "'hmr/reload-failed'(error: Error, phase: 'import' | 'prepare' | 'apply' | 'restored'): void;"
+      },
+      {
+        "from": "coordinationVersion = 4",
+        "to": "coordinationVersion = 5"
       }
     ]
   }

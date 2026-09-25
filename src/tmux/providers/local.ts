@@ -2,8 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
-import type {} from "../../boot/plugin-control/lifecycle.js";
-import type {} from "../../boot/plugin-control/code-reload.js";
+import { registerPluginOwner } from "../../boot/plugin-control/owner-registry.js";
 import s from "@deepseek-ai/schemastery";
 
 import type {
@@ -340,20 +339,26 @@ export class LocalTmux extends TmuxService {
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
     this.backend = new LocalTmuxBackend(config);
-    ctx.root.get("codeReload")?.register(ctx, { prepare: () => {
-      if (this.suspended || this.closing) throw new TmuxUnavailableError("tmux Provider is closed");
-      this.suspended = true;
-      return { drained: Promise.allSettled([...this.requests]).then(() => {}), release: () => { if (!this.closing) this.suspended = false; } };
-    } });
     ctx.effect(() => () => this.close(), "tmux.command-admission.close");
-    ctx.root.get("pluginLifecycle")?.register(ctx, () => ({
-      disposition: this.closing || this.requests.size ? "blocked" : "direct",
-      code: this.closing ? "tmux_closing" : this.requests.size ? "tmux_commands_active" : "tmux_idle",
-      counts: { active_requests: this.requests.size },
-    }), () => {
-      if (this.suspended || this.closing) throw new TmuxUnavailableError("tmux Provider is closed");
-      this.suspended = true;
-      return { close: () => this.close(), release: () => { if (!this.closing) this.suspended = false; } };
+    registerPluginOwner(ctx, {
+      replacement: "drain",
+      status: () => ({
+        // Admitted CLI calls are bounded Provider work: a managed change can
+        // fence this generation, let those calls finish, and then deactivate it.
+        // Only an already-closing generation is unsafe to prepare again.
+        disposition: this.closing ? "blocked" : this.requests.size ? "drain" : "direct",
+        code: this.closing ? "tmux_closing" : this.requests.size ? "tmux_commands_active" : "tmux_idle",
+        counts: { active_requests: this.requests.size },
+      }),
+      prepare: () => {
+        if (this.suspended || this.closing) throw new TmuxUnavailableError("tmux Provider is closed");
+        this.suspended = true;
+        return {
+          drained: Promise.allSettled([...this.requests]).then(() => {}),
+          deactivate: () => this.close(),
+          release: () => { if (!this.closing) this.suspended = false; },
+        };
+      },
     });
   }
 

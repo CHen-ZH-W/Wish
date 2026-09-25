@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../../boot/plugin-control/work-owner.js";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
@@ -33,7 +34,7 @@ export class StorageModelAttemptLedger extends ModelAttemptLedgerService {
   private readonly lease: StorageBackendLease;
   private readonly ledger: JournalModelAttemptLedger;
   private ready = false;
-  private closing: Promise<void> | undefined;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
@@ -52,7 +53,8 @@ export class StorageModelAttemptLedger extends ModelAttemptLedgerService {
       lease.release();
       throw error;
     }
-    ctx.effect(() => () => this.close(), "Model Pricing attempt Journal");
+    this.work = new PluginWorkOwner(ctx, { code: "model_attempt_ledger", codeReload: true,
+      close: () => this.ledger.close().finally(() => { this.ready = false; this.lease.release(); }) });
   }
 
   [Service.check](): boolean {
@@ -75,33 +77,30 @@ export class StorageModelAttemptLedger extends ModelAttemptLedgerService {
   }
 
   start(input: ModelAttemptStart, signal?: AbortSignal): Promise<void> {
-    return this.ledger.start(input, signal);
+    return this.work.run(() => this.ledger.start(input, signal));
   }
 
   finish(input: ModelAttemptFinish, signal?: AbortSignal): Promise<void> {
-    return this.ledger.finish(input, signal);
+    return this.work.run(() => this.ledger.finish(input, signal));
   }
 
   get(attemptId: string, signal?: AbortSignal): Promise<ModelAttemptRecord | undefined> {
-    return this.ledger.get(attemptId, signal);
+    return this.work.run(() => this.ledger.get(attemptId, signal));
   }
 
   list(
     input?: ListModelAttemptsInput,
     signal?: AbortSignal,
   ): Promise<readonly ModelAttemptRecord[]> {
-    return this.ledger.list(input, signal);
+    return this.work.run(() => this.ledger.list(input, signal));
   }
 
   recoverInterrupted(endedAt: string, signal?: AbortSignal): Promise<number> {
-    return this.ledger.recoverInterrupted(endedAt, signal);
+    return this.work.run(() => this.ledger.recoverInterrupted(endedAt, signal));
   }
 
   close(): Promise<void> {
-    return this.closing ??= this.ledger.close().finally(() => {
-      this.ready = false;
-      this.lease.release();
-    });
+    return this.work.close();
   }
 }
 

@@ -37,6 +37,9 @@ Models view for its Run generation. A `StepPipelineSource` obtains the current A
 implementation and its complete execution resources before each Step; Core releases the
 lease after Step lifecycle finish. A missing AgentLoop rejects new Run admission and Step
 acquisition; the remaining Application surface does not imply execution is available.
+Opening a new Application generation waits, with cancellation and a deadline, for the current
+AgentLoop to finish activating. Existing generations do not acquire a static AgentLoop dependency,
+so coordinated Step replacement can retain Run identity without unloading CLI/WebUI surfaces.
 
 The trusted Host calls `runEngine.execution.replace(update, { signal })` to synchronously
 close new Step admission, wait for all Steps of that Runtime (across generations) to finish,

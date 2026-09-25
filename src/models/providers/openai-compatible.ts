@@ -28,7 +28,8 @@ import {
 } from "./shared.js";
 import { decodeSse } from "./sse.js";
 
-export const OPENAI_CHAT_COMPLETIONS_PROTOCOL = "openai-chat-completions";
+import { OPENAI_CHAT_COMPLETIONS_PROTOCOL } from "./protocols.js";
+export { OPENAI_CHAT_COMPLETIONS_PROTOCOL } from "./protocols.js";
 
 interface ToolCallAccumulator {
   id: string;

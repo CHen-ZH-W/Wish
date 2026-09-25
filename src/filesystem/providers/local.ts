@@ -11,6 +11,7 @@ import {
 
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 
 import { assertActiveCapabilityAuthorizationGrant } from
   "../../permissions/authorization.js";
@@ -314,33 +315,35 @@ export class LocalFilesystem extends FilesystemService {
 
   readonly policy: FilesystemPolicy;
   private readonly backend: LocalFilesystemBackend;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
     this.backend = new LocalFilesystemBackend(config);
     this.policy = this.backend.policy;
+    this.work = new PluginWorkOwner(ctx, { code: "filesystem", codeReload: true });
   }
 
   preflight(
     request: PreflightFilesystemPathRequest,
   ): Promise<ResolvedFilesystemPath> {
-    return this.backend.preflight(request);
+    return this.work.run(() => this.backend.preflight(request));
   }
 
   resolve(request: ResolveFilesystemPathRequest): Promise<ResolvedFilesystemPath> {
-    return this.backend.resolve(request);
+    return this.work.run(() => this.backend.resolve(request));
   }
 
   readFile(request: ReadFilesystemFileRequest): Promise<Uint8Array> {
-    return this.backend.readFile(request);
+    return this.work.run(() => this.backend.readFile(request));
   }
 
   writeFile(request: WriteFilesystemFileRequest): Promise<void> {
-    return this.backend.writeFile(request);
+    return this.work.run(() => this.backend.writeFile(request));
   }
 
   stat(request: StatFilesystemPathRequest): Promise<FilesystemEntry> {
-    return this.backend.stat(request);
+    return this.work.run(() => this.backend.stat(request));
   }
 }
 

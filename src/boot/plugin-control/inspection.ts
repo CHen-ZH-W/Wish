@@ -13,6 +13,7 @@ import type {
   PluginInspectionSnapshot,
   PluginPhase,
 } from "./types.js";
+import { PluginManagementClassifier } from "./classification.js";
 import { previewPluginSelection } from "./selection.js";
 
 declare module "@deepseek-ai/cordis" {
@@ -23,7 +24,7 @@ declare module "@deepseek-ai/cordis" {
 }
 
 /** Install a read-only port outside the managed application subtree. */
-export function installPluginInspection(root: Context): PluginInspection {
+export function installPluginInspection(root: Context, classifications = new PluginManagementClassifier()): PluginInspection {
   if (root.fiber.uid !== 0) {
     throw new Error("Plugin inspection must be installed on the process Root");
   }
@@ -31,7 +32,7 @@ export function installPluginInspection(root: Context): PluginInspection {
   if (root.get("pluginInspection") !== undefined) {
     throw new Error("Plugin inspection is already installed");
   }
-  const inspection = new LoaderInspection(root);
+  const inspection = new LoaderInspection(root, classifications);
   root.provide("pluginInspection", inspection);
   return inspection;
 }
@@ -40,7 +41,7 @@ class LoaderInspection implements PluginInspection {
   private readonly instanceId = randomUUID();
   private closed = false;
 
-  constructor(private readonly root: Context) {
+  constructor(private readonly root: Context, private readonly classifications: PluginManagementClassifier) {
     root.effect(() => () => { this.closed = true; }, "plugin inspection");
   }
 
@@ -60,7 +61,7 @@ class LoaderInspection implements PluginInspection {
     }
     return Object.freeze({
       instanceId: this.instanceId,
-      entries: Object.freeze(entries.map(entryView)),
+      entries: Object.freeze(entries.map(entry => entryView(entry, this.classifications))),
       fibers: Object.freeze([...fibers.values()]
         .sort((left, right) => left.uid! - right.uid!)
         .map((fiber) => fiberView(fiber, entrySet))),
@@ -82,7 +83,7 @@ class LoaderInspection implements PluginInspection {
   }
 }
 
-function entryView(entry: Entry): PluginEntryView {
+function entryView(entry: Entry, classifications: PluginManagementClassifier): PluginEntryView {
   let enabled: boolean | null;
   try {
     enabled = !entry.disabled;
@@ -91,11 +92,14 @@ function entryView(entry: Entry): PluginEntryView {
     // Do not leak its expression, config, or error (which can contain secrets).
     enabled = null;
   }
+  const management = classifications.describe({ id: entry.id, name: entry.options.name, group: !!entry.options.group });
   return Object.freeze({
     id: entry.id,
     name: entry.options.name,
     parentId: entry.parent.ctx.fiber.entry?.id ?? null,
     kind: entry.options.group ? "group" : "plugin",
+    managementClass: management.managementClass,
+    manifest: management.manifest,
     gate: gateOf(entry.options.disabled),
     enabled,
     fiberId: entry.fiber?.uid ?? null,

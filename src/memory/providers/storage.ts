@@ -1,4 +1,5 @@
 import { Service, type Context } from "@deepseek-ai/cordis";
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import s from "@deepseek-ai/schemastery";
 import type { StorageBackendLease } from "../../storage/backend.js";
 import { MemoryService } from "../service.js";
@@ -14,7 +15,7 @@ export default class StorageMemoryService extends MemoryService {
   readonly libraryId: string;
   private readonly lease: StorageBackendLease;
   private readonly runtime: MemoryRuntime;
-  private closing: Promise<void> | undefined;
+  private readonly work: PluginWorkOwner;
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
     this.libraryId = identity(config.libraryId ?? "default");
@@ -23,16 +24,17 @@ export default class StorageMemoryService extends MemoryService {
     try {
       const journal = this.lease.resolve(backendId, "journal").open({ namespace: `memory/${this.libraryId}` });
       this.runtime = new MemoryRuntime(new JournalMemoryStore(journal, this.libraryId));
-      ctx.effect(() => () => this.close(), "memory.close");
+      this.work = new PluginWorkOwner(ctx, { code: "memory", codeReload: true,
+        close: () => this.runtime.close().finally(() => this.lease.release()) });
     } catch (error) { this.lease.release(); throw error; }
   }
   async [Service.init]() { await this.runtime.state(); }
-  state(signal?: AbortSignal) { return this.runtime.state(signal); }
-  query(input?: MemoryQuery) { return this.runtime.query(input); }
-  read(id: string, signal?: AbortSignal) { return this.runtime.read(id, signal); }
-  propose(input: ProposeMemoryRequest) { return this.runtime.propose(input); }
-  decide(input: DecideMemoryRequest) { return this.runtime.decide(input); }
-  changeStatus(input: ChangeMemoryStatusRequest) { return this.runtime.changeStatus(input); }
-  snapshot(input?: MemoryQuery) { return this.runtime.snapshot(input); }
-  close() { return this.closing ??= this.runtime.close().finally(() => this.lease.release()); }
+  state(signal?: AbortSignal) { return this.work.run(() => this.runtime.state(signal)); }
+  query(input?: MemoryQuery) { return this.work.run(() => this.runtime.query(input)); }
+  read(id: string, signal?: AbortSignal) { return this.work.run(() => this.runtime.read(id, signal)); }
+  propose(input: ProposeMemoryRequest) { return this.work.run(() => this.runtime.propose(input)); }
+  decide(input: DecideMemoryRequest) { return this.work.run(() => this.runtime.decide(input)); }
+  changeStatus(input: ChangeMemoryStatusRequest) { return this.work.run(() => this.runtime.changeStatus(input)); }
+  snapshot(input?: MemoryQuery) { return this.work.run(() => this.runtime.snapshot(input)); }
+  close() { return this.work.close(); }
 }

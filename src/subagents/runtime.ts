@@ -6,6 +6,7 @@ import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
 import { PERMISSION_PROFILES, type PermissionProfile } from "../permissions/types.js";
+import { registerPluginOwner } from "../boot/plugin-control/owner-registry.js";
 import type { StorageBackendLease } from "../storage/backend.js";
 import {
   SubagentClosedError,
@@ -16,8 +17,6 @@ import {
 import { SubagentsService } from "./service.js";
 import { DomainSubagentRecordStore } from "./store.js";
 import type { SubagentExecutionProvider } from "./execution.js";
-import type {} from "../boot/plugin-control/lifecycle.js";
-import type {} from "../boot/plugin-control/code-reload.js";
 import type {
   CaptureSubagentRequest,
   CollectedSubagent,
@@ -249,13 +248,15 @@ export class SubagentRuntime implements Subagents {
     });
   }
 
-  async inspect(request: InspectSubagentRequest): Promise<SubagentRecord | undefined> {
+  async inspect(request: InspectSubagentRequest, observation?: {
+    execution: Pick<SubagentExecutionProvider, "inspect">; results?: SubagentResultReader;
+  }): Promise<SubagentRecord | undefined> {
     const owner = normalizeOwner(request);
     return this.serial(async () => {
       throwIfAborted(request.signal);
       const record = await this.store.get(identifier(request.id, "Subagent id"), request.signal);
       if (record === undefined || !ownedBy(record, owner)) return undefined;
-      return this.refresh(record, request.signal);
+      return this.refresh(record, request.signal, observation);
     });
   }
 
@@ -390,14 +391,17 @@ export class SubagentRuntime implements Subagents {
   private async refresh(
     record: SubagentRecord,
     signal?: AbortSignal,
+    observation: { execution: Pick<SubagentExecutionProvider, "inspect">; results?: SubagentResultReader } = {
+      execution: this.execution, ...(this.results ? { results: this.results } : {}),
+    },
   ): Promise<SubagentRecord> {
     const session = isLive(record) && record.target !== undefined
-      ? await this.execution.inspect(record.target, signal)
+      ? await observation.execution.inspect(record.target, signal)
       : undefined;
     let next = session === undefined && (!isLive(record) || record.target === undefined)
       ? record
       : reconcile(record, session, this.timestamp());
-    const result = await this.results?.read(record.id, signal);
+    const result = await observation.results?.read(record.id, signal);
     if (result !== undefined && JSON.stringify(next.result) !== JSON.stringify(result)) {
       if (
         result.childSessionId !== record.childSessionId ||
@@ -664,7 +668,6 @@ export const Config: s<Config> = s.object({
 export class SubagentsRuntimeService extends SubagentsService {
   static readonly inject = [
     "subagentExecution",
-    "subagentLauncher",
     "storageBackend",
   ];
   static readonly Config = Config;
@@ -672,7 +675,7 @@ export class SubagentsRuntimeService extends SubagentsService {
   private readonly lease: StorageBackendLease;
   private readonly backend: SubagentRuntime;
   private closing: Promise<void> | undefined;
-  private activeRequests = 0;
+  private readonly requests = new Set<Promise<unknown>>();
   private suspended = false;
 
   constructor(ctx: Context, config: Config = {}) {
@@ -687,9 +690,15 @@ export class SubagentsRuntimeService extends SubagentsService {
           backendId,
           ...(config.maxRecords === undefined ? {} : { maxRecords: config.maxRecords }),
         }),
-        launcher: ctx.subagentLauncher,
+        launcher: {
+          resolve: (request, identity) => {
+            const launcher = ctx.get("subagentLauncher");
+            if (!launcher) throw new Error("Subagent launch capability is unavailable");
+            return launcher.resolve(request, identity);
+          },
+        },
         results: {
-          read: (id, signal) => ctx.subagentLauncher.readResult(id, signal),
+          read: async (id, signal) => ctx.get("subagentLauncher")?.readResult(id, signal),
         },
         ...(config.maxConcurrent === undefined ? {} : { maxConcurrent: config.maxConcurrent }),
         ...(config.maxConcurrentPerRun === undefined
@@ -697,31 +706,36 @@ export class SubagentsRuntimeService extends SubagentsService {
           : { maxConcurrentPerRun: config.maxConcurrentPerRun }),
       });
       ctx.effect(() => () => this.close(), "subagents.close");
-      ctx.root.get("codeReload")?.register(ctx, { prepare: () => {
-        if (this.suspended || this.closing) throw new SubagentClosedError();
-        this.suspended = true;
-        const observations = this.backend.pauseObservation();
-        return { drained: observations.drained, release: async () => {
-          if (!this.closing) { await observations.release(); this.suspended = false; }
-        } };
-      } });
-      ctx.root.get("pluginLifecycle")?.register(ctx, async signal => {
-        if (this.closing) return { disposition: "blocked", code: "subagents_closing" };
-        const snapshot = await this.backend.lifecycleSnapshot(signal);
-        const busy = snapshot.closed || this.activeRequests > 0 || snapshot.pendingOperations > 0 || snapshot.monitors > 0 ||
-          snapshot.liveRecords > 0 || snapshot.unresolvedRecords > 0;
-        return { disposition: busy ? "blocked" : "direct", code: snapshot.closed ? "subagents_closing"
-          : busy ? "subagents_unsettled_records" : "subagents_idle",
-        counts: { active_requests: this.activeRequests, pending_operations: snapshot.pendingOperations, monitors: snapshot.monitors,
-          live_records: snapshot.liveRecords, unresolved_records: snapshot.unresolvedRecords } };
-      }, () => {
-        if (this.suspended || this.closing) throw new SubagentClosedError();
-        this.suspended = true;
-        let committed = false;
-        return {
-          release: () => { if (!committed && !this.closing) this.suspended = false; },
-          close: () => { committed = true; return this.close(); },
-        };
+      registerPluginOwner(ctx, {
+        replacement: "drain",
+        status: async signal => {
+          if (this.closing) return { disposition: "blocked", code: "subagents_closing" };
+          const snapshot = await this.backend.lifecycleSnapshot(signal);
+          const busy = this.requests.size > 0 || snapshot.pendingOperations > 0 || snapshot.monitors > 0 ||
+            snapshot.liveRecords > 0 || snapshot.unresolvedRecords > 0;
+          return { disposition: snapshot.closed ? "blocked" : busy ? "drain" : "direct", code: snapshot.closed ? "subagents_closing"
+            : busy ? "subagents_unsettled_records" : "subagents_idle",
+          counts: { active_requests: this.requests.size, pending_operations: snapshot.pendingOperations, monitors: snapshot.monitors,
+            live_records: snapshot.liveRecords, unresolved_records: snapshot.unresolvedRecords } };
+        },
+        prepare: change => {
+          if (this.suspended || this.closing) throw new SubagentClosedError();
+          this.suspended = true;
+          // Live children belong to the execution Provider. Pause this generation's
+          // monitors and drain every admitted API call without stopping or relaunching
+          // those children; a successor reconstructs them from durable records.
+          const observations = this.backend.pauseObservation();
+          return {
+            drained: Promise.all([observations.drained, Promise.allSettled([...this.requests])]).then(() => {}),
+            deactivate: change.kind === "replace" ? async () => {} : () => this.close(),
+            release: () => {
+              if (this.closing) return;
+              return observations.release().then(() => {
+                if (!this.closing) this.suspended = false;
+              });
+            },
+          };
+        },
       });
     } catch (error: unknown) {
       this.lease.release();
@@ -736,7 +750,15 @@ export class SubagentsRuntimeService extends SubagentsService {
   spawn(request: SpawnSubagentRequest): Promise<SubagentRecord> { return this.track(() => this.backend.spawn(request)); }
   list(request: ListSubagentsRequest): Promise<readonly SubagentRecord[]> { return this.track(() => this.backend.list(request)); }
   observeSession(request: ObserveSessionSubagentsRequest): Promise<readonly SubagentRecord[]> { return this.track(() => this.backend.observeSession(request)); }
-  inspect(request: InspectSubagentRequest): Promise<SubagentRecord | undefined> { return this.track(() => this.backend.inspect(request)); }
+  inspect(request: InspectSubagentRequest): Promise<SubagentRecord | undefined> {
+    // Forward this caller's scope through reconciliation reads. A captured
+    // constructor scope is already ACTIVE when a downstream scheduler initializes,
+    // and must not be mistaken for business traffic against an uncommitted adapter.
+    const caller = this.ctx;
+    const launcher = caller.get("subagentLauncher");
+    return this.track(() => this.backend.inspect(request, { execution: caller.subagentExecution,
+      ...(launcher ? { results: { read: (id, signal) => launcher.readResult(id, signal) } } : {}) }));
+  }
   capture(request: CaptureSubagentRequest): Promise<string> { return this.track(() => this.backend.capture(request)); }
   send(request: SendSubagentRequest): Promise<void> { return this.track(() => this.backend.send(request)); }
   stop(request: StopSubagentRequest): Promise<SubagentRecord> { return this.track(() => this.backend.stop(request)); }
@@ -752,15 +774,10 @@ export class SubagentsRuntimeService extends SubagentsService {
 
   private track<Value>(request: () => Promise<Value>): Promise<Value> {
     if (this.suspended || this.closing) throw new SubagentClosedError();
-    this.activeRequests += 1;
-    try {
-      const result = request();
-      void result.then(() => { this.activeRequests -= 1; }, () => { this.activeRequests -= 1; });
-      return result;
-    } catch (error: unknown) {
-      this.activeRequests -= 1;
-      throw error;
-    }
+    const result = request();
+    this.requests.add(result);
+    void result.then(() => { this.requests.delete(result); }, () => { this.requests.delete(result); });
+    return result;
   }
 
   private async closeOwnedResources(): Promise<void> {

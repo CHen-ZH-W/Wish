@@ -28,7 +28,8 @@ import {
 } from "./shared.js";
 import { decodeSse } from "./sse.js";
 
-export const OPENAI_RESPONSES_PROTOCOL = "openai-responses";
+import { OPENAI_RESPONSES_PROTOCOL } from "./protocols.js";
+export { OPENAI_RESPONSES_PROTOCOL } from "./protocols.js";
 
 interface ToolCallAccumulator {
   itemId: string;

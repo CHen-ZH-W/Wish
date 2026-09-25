@@ -237,6 +237,36 @@ test("saved retired DeepSeek selections resolve to current Flash without discard
   } finally { await root.fiber.dispose(); }
 });
 
+test("Models owns its settings registration across caller Fiber replacement", async () => {
+  const root = new Context();
+  root.provide("launch", { surface: "webui", cwd: repositoryRoot, homeDirectory: repositoryRoot, environment: {} });
+  new SettingsService(root, {
+    writable: true, read: () => ({ version: 1, revision: "initial", sections: {} }),
+    save: async () => {}, close: async () => {},
+  });
+  const adapter = root.plugin({ inject: ["models"], apply(ctx) {
+    ctx.models.register("fixture-protocol", () => ({ async *stream() {} }));
+  } });
+  try {
+    const provider = await root.plugin(Models); await adapter;
+    let configured;
+    const consumer = await root.plugin({ inject: ["models"], async apply(ctx) {
+      const configuration = await ctx.models.load({ dataDirectory: repositoryRoot, configurationJson: JSON.stringify({
+        schemaVersion: 1, defaultModel: "fixture/primary", maxRetries: 0,
+        providers: [{ id: "fixture", protocol: "fixture-protocol", baseUrl: "https://fixture.example.test/v1",
+          auth: { type: "none" }, developerRoleMode: "native", models: [{ id: "primary", developerRole: true }] }],
+      }) });
+      configured = ctx.models.open(configuration).configuredModel;
+    } });
+    assert.ok(root.settings.port.describe().sections.some(section => section.namespace === "models"));
+    assert.equal(consumer.getEffects().some(effect => effect.label === "settings:models"), false);
+    assert.equal(provider.getEffects().some(effect => effect.label === "settings:models"), true);
+    await consumer.dispose();
+    assert.ok(root.settings.port.describe().sections.some(section => section.namespace === "models"));
+    assert.deepEqual(configured.getDefaultModel(), { provider: "fixture", model: "primary" });
+  } finally { await root.fiber.dispose(); }
+});
+
 test("Loader updates and disables Models and one Adapter by stable id", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-loader-models-"));
   const configurationFile = join(directory, "cordis.yml");

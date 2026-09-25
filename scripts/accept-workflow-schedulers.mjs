@@ -31,8 +31,9 @@ test("Approved graph dispatches dependencies, projects results, reconnects witho
   const store = new MemoryWorkflowStore();
   let workflow = new WorkflowRuntime(store);
   const subagents = new Children();
-  let children = new ChildWorkflowScheduler({ workflow, subagents, tasks, maxConcurrent: 2 });
-  const graphs = new TaskGraphScheduler(plan, tasks, children);
+  let children = new ChildWorkflowScheduler({ workflow, subagents, maxConcurrent: 2 });
+  let graphs = new TaskGraphScheduler(plan, tasks, children);
+  let detachProjector = children.attachProjector(run => graphs.project(run));
   const request = { owner, permissionProfile: "workspace-write", availableTools: ["read", "write"] };
   await assert.rejects(graphs.start(request), /approved Plan/);
   const graph = await tasks.replace("s", [spec("first"), spec("second", ["first"])], 0);
@@ -44,9 +45,11 @@ test("Approved graph dispatches dependencies, projects results, reconnects witho
   const original = run.steps[0].attempts[0];
   assert.equal(subagents.launches, 1);
   assert.equal((await tasks.get("s")).tasks[0].status, "running");
-  await children.close();
+  detachProjector(); await graphs.close(); await children.close();
   workflow = new WorkflowRuntime(store); await workflow.recoverInterrupted();
-  children = new ChildWorkflowScheduler({ workflow, subagents, tasks });
+  children = new ChildWorkflowScheduler({ workflow, subagents });
+  graphs = new TaskGraphScheduler(plan, tasks, children);
+  detachProjector = children.attachProjector(run => graphs.project(run));
   await children.tick();
   assert.equal(subagents.launches, 1);
   assert.equal((await workflow.get(run.id)).steps[0].attempts[0].id, original.id);
@@ -57,7 +60,7 @@ test("Approved graph dispatches dependencies, projects results, reconnects witho
   await children.tick();
   assert.equal((await workflow.get(run.id)).status, "completed");
   assert.equal((await tasks.get("s")).tasks[1].status, "completed");
-  await children.close();
+  detachProjector(); await graphs.close(); await children.close();
 });
 
 test("Scheduler serializes workspace writes and retains unknown side effects for reconciliation", async () => {

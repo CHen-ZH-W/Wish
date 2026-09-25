@@ -28,13 +28,20 @@ test("WebUI management writes and native config reload share the real Skills lif
     const snapshot = async () => (await fetch(base + "/api/management/plugins")).json();
     const change = async preference => {
       const before = await snapshot();
+      const requestId = randomUUID();
       const response = await fetch(base + "/api/management/plugins/change", { method: "POST",
         headers: { "Content-Type": "application/json", "X-Wish-Management-Token": authorization.token },
-        body: JSON.stringify({ requestId: randomUUID(), revision: before.revision, preference,
+        body: JSON.stringify({ requestId, revision: before.revision, preference,
           selection: { instanceId: authorization.instanceId, entryIds: ["include:skills-local"] } }),
       });
-      assert.equal(response.status, 200);
-      const receipt = await response.json(); assert.equal(receipt.status, "succeeded", JSON.stringify(receipt));
+      assert.equal(response.status, 202);
+      let { operation } = await response.json();
+      await waitFor(async () => {
+        ({ operation } = await (await fetch(base + `/api/management/plugins/operations/${operation.id}`)).json());
+        return ["succeeded", "rejected", "recovery-required"].includes(operation.phase);
+      });
+      assert.equal(operation.phase, "succeeded", JSON.stringify(operation));
+      assert.equal((await snapshot()).lastReceipt.requestId, requestId);
     };
     const initial = await snapshot();
     assert.equal(initial.configuration.watching, true);
@@ -75,6 +82,77 @@ test("WebUI management writes and native config reload share the real Skills lif
     assert.equal((await booted.surfaceContext.get("skills").list({ cwd: directory })).skills.length, 0);
     for (const [id, fiber] of unrelated) assert.ok(booted.context.loader.resolve(id).fiber === fiber, `${id} was replaced`);
 
+    // Structural edits use the same native watcher and production dependency graph.
+    const skills = booted.surfaceContext.get("skills");
+    const start = revised.indexOf("    - id: skills-local\n"), end = revised.indexOf("    - id: skills-context\n", start);
+    assert.ok(start >= 0 && end > start);
+    await writeFile(filename, revised.slice(0, start) + revised.slice(end));
+    await waitFor(async () => {
+      const current = await snapshot();
+      return current.configuration.phase === "idle" && !current.inspection.entries.some(entry => entry.id === "include:skills-local");
+    });
+    assert.equal(booted.surfaceContext.get("skills"), undefined);
+    await assert.rejects(() => skills.list({ cwd: directory }));
+    const removed = await snapshot();
+    for (const id of ["include:skills-context", "include:skills-tools"]) {
+      const entry = removed.inspection.entries.find(entry => entry.id === id);
+      assert.equal(entry.enabled, true); assert.equal(entry.phase, "pending");
+    }
+    assert.equal(removed.preferences["include:skills-local"], undefined);
+    assert.equal((await fetch(base + "/api/health")).status, 200);
+    await writeFile(filename, revised);
+    await waitFor(async () => {
+      const current = await snapshot();
+      return current.configuration.phase === "idle" && current.inspection.entries.some(entry => entry.id === "include:skills-local" && entry.phase === "active");
+    });
+    assert.ok(booted.surfaceContext.get("tools").registry.list().some(tool => tool.name === "read_skill"));
+    assert.equal((await booted.surfaceContext.get("skills").list({ cwd: directory })).skills.length, 0);
+    for (const [id, fiber] of unrelated) assert.ok(booted.context.loader.resolve(id).fiber === fiber, `${id} was replaced by structural edit`);
+
+    // Move the production provider into a new native Group, then dissolve the
+    // group while retaining the provider ID. Both edits flow through fs.watch.
+    const grouped = revised.slice(0, start) + "    - id: skills-container\n      name: 'cordis:group'\n      group: true\n      config:\n" +
+      revised.slice(start, end).split("\n").map(line => line ? "    " + line : line).join("\n") + revised.slice(end);
+    for (const [text, parent] of [[grouped, "include:skills-container"], [revised, "include:app"]]) {
+      const beforeMove = booted.surfaceContext.get("skills");
+      await writeFile(filename, text);
+      await waitFor(async () => {
+        const current = await snapshot();
+        return current.configuration.phase === "idle" && current.inspection.entries.some(entry =>
+          entry.id === "include:skills-local" && entry.parentId === parent && entry.phase === "active");
+      });
+      await assert.rejects(() => beforeMove.list({ cwd: directory }));
+      assert.equal((await booted.surfaceContext.get("skills").list({ cwd: directory })).skills.length, 0);
+      assert.ok(booted.surfaceContext.get("tools").registry.list().some(tool => tool.name === "read_skill"));
+      assert.equal((await fetch(base + "/api/health")).status, 200);
+      for (const [id, fiber] of unrelated) assert.equal(booted.context.loader.resolve(id).fiber, fiber, `${id} was replaced by a group move`);
+    }
+    assert.equal((await snapshot()).inspection.entries.some(entry => entry.id === "include:skills-container"), false);
+
+    // Retype the same ID into a carrier with a new provider child, then turn it
+    // back into the original provider. Consumers keep their own Fiber identity.
+    const retyped = revised.slice(0, start) + "    - id: skills-local\n      name: 'cordis:group'\n      group: true\n      config:\n" +
+      revised.slice(start, end).replace("id: skills-local", "id: skills-provider")
+        .split("\n").map(line => line ? "    " + line : line).join("\n") + revised.slice(end);
+    const consumers = ["skills-context", "skills-tools"].map(id => booted.context.loader.resolve(`include:${id}`).fiber);
+    for (const [text, kind] of [[retyped, "group"], [revised, "plugin"]]) {
+      const old = booted.surfaceContext.get("skills");
+      await writeFile(filename, text);
+      await waitFor(async () => {
+        const current = await snapshot();
+        return current.configuration.phase === "idle" && current.inspection.entries.some(entry =>
+          entry.id === "include:skills-local" && entry.kind === kind && entry.phase === "active");
+      });
+      await assert.rejects(() => old.list({ cwd: directory }));
+      assert.equal((await booted.surfaceContext.get("skills").list({ cwd: directory })).skills.length, 0);
+      assert.ok(booted.surfaceContext.get("tools").registry.list().some(tool => tool.name === "read_skill"));
+      assert.deepEqual(["skills-context", "skills-tools"].map(id => booted.context.loader.resolve(`include:${id}`).fiber), consumers);
+      assert.equal((await fetch(base + "/api/health")).status, 200);
+      for (const [id, fiber] of unrelated) assert.equal(booted.context.loader.resolve(id).fiber, fiber, `${id} was replaced by type conversion`);
+    }
+    assert.equal((await snapshot()).inspection.entries.some(entry => entry.id === "include:skills-provider"), false);
+    assert.equal(booted.context.loader.resolve("include:skills-local").subgroup, undefined);
+
     const valid = await snapshot();
     await writeFile(filename, "[PRIVATE_SENTINEL: [");
     await waitFor(async () => (await snapshot()).configuration.phase === "rejected");
@@ -109,10 +187,14 @@ test("WebUI activates and stops default-off Memory Curation and Web Fetch withou
     };
     const initial = control.snapshot();
     for (const id of ["memory-curation", "memory-runtime-evidence", "memory-workflow-evidence", "web-fetch-http", "tool-web-fetch"]) {
-      assert.deepEqual(initial.controls[`include:${id}`], { canEnable: true }, id);
+      assert.deepEqual(initial.controls[`include:${id}`], {
+        managementClass: "managed", canEnable: true, canDisable: false, canReplace: false,
+      }, id);
       assert.equal(initial.inspection.entries.find(entry => entry.id === `include:${id}`).enabled, false, id);
     }
-    assert.equal(initial.controls["include:web-search-searxng"], undefined);
+    assert.deepEqual(initial.controls["include:web-search-searxng"], {
+      managementClass: "managed", canEnable: false, canDisable: false, canReplace: false, reason: "management_enable_constrained",
+    });
     assert.equal(ctx.get("memoryCuration"), undefined);
     assert.equal(ctx.get("webFetch"), undefined);
 

@@ -25,12 +25,17 @@ export function Icon({ name }: { name: "conversation" | "settings" | "gear" | "m
 }
 const errorNames: Record<string, readonly [string, string]> = {
   management_revision_conflict: ["配置已被其他操作修改，界面正在重新同步，请再次确认。", "Configuration changed elsewhere. The page is resyncing; review and try again."],
+  management_cancelled: ["已取消等待，插件未修改。", "Waiting cancelled. The plugin was not changed."],
+  management_timeout: ["等待超时，插件未修改；当前工作完成后可重试。", "Waiting timed out. The plugin was not changed; retry after current work finishes."],
+  management_target_read_only: ["该条目属于 Kernel 或结构层，只能查看，不能通过插件管理启停。", "This Kernel or structural entry is read-only and cannot be toggled through plugin management."],
+  management_plugin_nonconformant: ["该插件或受影响依赖尚未接入安全停用协议；Host 已拒绝修改。请先由插件作者补齐生命周期适配。", "This plugin or an affected dependent has no safe-stop protocol. Host refused the change; its author must add lifecycle support first."],
   settings_revision_conflict: ["设置版本已变化，界面已重新同步，请再次选择。", "Settings changed elsewhere. The page has resynced; choose again."],
   credentials_read_only: ["该密钥由启动环境提供，网页不能覆盖。", "This key comes from the startup environment and cannot be overwritten here."],
   credentials_invalid_value: ["密钥格式无效，请只输入密钥本身。", "Invalid key format. Enter only the key itself."],
   credentials_invalid_reference: ["模型声明的密钥引用无效。", "The model declares an invalid key reference."],
   stop_lifecycle_blocked: ["当前资源尚未满足停用条件；未取消正在进行的工作。", "Resources are not ready to stop. Active work was not cancelled."],
   stop_owner_unsupported: ["此插件或依赖者尚未提供安全退出接口，Host 已拒绝停用。", "This plugin or a dependent has no safe shutdown interface. Host refused to stop it."],
+  stop_restart_required: ["此变更涉及进程或会话基础设施。请结束工作、修改启动配置，再重启 Wish。", "This change affects process or session infrastructure. Finish active work, update startup configuration, and restart Wish."],
   management_recovery_required: ["操作结果需要核对。请查看恢复说明，不要重复提交。", "The result needs review. Follow recovery guidance before trying again."],
   management_restart_required: ["本进程仍可能有未完成的收尾；请退出进程并重启，再确认保持停用。", "This process may still be cleaning up. Restart, then confirm the plugin remains disabled."],
   management_configuration_changed: ["部署配置已变化或不受此管理入口控制，请检查配置并重启。", "Deployment settings changed or are outside this management scope. Check them and restart."],

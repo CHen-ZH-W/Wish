@@ -1,5 +1,6 @@
 import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 
 import type { ModelRef } from "../core/model/model.js";
 import type { ModelDependencies } from "../models/runtime.js";
@@ -59,19 +60,25 @@ export class Compaction extends Service {
 
   readonly keepRecentTokens: number | undefined;
   readonly summaryMaxOutputTokens: number | undefined;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, "compaction");
+    this.work = new PluginWorkOwner(ctx, { code: "compaction", codeReload: true });
     this.keepRecentTokens = config.keepRecentTokens;
     this.summaryMaxOutputTokens = config.summaryMaxOutputTokens;
   }
 
   /** Build one Application-facing compactor from injected capability views. */
   open(input: OpenCompactionInput): SessionCompactor {
-    return createCompactionResources({
+    this.work.assertAttached();
+    const compactor = createCompactionResources({
       ...input,
       sessions: this.ctx.sessions.open(input.dataDirectory),
     });
+    const compact = compactor.compact.bind(compactor);
+    compactor.compact = input => this.work.run(() => compact(input));
+    return compactor;
   }
 }
 

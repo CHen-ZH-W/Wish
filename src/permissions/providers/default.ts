@@ -1,3 +1,4 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { createHash } from "node:crypto";
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -78,9 +79,14 @@ export class DefaultPermissions extends PermissionsService {
   private readonly maxPendingAuthorizations: number;
   private readonly pending = new Map<string, PendingAuthorization>();
   private readonly validated = new Map<string, PendingAuthorization>();
+  private readonly work: PluginWorkOwner;
+  private readonly retiring = new AbortController();
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
+    this.work = new PluginWorkOwner(ctx, { code: "permissions", codeReload: true,
+      beforeDrain: () => this.retiring.abort(new Error("permissions_closed")),
+      close: () => { this.pending.clear(); this.validated.clear(); } });
     this.defaultProfile = permissionProfile(
       config.defaultProfile ?? DEFAULT_PERMISSION_PROFILE,
     );
@@ -97,6 +103,7 @@ export class DefaultPermissions extends PermissionsService {
   resolve(
     request: ResolvePermissionRequest,
   ): PermissionSnapshot | Promise<PermissionSnapshot> {
+    this.work.assertOpen();
     validateResolveRequest(request);
     throwIfAborted(request.signal);
     const profile = permissionProfile(
@@ -163,100 +170,103 @@ export class DefaultPermissions extends PermissionsService {
       policySetVersion,
       policies: projected,
     });
-    return isPromiseLike(policies) ? policies.then(finish) : finish(policies);
+    return isPromiseLike(policies) ? this.work.run(() => policies.then(finish)) : finish(policies);
   }
 
   async authorize(
     input: ToolAuthorizationInput<PermissionExecutionContext>,
     signal?: AbortSignal,
   ): Promise<ToolAuthorizationDecision> {
-    throwIfAborted(signal);
-    const invalid = validateAuthorizationInput(
-      input,
-      this.policyVersion,
-      this.ctx.shell.policy.version,
-      this.ctx.sandboxPolicy.policy.version,
-    );
-    if (invalid !== undefined) return denied(invalid);
-    const policyDenial = await this.policyDenial(input, signal);
-    if (policyDenial !== undefined) return denied(policyDenial);
-    const key = authorizationKey(input);
-    this.pending.delete(key);
-    this.validated.delete(key);
-    const disposition = evaluate(input.context.permissions, input);
-    if (disposition === "deny") {
-      return denied(
-        `Permission profile "${input.context.permissions.profile}" does not allow this Tool capability`,
+    signal = AbortSignal.any([this.retiring.signal, ...(signal ? [signal] : [])]);
+    return this.work.run(async () => {
+      throwIfAborted(signal);
+      const invalid = validateAuthorizationInput(
+        input,
+        this.policyVersion,
+        this.ctx.shell.policy.version,
+        this.ctx.sandboxPolicy.policy.version,
       );
-    }
-    const preflight = await this.ctx.sandboxPolicy.preflight(input, signal);
-    if (preflight.status === "denied") return denied(preflight.reason);
-
-    let metadata: Readonly<Record<string, unknown>> = Object.freeze({
-      permissionProfile: input.context.permissions.profile,
-      authorizationSource: "profile",
-    });
-    if (disposition === "ask") {
-      let retained: RetainedApprovalRuleScope | undefined;
-      let rule;
-      try {
-        rule = await this.ctx.approvalRules.find(
-          approvalRuleRequest(input, this.policyVersion, signal),
+      if (invalid !== undefined) return denied(invalid);
+      const policyDenial = await this.policyDenial(input, signal);
+      if (policyDenial !== undefined) return denied(policyDenial);
+      const key = authorizationKey(input);
+      this.pending.delete(key);
+      this.validated.delete(key);
+      const disposition = evaluate(input.context.permissions, input);
+      if (disposition === "deny") {
+        return denied(
+          `Permission profile "${input.context.permissions.profile}" does not allow this Tool capability`,
         );
-      } catch (error: unknown) {
-        return denied(`ApprovalRule lookup failed: ${errorMessage(error)}`);
       }
-      if (rule !== undefined) {
-        metadata = Object.freeze({
-          permissionProfile: input.context.permissions.profile,
-          authorizationSource: "approval-rule",
-          approvalRuleId: rule.id,
-          approvalScope: rule.scope,
-        });
-      } else {
-        const response = await this.ctx.approval.requestApproval(input, signal);
-        throwIfAborted(signal);
-        if (response.status === "denied") return denied(response.reason);
-        const scope = response.scope ?? "once";
-        retained = scope === "once" ? undefined : scope;
-        metadata = Object.freeze({
-          permissionProfile: input.context.permissions.profile,
-          authorizationSource: "approval",
-          approvalScope: scope,
-          ...(response.metadata === undefined
-            ? {}
-            : { approval: response.metadata }),
-        });
-      }
+      const preflight = await this.ctx.sandboxPolicy.preflight(input, signal);
+      if (preflight.status === "denied") return denied(preflight.reason);
 
-      this.pending.set(key, Object.freeze({
+      let metadata: Readonly<Record<string, unknown>> = Object.freeze({
+        permissionProfile: input.context.permissions.profile,
+        authorizationSource: "profile",
+      });
+      if (disposition === "ask") {
+        let retained: RetainedApprovalRuleScope | undefined;
+        let rule;
+        try {
+          rule = await this.ctx.approvalRules.find(
+            approvalRuleRequest(input, this.policyVersion, signal),
+          );
+        } catch (error: unknown) {
+          return denied(`ApprovalRule lookup failed: ${errorMessage(error)}`);
+        }
+        if (rule !== undefined) {
+          metadata = Object.freeze({
+            permissionProfile: input.context.permissions.profile,
+            authorizationSource: "approval-rule",
+            approvalRuleId: rule.id,
+            approvalScope: rule.scope,
+          });
+        } else {
+          const response = await awaitApproval(this.ctx.approval.requestApproval(input, signal), signal!);
+          throwIfAborted(signal);
+          if (response.status === "denied") return denied(response.reason);
+          const scope = response.scope ?? "once";
+          retained = scope === "once" ? undefined : scope;
+          metadata = Object.freeze({
+            permissionProfile: input.context.permissions.profile,
+            authorizationSource: "approval",
+            approvalScope: scope,
+            ...(response.metadata === undefined
+              ? {}
+              : { approval: response.metadata }),
+          });
+        }
+
+        this.pending.set(key, Object.freeze({
+          policyVersion: this.policyVersion,
+          call: input.call,
+          descriptor: input.descriptor,
+          capabilities: input.capabilities,
+          context: input.context,
+          scope: input.scope,
+          snapshot: input.snapshot,
+          sandbox: preflight.effective,
+          ...(retained === undefined ? {} : { retain: retained }),
+        }));
+      } else {
+        this.pending.set(key, Object.freeze({
+          policyVersion: this.policyVersion,
+          call: input.call,
+          descriptor: input.descriptor,
+          capabilities: input.capabilities,
+          context: input.context,
+          scope: input.scope,
+          snapshot: input.snapshot,
+          sandbox: preflight.effective,
+        }));
+      }
+      this.prunePending();
+      return Object.freeze({
+        status: "allowed" as const,
         policyVersion: this.policyVersion,
-        call: input.call,
-        descriptor: input.descriptor,
-        capabilities: input.capabilities,
-        context: input.context,
-        scope: input.scope,
-        snapshot: input.snapshot,
-        sandbox: preflight.effective,
-        ...(retained === undefined ? {} : { retain: retained }),
-      }));
-    } else {
-      this.pending.set(key, Object.freeze({
-        policyVersion: this.policyVersion,
-        call: input.call,
-        descriptor: input.descriptor,
-        capabilities: input.capabilities,
-        context: input.context,
-        scope: input.scope,
-        snapshot: input.snapshot,
-        sandbox: preflight.effective,
-      }));
-    }
-    this.prunePending();
-    return Object.freeze({
-      status: "allowed" as const,
-      policyVersion: this.policyVersion,
-      metadata,
+        metadata,
+      });
     });
   }
 
@@ -269,41 +279,43 @@ export class DefaultPermissions extends PermissionsService {
     },
     signal?: AbortSignal,
   ): Promise<ToolAuthorizationValidation> {
-    throwIfAborted(signal);
-    const key = authorizationKey(input);
-    const pending = this.pending.get(key);
-    this.pending.delete(key);
-    if (pending === undefined || !sameAuthorizationInput(pending, input)) {
-      return denied("Tool permission is missing, stale, or already consumed");
-    }
-    if (
-      pending.policyVersion !== this.policyVersion ||
-      input.decision.policyVersion !== this.policyVersion ||
-      input.context.permissions.policyVersion !== this.policyVersion
-    ) {
-      return denied("Tool permission policy changed before dispatch");
-    }
-    const invalid = validateAuthorizationInput(
-      input,
-      this.policyVersion,
-      this.ctx.shell.policy.version,
-      this.ctx.sandboxPolicy.policy.version,
-    );
-    if (invalid !== undefined) return denied(invalid);
-    const policyDenial = await this.policyDenial(input, signal);
-    if (policyDenial !== undefined) return denied(policyDenial);
-    const sandbox = await this.ctx.sandboxPolicy.revalidate(
-      pending.sandbox,
-      input,
-      signal,
-    );
-    if (sandbox.status === "denied") return denied(sandbox.reason);
-    this.validated.set(key, pending);
-    this.prunePending();
-    throwIfAborted(signal);
-    return Object.freeze({
-      status: "valid" as const,
-      policyVersion: this.policyVersion,
+    return this.work.run(async () => {
+      throwIfAborted(signal);
+      const key = authorizationKey(input);
+      const pending = this.pending.get(key);
+      this.pending.delete(key);
+      if (pending === undefined || !sameAuthorizationInput(pending, input)) {
+        return denied("Tool permission is missing, stale, or already consumed");
+      }
+      if (
+        pending.policyVersion !== this.policyVersion ||
+        input.decision.policyVersion !== this.policyVersion ||
+        input.context.permissions.policyVersion !== this.policyVersion
+      ) {
+        return denied("Tool permission policy changed before dispatch");
+      }
+      const invalid = validateAuthorizationInput(
+        input,
+        this.policyVersion,
+        this.ctx.shell.policy.version,
+        this.ctx.sandboxPolicy.policy.version,
+      );
+      if (invalid !== undefined) return denied(invalid);
+      const policyDenial = await this.policyDenial(input, signal);
+      if (policyDenial !== undefined) return denied(policyDenial);
+      const sandbox = await this.ctx.sandboxPolicy.revalidate(
+        pending.sandbox,
+        input,
+        signal,
+      );
+      if (sandbox.status === "denied") return denied(sandbox.reason);
+      this.validated.set(key, pending);
+      this.prunePending();
+      throwIfAborted(signal);
+      return Object.freeze({
+        status: "valid" as const,
+        policyVersion: this.policyVersion,
+      });
     });
   }
 
@@ -316,46 +328,48 @@ export class DefaultPermissions extends PermissionsService {
     },
     signal?: AbortSignal,
   ): Promise<ToolAuthorizationValidation> {
-    throwIfAborted(signal);
-    const key = authorizationKey(input);
-    const validated = this.validated.get(key);
-    this.validated.delete(key);
-    if (validated === undefined || !sameAuthorizationInput(validated, input)) {
-      return denied("Tool permission commit is missing, stale, or already consumed");
-    }
-    const invalid = validateAuthorizationInput(
-      input,
-      this.policyVersion,
-      this.ctx.shell.policy.version,
-      this.ctx.sandboxPolicy.policy.version,
-    );
-    if (invalid !== undefined) return denied(invalid);
-    const policyDenial = await this.policyDenial(input, signal);
-    if (policyDenial !== undefined) return denied(policyDenial);
-    if (
-      validated.policyVersion !== this.policyVersion ||
-      input.decision.policyVersion !== this.policyVersion
-    ) return denied("Tool permission policy changed before rule commit");
-    const sandbox = await this.ctx.sandboxPolicy.revalidate(
-      validated.sandbox,
-      input,
-      signal,
-    );
-    if (sandbox.status === "denied") return denied(sandbox.reason);
-    if (validated.retain !== undefined) {
-      try {
-        await this.ctx.approvalRules.remember({
-          ...approvalRuleRequest(input, this.policyVersion, signal),
-          scope: validated.retain,
-        });
-      } catch (error: unknown) {
-        return denied(`ApprovalRule commit failed: ${errorMessage(error)}`);
+    return this.work.run(async () => {
+      throwIfAborted(signal);
+      const key = authorizationKey(input);
+      const validated = this.validated.get(key);
+      this.validated.delete(key);
+      if (validated === undefined || !sameAuthorizationInput(validated, input)) {
+        return denied("Tool permission commit is missing, stale, or already consumed");
       }
-    }
-    throwIfAborted(signal);
-    return Object.freeze({
-      status: "valid" as const,
-      policyVersion: this.policyVersion,
+      const invalid = validateAuthorizationInput(
+        input,
+        this.policyVersion,
+        this.ctx.shell.policy.version,
+        this.ctx.sandboxPolicy.policy.version,
+      );
+      if (invalid !== undefined) return denied(invalid);
+      const policyDenial = await this.policyDenial(input, signal);
+      if (policyDenial !== undefined) return denied(policyDenial);
+      if (
+        validated.policyVersion !== this.policyVersion ||
+        input.decision.policyVersion !== this.policyVersion
+      ) return denied("Tool permission policy changed before rule commit");
+      const sandbox = await this.ctx.sandboxPolicy.revalidate(
+        validated.sandbox,
+        input,
+        signal,
+      );
+      if (sandbox.status === "denied") return denied(sandbox.reason);
+      if (validated.retain !== undefined) {
+        try {
+          await this.ctx.approvalRules.remember({
+            ...approvalRuleRequest(input, this.policyVersion, signal),
+            scope: validated.retain,
+          });
+        } catch (error: unknown) {
+          return denied(`ApprovalRule commit failed: ${errorMessage(error)}`);
+        }
+      }
+      throwIfAborted(signal);
+      return Object.freeze({
+        status: "valid" as const,
+        policyVersion: this.policyVersion,
+      });
     });
   }
 
@@ -727,3 +741,13 @@ function errorMessage(error: unknown): string {
 }
 
 export default DefaultPermissions;
+
+/** A UI transport may ignore abort, but its late answer can never authorize work. */
+function awaitApproval<T>(answer: T | PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    void Promise.resolve(answer).then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    if (signal.aborted) abort();
+  });
+}

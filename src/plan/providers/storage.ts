@@ -1,11 +1,8 @@
+import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
 import type { StorageBackendLease } from "../../storage/backend.js";
-import type { ContextProviderRegistration } from "../../context/service.js";
-import type { PermissionPolicyRegistration } from "../../permissions/index.js";
-import { PlanContextProvider } from "../context.js";
-import { createPlanPermissionPolicy } from "../policy.js";
 import { PlanRuntime } from "../runtime.js";
 import { PlanService } from "../service.js";
 import { DomainPlanStateStore } from "../store.js";
@@ -27,16 +24,14 @@ export const Config: s<Config> = s.object({
   backendId: s.string(),
 });
 
-/** Durable Plan Provider plus its hard-policy and Context projections. */
+/** Durable Plan state Provider; Context and permission projections are optional adapters. */
 export class StoragePlanService extends PlanService {
-  static readonly inject = ["storageBackend", "permissions", "contextEngine"];
+  static readonly inject = ["storageBackend"];
   static readonly Config = Config;
 
   private readonly lease: StorageBackendLease;
   private readonly backend: PlanRuntime;
-  private readonly contextRegistration: ContextProviderRegistration;
-  private readonly policyRegistration: PermissionPolicyRegistration;
-  private closing: Promise<void> | undefined;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
@@ -46,18 +41,7 @@ export class StoragePlanService extends PlanService {
       this.backend = new PlanRuntime({
         store: new DomainPlanStateStore({ storage: this.lease, backendId }),
       });
-      this.policyRegistration = ctx.permissions.registerPolicy(
-        createPlanPermissionPolicy(this, () => this.modeControls()),
-      );
-      try {
-        this.contextRegistration = ctx.contextEngine.registerProvider(
-          new PlanContextProvider(this),
-        );
-      } catch (error: unknown) {
-        this.policyRegistration.unregister();
-        throw error;
-      }
-      ctx.effect(() => () => this.close(), "plan.close");
+      this.work = new PluginWorkOwner(ctx, { code: "plan", codeReload: true, close: () => this.closeOwnedResources() });
     } catch (error: unknown) {
       this.lease.release();
       throw error;
@@ -65,32 +49,30 @@ export class StoragePlanService extends PlanService {
   }
 
   get(request: PlanSessionRequest): Promise<PlanState | undefined> {
-    return this.backend.get(request);
+    return this.work.run(() => this.backend.get(request));
   }
 
   enter(request: EnterPlanRequest): Promise<PlanState> {
-    return this.backend.enter(request);
+    return this.work.run(() => this.backend.enter(request));
   }
 
   update(request: UpdatePlanRequest): Promise<PlanState> {
-    return this.backend.update(request);
+    return this.work.run(() => this.backend.update(request));
   }
 
   approve(request: ApprovePlanRequest): Promise<PlanState> {
-    return this.backend.approve(request);
+    return this.work.run(() => this.backend.approve(request));
   }
 
-  review(request: ApprovePlanRequest): Promise<PlanState> { return this.backend.review(request); }
-  decide(request: DecidePlanReviewRequest): Promise<PlanState> { return this.backend.decide(request); }
-  feedback(request: PlanFeedbackRequest): Promise<PlanState | undefined> { return this.backend.feedback(request); }
+  review(request: ApprovePlanRequest): Promise<PlanState> { return this.work.run(() => this.backend.review(request)); }
+  decide(request: DecidePlanReviewRequest): Promise<PlanState> { return this.work.run(() => this.backend.decide(request)); }
+  feedback(request: PlanFeedbackRequest): Promise<PlanState | undefined> { return this.work.run(() => this.backend.feedback(request)); }
 
   close(): Promise<void> {
-    return this.closing ??= this.closeOwnedResources();
+    return this.work.close();
   }
 
   private async closeOwnedResources(): Promise<void> {
-    this.contextRegistration.unregister();
-    this.policyRegistration.unregister();
     try {
       await this.backend.close();
     } finally {

@@ -71,6 +71,7 @@ test("provider loss drains every WebUI effect before reactivation", async () => 
     assert.deepEqual(effectLabels(surface), [
       "WebUI process surface",
       "approval.register(answerer)",
+      "webui_surface.work-owner",
     ]);
     await assertHealthy(port);
 
@@ -86,6 +87,7 @@ test("provider loss drains every WebUI effect before reactivation", async () => 
     assert.deepEqual(effectLabels(surface), [
       "WebUI process surface",
       "approval.register(answerer)",
+      "webui_surface.work-owner",
     ]);
     await assertHealthy(port);
 

@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
+import { PluginWorkOwner } from "../../../boot/plugin-control/work-owner.js";
 
 import type {
   ToolResultArchiveInput,
@@ -635,6 +636,7 @@ export class BlobToolResultArchiveProvider extends ToolResultArchiveService {
   static readonly Config = Config;
 
   readonly backendId: string;
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
@@ -643,9 +645,11 @@ export class BlobToolResultArchiveProvider extends ToolResultArchiveService {
       kv: { list: false },
       blob: { contentAddressed: true },
     });
+    this.work = new PluginWorkOwner(ctx, { code: "tool_result_archive", codeReload: true });
   }
 
   open(request: OpenToolResultArchiveRequest = {}): ToolResultArchiveHandle {
+    this.work.assertAttached();
     const lease = this.ctx.storageBackend.acquire(this.backendId, {
       kv: { list: false },
       blob: { contentAddressed: true },

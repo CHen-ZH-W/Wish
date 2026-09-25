@@ -26,7 +26,8 @@ import {
 } from "./shared.js";
 import { decodeSse } from "./sse.js";
 
-export const ANTHROPIC_MESSAGES_PROTOCOL = "anthropic-messages";
+import { ANTHROPIC_MESSAGES_PROTOCOL } from "./protocols.js";
+export { ANTHROPIC_MESSAGES_PROTOCOL } from "./protocols.js";
 
 interface ContentBlockState {
   readonly type: "text" | "thinking" | "tool_use";

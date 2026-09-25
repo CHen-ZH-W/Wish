@@ -1,4 +1,5 @@
 import { Service, type Context } from "@deepseek-ai/cordis";
+import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 
 import type { ModelInstruction } from "../core/model/model.js";
 
@@ -12,13 +13,16 @@ import type {
 /** Process-local registry and deterministic assembler for System Prompt sections. */
 export class SystemPrompt extends Service {
   private readonly sections = new Map<string, RegisteredSystemPromptSection>();
+  private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context) {
     super(ctx, "systemPrompt");
+    this.work = new PluginWorkOwner(ctx, { code: "system_prompt", codeReload: true });
   }
 
   /** Register one section for exactly the lifetime of the calling plugin Fiber. */
   register(section: SystemPromptSection): SystemPromptRegistration {
+    this.work.assertAttached();
     const normalized = normalizeSection(section);
     if (this.sections.has(normalized.id)) {
       throw new Error(
@@ -55,6 +59,7 @@ export class SystemPrompt extends Service {
   assemble(
     input: SystemPromptAssemblyInput,
   ): readonly RegisteredSystemPromptSection[] {
+    this.work.assertOpen();
     const availableTools = new Set(
       input.availableTools.map((name) => requireIdentifier(name, "Tool name")),
     );

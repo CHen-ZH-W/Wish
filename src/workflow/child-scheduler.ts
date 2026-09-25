@@ -1,7 +1,6 @@
 import type { ModelsConfiguration } from "../models/types.js";
 import type { Subagents, SubagentRecord } from "../subagents/types.js";
 import { subagentIdForKey } from "../subagents/identity.js";
-import type { Tasks } from "../tasks/types.js";
 import type { RunContinuation } from "../core/runtime/continuation.js";
 import { WorkflowContinuations } from "./continuations.js";
 import { activeAttempt } from "./transition.js";
@@ -10,7 +9,6 @@ import type { AttemptTarget, CreateWorkflowRequest, Workflow, WorkflowRun, Workf
 export interface ChildSchedulerOptions {
   readonly workflow: Workflow;
   readonly subagents: Subagents;
-  readonly tasks?: Tasks;
   readonly maxConcurrent?: number;
   readonly now?: () => number;
   /** Host rechecks current execution constraints before every new dispatch. */
@@ -31,6 +29,7 @@ export class ChildWorkflowScheduler {
   private activeRequests = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
   private unsubscribe: (() => void) | undefined;
+  private projector: ((run: WorkflowRun) => Promise<void>) | undefined;
   private readonly continuations: WorkflowContinuations;
   private readonly now: () => number;
   readonly maxConcurrent: number;
@@ -99,9 +98,21 @@ export class ChildWorkflowScheduler {
     const read = this.options.workflow.get(runId).then(run => { if (run && !this.closed) this.continuations.publish(run); }).catch(error => { this.lastError = String(error); });
     this.observations.add(read); void read.finally(() => this.observations.delete(read));
   }
+  /** Attach the optional task-graph projection without making dispatch depend on Tasks. */
+  attachProjector(projector: (run: WorkflowRun) => Promise<void>): () => void {
+    if (this.closed) throw new Error("Workflow scheduler is closed");
+    if (this.projector) throw new Error("Workflow projector is already attached");
+    this.projector = projector;
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      if (this.projector === projector) this.projector = undefined;
+    };
+  }
   close(): Promise<void> {
     if (this.closing) return this.closing;
-    this.closed = true; if (this.timer) clearInterval(this.timer); this.unsubscribe?.();
+    this.closed = true; this.projector = undefined; if (this.timer) clearInterval(this.timer); this.unsubscribe?.();
     if (!this.options.continuations) this.continuations.close();
     return this.closing = Promise.allSettled([...this.requests, ...this.observations, this.tail]).then(() => {});
   }
@@ -212,24 +223,6 @@ export class ChildWorkflowScheduler {
     }
   }
   private async project(run: WorkflowRun): Promise<void> {
-    if (!run.graph || !this.options.tasks) return;
-    // Workflow is canonical for Attempts; Tasks is an idempotent result projection.
-    const ordered: WorkflowStep[] = [];
-    const visit = (step: WorkflowStep) => {
-      if (ordered.includes(step)) return;
-      for (const id of step.task.dependencies) visit(run.steps.find(candidate => candidate.task.id === id)!);
-      ordered.push(step);
-    };
-    run.steps.forEach(visit);
-    for (const step of ordered) for (const attempt of step.attempts) {
-      const graph = (await this.options.tasks.get(run.graph.sessionId, run.graph.version))!;
-      const task = graph.tasks.find(t => t.id === step.task.id)!;
-      if (step.attempts.findIndex(a => a.id === task.attemptId) > attempt.ordinal - 1) continue;
-      const status = activeAttempt(attempt) ? "running" : attempt.status === "interrupted" ? "blocked" : attempt.status;
-      if (task.status === status && task.attemptId === attempt.id) continue;
-      if (task.attemptId !== attempt.id && !["completed", "cancelled"].includes(task.status)) await this.options.tasks.transition(run.graph, task.id, "running", attempt.id);
-      else if (["blocked", "failed"].includes(task.status) && ["completed", "failed"].includes(status)) await this.options.tasks.transition(run.graph, task.id, "running", attempt.id);
-      await this.options.tasks.transition(run.graph, task.id, status as "running" | "completed" | "failed" | "blocked" | "cancelled", attempt.id, attempt.result);
-    }
+    await this.projector?.(run);
   }
 }

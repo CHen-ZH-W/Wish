@@ -33,7 +33,11 @@ export class StepExecutionCoordinator {
   }
 
   /** Host-only. A Tool must not await an update that needs its own Step to finish. */
-  async replace(update: () => Promise<void>, options: { readonly signal?: AbortSignal } = {}): Promise<void> {
+  async replace(update: () => Promise<void>, options: {
+    readonly signal?: AbortSignal;
+    /** Trusted Host proof that validation rejected before any destructive cleanup. */
+    readonly unchanged?: () => boolean;
+  } = {}): Promise<void> {
     if (this.phase !== "ready") throw new StepExecutionError(`step_execution_${this.phase}`);
     options.signal?.throwIfAborted();
     this.phase = "draining";
@@ -50,7 +54,7 @@ export class StepExecutionCoordinator {
       // Before mutation, cancellation can reopen the old implementation. After
       // mutation, unknown cleanup/activation results require explicit recovery.
       const phase = this.snapshot().phase;
-      if (phase !== "closed") this.phase = started || phase === "failed" ? "failed" : "ready";
+      if (phase !== "closed") this.phase = phase === "failed" || (started && options.unchanged?.() !== true) ? "failed" : "ready";
       throw error;
     } finally { this.notify(); }
   }

@@ -20,7 +20,14 @@ for (const [flag, enabled] of [[undefined, true], ["0", false], ["1", true], ["f
       if (enabled) { assert.equal(fiber.state, 2); assert.equal(booted.context.get("hmr").config.watchConfig, false); }
       const base = booted.context.get("webManagementHost").url;
       const snapshot = await (await fetch(base + "/api/management/plugins")).json();
-      assert.equal(snapshot.inspection.entries.find(item => item.id === "include:hmr").enabled, enabled);
+      const hmr = snapshot.inspection.entries.find(item => item.id === "include:hmr");
+      assert.equal(hmr.enabled, enabled);
+      assert.equal(hmr.managementClass, "kernel");
+      assert.equal(snapshot.inspection.entries.find(item => item.id === "include:timer").managementClass, "kernel");
+      await assert.rejects(booted.pluginManagement.change({ requestId: `kernel-${flag ?? "unset"}`, revision: snapshot.revision,
+        preference: enabled ? "disabled" : "enabled", selection: { instanceId: snapshot.inspection.instanceId, entryIds: ["include:hmr"] } }),
+      { code: "management_target_read_only" });
+      assert.equal(booted.context.loader.resolve("include:hmr").disabled, !enabled);
       assert.equal(snapshot.configuration.watching, true, "turning off code HMR does not turn off controlled config watch");
       assert.equal((await fetch(base + "/")).status, 200);
     } finally { await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
@@ -42,21 +49,25 @@ test("default CLI profile does not start a code watcher without explicit opt-in"
 
 test("managed bootstrap keeps Root management and static resources through business disable, restart and restore", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-managed-boot-"));
-  const lifecycle = new URL("../dist/boot/plugin-control/lifecycle.js", import.meta.url).href;
-  const profile = "- id: application\n  name: ./application.mjs\n- id: webui\n  name: ./surface.mjs\n";
+  const workOwner = new URL("../dist/boot/plugin-control/work-owner.js", import.meta.url).href;
+  const profile = "- id: application\n  name: ./application.mjs\n  management:\n    manifest: ./application.wish-plugin.json\n- id: webui\n  name: ./surface.mjs\n  management:\n    manifest: ./surface.wish-plugin.json\n";
+  const manifest = (id, entry) => JSON.stringify({ apiVersion: "wish.plugin/v1", id, entry, managementClass: "managed", replacement: "drain",
+    configSchema: { type: "object", properties: {}, additionalProperties: false }, permissions: { capabilities: [] },
+    sandbox: { isolation: "trusted-in-process", filesystem: "none", process: "none", network: "none" }, state: { mode: "stateless" } });
   let booted;
   const boot = () => bootstrap({ surface: "webui", cwd: directory, homeDirectory: directory, environment: {}, configurationFile: join(directory, "cordis.yml"), management: managedWebUi({ directory: join(directory, "management"), port: 0 }) });
   try {
-    await writeFile(join(directory, "application.mjs"), `import { registerPluginLifecycle } from ${JSON.stringify(lifecycle)};
-export function apply(ctx) { ctx.provide('demoBusiness', {}); registerPluginLifecycle(ctx, () => ({disposition:'direct',code:'idle'}), () => ({close:async()=>{},release(){}})); }\n`);
-    await writeFile(join(directory, "surface.mjs"), `import { registerPluginLifecycle } from ${JSON.stringify(lifecycle)};
+    await writeFile(join(directory, "application.mjs"), `import { PluginWorkOwner } from ${JSON.stringify(workOwner)};
+export function apply(ctx) { new PluginWorkOwner(ctx,{code:'demo_application',codeReload:true}); ctx.provide('demoBusiness', {}); }\n`);
+    await writeFile(join(directory, "surface.mjs"), `import { PluginWorkOwner } from ${JSON.stringify(workOwner)};
 export const inject = ['demoBusiness','webManagementHost'];
 export function apply(ctx) {
  const registration = ctx.webManagementHost.register(async(req,res)=>{res.writeHead(200,{'Content-Type':'application/json'});res.end('{"business":true}');});
  const close = async()=>registration.release();
- ctx.effect(()=>close);
- registerPluginLifecycle(ctx,()=>({disposition:'direct',code:'idle'}),()=>({close,release(){}}));
+ new PluginWorkOwner(ctx,{code:'demo_surface',codeReload:true,close});
 }\n`);
+    await writeFile(join(directory, "application.wish-plugin.json"), manifest("demo.application", "./application.mjs"));
+    await writeFile(join(directory, "surface.wish-plugin.json"), manifest("demo.surface", "./surface.mjs"));
     await writeFile(join(directory, "cordis.yml"), profile);
     booted = await boot();
     const original = booted.pluginManagement.snapshot().inspection.instanceId;

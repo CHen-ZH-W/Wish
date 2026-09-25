@@ -1,3 +1,4 @@
+import { registerManagedSessionFeature } from "../../apps/session-feature-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionFeature } from "../../apps/session-features.js";
 import type { Memory } from "../types.js";
@@ -24,4 +25,4 @@ export function createMemorySessionFeature(memory: Memory): SessionFeature {
     },
   };
 }
-export default { name: "memory-session-feature", inject: ["memory", "application"], apply(ctx: Context) { ctx.application.registerSessionFeature("memory", createMemorySessionFeature(ctx.memory)); } };
+export default { name: "memory-session-feature", inject: ["memory", "application"], apply(ctx: Context) { registerManagedSessionFeature(ctx, "memory", createMemorySessionFeature(ctx.memory), { codeReload: true }); } };
