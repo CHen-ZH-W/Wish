@@ -35,7 +35,8 @@ export type RuntimeControlReceiptReason =
   | "already_cancelled"
   | "run_already_terminal"
   | "unknown_run"
-  | "agent_mismatch";
+  | "agent_mismatch"
+  | "human_input_preempted";
 
 interface RuntimeControlBase {
   readonly id?: string;
@@ -55,6 +56,8 @@ export interface FollowUpControl<Payload> extends RuntimeControlBase {
   readonly receivedAt?: string;
   /** Bypasses only the entry-count limit; the byte limit remains absolute. */
   readonly reserveCapacity?: boolean;
+  /** Runtime-policy follow-ups may be displaced by trusted human input. */
+  readonly preemptible?: boolean;
 }
 
 export interface AbortControl extends RuntimeControlBase {
@@ -279,6 +282,7 @@ interface QueuedTurn<Payload> {
   readonly payload: Payload;
   readonly bytes: number;
   readonly record: MutableControlRecord<"follow_up">;
+  readonly preemptible: boolean;
 }
 
 /** Ordered next-UserTurn queue with bounded entries and UTF-8 bytes. */
@@ -300,7 +304,11 @@ export class NextTurnQueue<Payload> {
   enqueue(
     payload: Payload,
     message: RuntimeControlMessage<"follow_up">,
-    options: { readonly reserveCapacity?: boolean } = {},
+    options: {
+      readonly reserveCapacity?: boolean;
+      readonly preemptible?: boolean;
+      readonly front?: boolean;
+    } = {},
   ): QueueReceipt<"follow_up"> {
     const duplicate = this.records.find(
       (record) => record.message.id === message.id,
@@ -330,12 +338,33 @@ export class NextTurnQueue<Payload> {
     if (rejection !== undefined) {
       return { accepted: false, message, reason: rejection };
     }
-    this.entries.push({
+    const entry: QueuedTurn<Payload> = {
       payload: cloneAndFreezePlainValue(payload) as Payload,
       bytes,
       record,
-    });
-    return { accepted: true, message, position: this.entries.length };
+      preemptible: options.preemptible === true,
+    };
+    if (options.front === true) this.entries.unshift(entry);
+    else this.entries.push(entry);
+    return {
+      accepted: true,
+      message,
+      position: this.entries.indexOf(entry) + 1,
+    };
+  }
+
+  cancelPreemptible(): readonly string[] {
+    const cancelled: string[] = [];
+    for (let index = this.entries.length - 1; index >= 0; index -= 1) {
+      const entry = this.entries[index]!;
+      if (!entry.preemptible) continue;
+      this.entries.splice(index, 1);
+      entry.record.status = "cancelled";
+      entry.record.dispositionReason = "human_input_preempted";
+      cancelled.push(entry.record.message.id);
+    }
+    cancelled.reverse();
+    return Object.freeze(cancelled);
   }
 
   dequeue():

@@ -20,7 +20,7 @@ test("WebUI keeps transport, React-free models, presentation and module adapters
   for (const path of ["src/apps/webui/client/ui/shell.tsx", "src/apps/webui/client/ui/conversation.tsx", "src/apps/webui/client/ui/feature.tsx"]) {
     assert.doesNotMatch(await readFile(join(root, path), "utf8"), /@deepseek-ai\/cordis|\bfetch\(|new EventSource|toolName === ["'](?:bash|read|write|spawn_agent)/u, path);
   }
-  for (const module of ["plan", "skills", "memory", "workflow", "tasks", "context", "tmux", "subagents", "models"]) await access(join(root, "src", module, "consumers/webui/index.tsx"));
+  for (const module of ["plan", "todo", "goal", "skills", "memory", "workflow", "tasks", "context", "tmux", "subagents", "models"]) await access(join(root, "src", module, "consumers/webui/index.tsx"));
   const shell = await readFile(join(root, "src/apps/webui/client/ui/shell.tsx"), "utf8");
   assert.doesNotMatch(shell, /\barchives?\b|\barchived\b|SessionClientModel|wishSession|\.browse\(/u, "Shell renders owned sidebar contracts, never archive or Session dispatch");
   const settings = await readFile(join(root, "src/settings/settings.ts"), "utf8");

@@ -8,6 +8,8 @@ const modules = [
   ["skills", "SkillsClientUi", ["include:skills-local", "include:skills-session-feature"]],
   ["models", "ModelsClientUi", ["include:models"]],
   ["plan", "PlanClientUi", ["include:plan-session-feature"]],
+  ["todo", "TodoClientUi", ["include:todo-session-feature"]],
+  ["goal", "GoalClientUi", ["include:goal-session-feature"]],
   ["tasks", "TasksClientUi", ["include:tasks-session-feature"]],
   ["memory", "MemoryClientUi", ["include:memory-session-feature"]],
   ["workflow", "WorkflowClientUi", ["include:workflow-session-feature"]],

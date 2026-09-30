@@ -53,6 +53,7 @@ import {
   type RunState,
   type RuntimeCancellation,
   type RuntimeFailure,
+  type UserTurnProvenance,
 } from "./state.js";
 import {
   applyRuntimeTransition,
@@ -124,6 +125,7 @@ export type {
   StepStatus,
   UserTurnState,
   UserTurnStatus,
+  UserTurnProvenance,
 } from "./state.js";
 export {
   applyRuntimeTransition,
@@ -215,6 +217,50 @@ export interface UserTurnResultPipeline<Configuration, Payload, Result> {
   }): Promise<Result>;
 }
 
+export type UserTurnContinuationDecision<Payload> =
+  | { readonly type: "none" }
+  | {
+      readonly type: "follow_up";
+      readonly payload: Payload;
+      readonly text: string;
+      readonly source: string;
+      readonly reserveCapacity?: boolean;
+      readonly preemptible?: boolean;
+    };
+
+/**
+ * Narrow policy seam at UserTurn boundaries. It cannot mutate Runtime state or
+ * queues directly; the Runtime validates and applies the returned decision.
+ */
+export interface UserTurnContinuationPolicy<Configuration, Payload, Result> {
+  openUserTurn?(input: {
+    readonly definition: AgentDefinition<Configuration>;
+    readonly run: RunSnapshot<Payload, Result>;
+    readonly userTurn: UserTurnSnapshot<Payload, Result>;
+    readonly signal: AbortSignal;
+  }): Promise<void> | void;
+  afterUserTurn?(input: {
+    readonly definition: AgentDefinition<Configuration>;
+    readonly run: RunSnapshot<Payload, Result>;
+    readonly userTurn: UserTurnSnapshot<Payload, Result>;
+    readonly result: Result;
+    readonly pending: {
+      readonly queuedFollowUps: number;
+      readonly completionHolds: readonly string[];
+    };
+    readonly completion: {
+      defer(reason: string): RunCompletionHold | undefined;
+    };
+    readonly signal: AbortSignal;
+  }): Promise<UserTurnContinuationDecision<Payload>> | UserTurnContinuationDecision<Payload>;
+  finishRun?(input: {
+    readonly definition: AgentDefinition<Configuration>;
+    readonly run: RunSnapshot<Payload, Result>;
+    readonly status: "completed" | "failed" | "aborted";
+    readonly reason?: string;
+  }): Promise<void> | void;
+}
+
 export interface RuntimeIdGenerator {
   runId(): AgentRunId;
   userTurnId(): UserTurnId;
@@ -227,6 +273,7 @@ export interface RuntimeOptions<Configuration, Payload, StepMemory, Result> {
     | StepPipelineSource<Configuration, Payload, StepMemory, Result>;
   readonly snapshotProvider?: StepSnapshotProvider<Configuration, Payload, Result>;
   readonly userTurnPipeline?: UserTurnResultPipeline<Configuration, Payload, Result>;
+  readonly continuationPolicy?: UserTurnContinuationPolicy<Configuration, Payload, Result>;
   readonly lifecycle?: RuntimeLifecycleService<Payload, Result>;
   readonly observers?: readonly RuntimeTransitionObserver<Payload, Result>[];
   readonly maxSteps?: number;
@@ -401,13 +448,18 @@ export class Runtime<
     try {
       record.stepInbox.openUserTurn(initialUserTurnId);
       this.recordTransition(record, { type: "run.started", at });
+      const userTurnAt = this.timestamp();
       this.recordTransition(record, {
         type: "user_turn.started",
         userTurnId: initialUserTurnId,
         ordinal: 1,
         input: input.payload,
         ...(input.inputSource === undefined ? {} : { inputSource: input.inputSource }),
-        at: this.timestamp(),
+        provenance: initialUserTurnProvenance(
+          input.inputSource ?? "unknown",
+          userTurnAt,
+        ),
+        at: userTurnAt,
       });
     } catch (error: unknown) {
       record.active = false;
@@ -489,9 +541,23 @@ export class Runtime<
     });
     const receipt = record.followUps.enqueue(control.payload, message, {
       reserveCapacity: control.reserveCapacity === true,
+      preemptible: control.preemptible === true,
+      front: isTrustedHumanSource(source),
     });
     this.recordControlReceipt(record, "follow_up", receipt);
-    if (receipt.accepted) this.wakeRun(record);
+    if (receipt.accepted) {
+      if (isTrustedHumanSource(source)) {
+        const controlIds = record.followUps.cancelPreemptible();
+        if (controlIds.length > 0) {
+          this.recordTransition(record, {
+            type: "control.follow_ups_preempted",
+            controlIds,
+            at: this.timestamp(),
+          });
+        }
+      }
+      this.wakeRun(record);
+    }
     return queueReceipt(runId, "follow_up", receipt);
   }
 
@@ -582,6 +648,7 @@ export class Runtime<
           record,
           await this.driveUserTurn(record),
         );
+        await this.applyContinuationPolicy(record, outcome);
         await this.finishCurrentUserTurn(record, outcome);
 
         while (record.active) {
@@ -636,6 +703,7 @@ export class Runtime<
             ordinal: record.state.userTurns.length + 1,
             input: next.payload,
             inputSource: "follow_up",
+            provenance: followUpUserTurnProvenance(next.message),
             at: this.timestamp(),
           });
           await this.openCurrentUserTurn(record);
@@ -977,6 +1045,67 @@ export class Runtime<
       run: snapshotRun(record.state),
       userTurn: snapshotUserTurn(turn),
     });
+    await this.options.continuationPolicy?.openUserTurn?.({
+      definition: record.definition,
+      run: snapshotRun(record.state),
+      userTurn: snapshotUserTurn(turn),
+      signal: record.cancellation.signal,
+    });
+  }
+
+  private async applyContinuationPolicy(
+    record: ManagedRun<Configuration, Payload, StepMemory, Result>,
+    outcome: TurnOutcome<Result>,
+  ): Promise<void> {
+    const policy = this.options.continuationPolicy;
+    if (
+      policy?.afterUserTurn === undefined ||
+      outcome.status !== "completed" ||
+      record.cancellation.cancelled ||
+      record.followUps.size > 0
+    ) {
+      return;
+    }
+    const turn = currentUserTurn(record.state);
+    if (turn === undefined) throw new Error("Runtime has no active UserTurn");
+    const decision = await policy.afterUserTurn({
+      definition: record.definition,
+      run: snapshotRun(record.state),
+      userTurn: snapshotUserTurn(turn),
+      result: outcome.result,
+      pending: Object.freeze({
+        queuedFollowUps: record.followUps.size,
+        completionHolds: Object.freeze([...record.holds.values()]),
+      }),
+      completion: Object.freeze({
+        defer: (reason: string) => this.deferRunCompletion(record.state.id, reason),
+      }),
+      signal: record.cancellation.signal,
+    });
+    if (
+      decision.type === "none" ||
+      record.cancellation.cancelled ||
+      record.followUps.size > 0
+    ) {
+      return;
+    }
+    const receipt = this.control(record.definition.id, record.state.id, {
+      type: "follow_up",
+      payload: decision.payload,
+      text: decision.text,
+      source: decision.source,
+      ...(decision.reserveCapacity === undefined
+        ? {}
+        : { reserveCapacity: decision.reserveCapacity }),
+      ...(decision.preemptible === undefined
+        ? {}
+        : { preemptible: decision.preemptible }),
+    });
+    if (!receipt.accepted) {
+      throw new Error(
+        `Continuation follow-up was rejected: ${receipt.reason ?? "unknown"}`,
+      );
+    }
   }
 
   private async finishCurrentUserTurn(
@@ -1186,6 +1315,7 @@ export class Runtime<
     result: Result,
   ): Promise<void> {
     try {
+      await this.finishContinuationPolicy(record, "completed");
       await this.lifecycle.finishRun({
         snapshot: snapshotRun(record.state),
         status: "completed",
@@ -1221,6 +1351,9 @@ export class Runtime<
     }
     await this.failActiveEntities(record, error);
     try {
+      await this.finishContinuationPolicy(record, "failed", error.message);
+    } catch {}
+    try {
       await this.lifecycle.finishRun({
         snapshot: snapshotRun(record.state),
         status: "failed",
@@ -1249,6 +1382,9 @@ export class Runtime<
   ): Promise<void> {
     if (record.finalized) return;
     await this.abortActiveEntities(record, cancellation);
+    try {
+      await this.finishContinuationPolicy(record, "aborted", cancellation.reason);
+    } catch {}
     try {
       await this.lifecycle.finishRun({
         snapshot: snapshotRun(record.state),
@@ -1470,6 +1606,19 @@ export class Runtime<
     this.pruneTerminalRuns();
   }
 
+  private async finishContinuationPolicy(
+    record: ManagedRun<Configuration, Payload, StepMemory, Result>,
+    status: "completed" | "failed" | "aborted",
+    reason?: string,
+  ): Promise<void> {
+    await this.options.continuationPolicy?.finishRun?.({
+      definition: record.definition,
+      run: snapshotRun(record.state),
+      status,
+      ...(reason === undefined ? {} : { reason }),
+    });
+  }
+
   private pruneTerminalRuns(): void {
     while (this.retainedTerminalRuns.length > this.maxRetainedRuns) {
       const runId = this.retainedTerminalRuns.shift();
@@ -1614,6 +1763,34 @@ function requireIdentifier(value: string, label: string): string {
 function normalizeSource(source: string | undefined): string {
   if (source === undefined) return "runtime";
   return requireIdentifier(source, "Control source");
+}
+
+function isTrustedHumanSource(source: string): boolean {
+  return source === "wish-cli" || source === "wish-webui";
+}
+
+function initialUserTurnProvenance(
+  source: string,
+  receivedAt: string,
+): UserTurnProvenance {
+  return Object.freeze({
+    origin: "run_input",
+    source,
+    receivedAt,
+  });
+}
+
+function followUpUserTurnProvenance(message: {
+  readonly id: string;
+  readonly source: string;
+  readonly receivedAt: string;
+}): UserTurnProvenance {
+  return Object.freeze({
+    origin: "follow_up",
+    source: message.source,
+    controlId: message.id,
+    receivedAt: message.receivedAt,
+  });
 }
 
 function normalizeReason(reason: string | undefined, fallback: string): string {

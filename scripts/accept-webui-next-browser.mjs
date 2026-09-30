@@ -456,6 +456,24 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     await page.getByRole("button", { name: "确认操作", exact: true }).click();
     await page.locator(".feature-document").filter({ hasText: "补充失败恢复检查" }).waitFor();
     assert.equal((await plan.get({ sessionId: session.sessionId })).active, true);
+    const todo = booted.surfaceContext.get("todo");
+    await todo.openTurn({ sessionId: session.sessionId, runId: "browser-run", userTurnId: "browser-turn" });
+    await todo.replace({ sessionId: session.sessionId, runId: "browser-run", userTurnId: "browser-turn", items: [
+      { id: "inspect", content: "检查 UserTurn reset 接缝", status: "in_progress" },
+      { id: "report", content: "记录浏览器验收", status: "pending" },
+    ] });
+    await page.getByRole("button", { name: "Todo", exact: true }).click();
+    await page.getByRole("button", { name: "刷新状态", exact: true }).click();
+    await page.locator(".feature-document").filter({ hasText: "检查 UserTurn reset 接缝" }).waitFor();
+    const goal = booted.surfaceContext.get("goal");
+    const browserGoal = await goal.create({ sessionId: session.sessionId, objective: "完成 Goal 浏览器验收", maxGoalRounds: 3 });
+    await page.getByRole("button", { name: "Goal", exact: true }).click();
+    await page.getByRole("button", { name: "刷新状态", exact: true }).click();
+    await page.locator(".feature-document").filter({ hasText: "完成 Goal 浏览器验收" }).waitFor();
+    await page.getByRole("button", { name: "暂停", exact: true }).click();
+    await page.getByRole("button", { name: "确认操作", exact: true }).click();
+    await page.getByRole("heading", { name: "目标 · paused", exact: true }).waitFor();
+    assert.equal((await goal.get({ sessionId: session.sessionId })).revision, browserGoal.revision + 1, "Goal browser action uses exact revision CAS");
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
     await page.getByRole("button", { name: "通用设置", exact: true }).click();
     await page.locator("select#webui-appearance-theme").selectOption("dark");
@@ -704,8 +722,11 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     await page.getByRole("button", { name: "插件管理", exact: true }).click();
     const disableResponse = page.waitForResponse(response => response.url().endsWith("/api/management/plugins/change") && response.request().method() === "POST");
     await page.getByRole("button", { name: "停用 include:skills-local", exact: true }).click();
-    const disableReceipt = await (await disableResponse).json();
-    assert.equal(disableReceipt.status, "succeeded", JSON.stringify(disableReceipt));
+    const acceptedDisable = await disableResponse;
+    const disableOperation = await acceptedDisable.json();
+    assert.equal(acceptedDisable.status(), 202, JSON.stringify(disableOperation));
+    assert.equal(disableOperation.operation.kind, "disable", JSON.stringify(disableOperation));
+    assert.equal(disableOperation.operation.phase, "queued", JSON.stringify(disableOperation));
     await page.getByRole("button", { name: "Skills", exact: true }).waitFor({ state: "detached" });
     await page.getByRole("button", { name: "执行工作区", exact: true }).click();
     await page.getByRole("button", { name: "工具", exact: true }).click();

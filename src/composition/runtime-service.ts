@@ -21,6 +21,8 @@ import type {
 import {
   Runtime as CoreRuntime,
   type RuntimeOptions as CoreRuntimeOptions,
+  type UserTurnContinuationDecision,
+  type UserTurnContinuationPolicy,
 } from "../core/runtime/runtime.js";
 import type { RuntimeLifecycleService } from "../core/runtime/lifecycle.js";
 import {
@@ -56,6 +58,12 @@ export type WishRuntime = CoreRuntime<
   AgentLoopResult
 >;
 
+export type WishUserTurnContinuationPolicy = UserTurnContinuationPolicy<
+  WishAgentConfiguration,
+  WishRunPayload,
+  AgentLoopResult
+>;
+
 export type { WishRunGeneration } from "../apps/types.js";
 
 export type WishRuntimeOptions = Pick<
@@ -72,6 +80,7 @@ export type WishRuntimeOptions = Pick<
   | "maxEventsPerRun"
   | "ids"
   | "now"
+  | "continuationPolicy"
 >;
 
 /** Narrow capability consumed by the Agent owner. */
@@ -113,6 +122,7 @@ export class Runtime extends Service {
   /** Host-only Step boundary. Does not unload plugins or own their configuration. */
   readonly execution = new StepExecutionCoordinator();
   private readonly generations = new Set<WishRunGeneration>();
+  private readonly continuationPolicies = new Set<WishUserTurnContinuationPolicy>();
   private suspended = false;
   private closed = false;
   private closing: Promise<void> | undefined;
@@ -164,6 +174,20 @@ export class Runtime extends Service {
     return Object.freeze({ generations: snapshots.length,
       activeRuns: snapshots.reduce((count, snapshot) => count + snapshot.activeRuns.length, 0),
       retiring: snapshots.filter(snapshot => snapshot.state === "retiring").length });
+  }
+
+  /** Register one live UserTurn-boundary policy; disposal stops future calls. */
+  registerContinuationPolicy(
+    policy: WishUserTurnContinuationPolicy,
+  ): () => void {
+    if (this.closed) throw new Error("Runtime admission is closed");
+    this.continuationPolicies.add(policy);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.continuationPolicies.delete(policy);
+    };
   }
 
   private close(): Promise<void> {
@@ -221,6 +245,7 @@ export class Runtime extends Service {
       const configuredMaxSteps = input.runtime?.maxSteps ?? this.maxSteps;
       coreRuntime = createWishRuntime({ stepPipeline }, {
         ...(input.runtime ?? {}),
+        continuationPolicy: this.compositeContinuationPolicy(),
         ...(configuredMaxSteps === undefined
           ? {}
           : { maxSteps: configuredMaxSteps }),
@@ -271,6 +296,30 @@ export class Runtime extends Service {
     const provider = this.ctx.get("agentLoop");
     if (!provider) throw new StepExecutionError("step_execution_unavailable");
     return provider;
+  }
+
+  private compositeContinuationPolicy(): WishUserTurnContinuationPolicy {
+    const policies = this.continuationPolicies;
+    const composite: WishUserTurnContinuationPolicy = {
+      async openUserTurn(input) {
+        for (const policy of [...policies]) {
+          await policy.openUserTurn?.(input);
+        }
+      },
+      async afterUserTurn(input): Promise<UserTurnContinuationDecision<WishRunPayload>> {
+        for (const policy of [...policies]) {
+          const decision = await policy.afterUserTurn?.(input);
+          if (decision?.type === "follow_up") return decision;
+        }
+        return Object.freeze({ type: "none" });
+      },
+      async finishRun(input) {
+        for (const policy of [...policies]) {
+          await policy.finishRun?.(input);
+        }
+      },
+    };
+    return Object.freeze(composite);
   }
 }
 

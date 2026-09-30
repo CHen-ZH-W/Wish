@@ -53,12 +53,14 @@ export interface StepSnapshot<Payload = unknown> {
     readonly runId: AgentRunId;
     readonly agentId: AgentId;
     readonly scope: string;
+    readonly parentRunId?: AgentRunId;
   };
   readonly userTurn: {
     readonly userTurnId: UserTurnId;
     readonly ordinal: number;
     readonly input: Payload;
     readonly inputSource?: RunInputSource;
+    readonly provenance: UserTurnState<Payload>["provenance"];
   };
   readonly step: {
     readonly stepId: AgentStepId;
@@ -151,12 +153,16 @@ export function captureStepSnapshot<Payload, Result>(input: {
       runId: input.state.id,
       agentId: input.state.agentId,
       scope: input.state.scope,
+      ...(input.state.parentRunId === undefined
+        ? {}
+        : { parentRunId: input.state.parentRunId }),
     }),
     userTurn: Object.freeze({
       userTurnId: turn.id,
       ordinal: turn.ordinal,
       input: turn.input,
       ...(turn.inputSource === undefined ? {} : { inputSource: turn.inputSource }),
+      provenance: Object.freeze({ ...turn.provenance }),
     }),
     step: Object.freeze({
       stepId: input.step.id,

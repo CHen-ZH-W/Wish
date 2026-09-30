@@ -323,6 +323,25 @@ export function createAgentLoopPipeline(
                   : { configuration: options.modelsConfiguration }),
               }),
               modelSupportsImages: modelSpec.input.image,
+              userTurn: Object.freeze({
+                runId: snapshot.run.runId,
+                ...(snapshot.run.parentRunId === undefined
+                  ? {}
+                  : { parentRunId: snapshot.run.parentRunId }),
+                userTurnId: snapshot.userTurn.userTurnId,
+                ordinal: snapshot.userTurn.ordinal,
+                ...(snapshot.userTurn.inputSource === undefined
+                  ? {}
+                  : { inputSource: snapshot.userTurn.inputSource }),
+                provenance: Object.freeze({
+                  ...snapshot.userTurn.provenance,
+                }),
+                ...(snapshot.userTurn.provenance.origin === "follow_up" &&
+                    snapshot.userTurn.provenance.source === "wish-goal-round-driver" &&
+                    snapshot.userTurn.input.continuation?.kind === "goal_round"
+                  ? { goalRound: Object.freeze({ ...snapshot.userTurn.input.continuation }) }
+                  : {}),
+              }),
               ...(options.runContinuations === undefined
                 ? {}
                 : {

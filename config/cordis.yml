@@ -51,6 +51,9 @@
     approvalRules: true
     sandboxPolicy: true
     permissions: true
+    todo: true
+    goal: true
+    goalRoundDriver: true
     plan: true
     tasks: true
     workflow: true
@@ -505,6 +508,22 @@
       config:
         backendId: file
 
+    - id: goal-storage
+      name: 'cordis:goal-storage'
+      disabled: !!js launch.environment.WISH_GOAL_ENABLED === '0'
+      config:
+        backendId: file
+        defaultMaxGoalRounds: !!js >-
+          launch.environment.WISH_GOAL_MAX_ROUNDS === undefined || launch.environment.WISH_GOAL_MAX_ROUNDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_GOAL_MAX_ROUNDS)
+
+    - id: goal-context
+      name: 'cordis:goal-context'
+      disabled: !!js >-
+        launch.environment.WISH_GOAL_ENABLED === '0' ||
+        launch.environment.WISH_GOAL_CONTEXT_ENABLED === '0'
+
     - id: plan-mode-adapters
       name: 'cordis:plan-mode-adapters'
       disabled: !!js launch.environment.WISH_PLAN_ENABLED === '0'
@@ -664,6 +683,23 @@
         launch.environment.WISH_PLAN_ENABLED === '0' ||
         launch.environment.WISH_PLAN_TOOLS_ENABLED === '0'
 
+    - id: tool-todo
+      name: 'cordis:todo-tools'
+      disabled: !!js >-
+        launch.environment.WISH_TODO_ENABLED === '0' ||
+        launch.environment.WISH_TODO_TOOLS_ENABLED === '0'
+
+    - id: tool-goal
+      name: 'cordis:goal-tools'
+      disabled: !!js >-
+        launch.environment.WISH_GOAL_ENABLED === '0' ||
+        launch.environment.WISH_GOAL_TOOLS_ENABLED === '0'
+      config:
+        blockedAfterConsecutiveRounds: !!js >-
+          launch.environment.WISH_GOAL_BLOCKED_AFTER_ROUNDS === undefined || launch.environment.WISH_GOAL_BLOCKED_AFTER_ROUNDS === ''
+            ? undefined
+            : Number(launch.environment.WISH_GOAL_BLOCKED_AFTER_ROUNDS)
+
     - id: tool-coordinator
       name: 'cordis:coordinator-tools'
       disabled: !!js >-
@@ -706,6 +742,22 @@
             ? undefined
             : Number(launch.environment.WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS)
 
+    - id: todo
+      name: 'cordis:todo'
+      disabled: !!js launch.environment.WISH_TODO_ENABLED === '0'
+
+    - id: goal-round-driver
+      name: 'cordis:goal-round-driver'
+      disabled: !!js >-
+        launch.environment.WISH_GOAL_ENABLED === '0' ||
+        launch.environment.WISH_GOAL_AUTO_CONTINUE_ENABLED === '0'
+
+    - id: todo-context
+      name: 'cordis:todo-context'
+      disabled: !!js >-
+        launch.environment.WISH_TODO_ENABLED === '0' ||
+        launch.environment.WISH_TODO_CONTEXT_ENABLED === '0'
+
     - id: agents
       name: 'cordis:agents'
       config:
@@ -731,6 +783,18 @@
     - id: tasks-session-feature
       name: 'cordis:tasks-session-feature'
       disabled: !!js launch.environment.WISH_TASKS_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: todo-session-feature
+      name: 'cordis:todo-session-feature'
+      disabled: !!js >-
+        launch.environment.WISH_TODO_ENABLED === '0' ||
+        launch.environment.WISH_TODO_SESSION_FEATURE_ENABLED === '0'
+
+    - id: goal-session-feature
+      name: 'cordis:goal-session-feature'
+      disabled: !!js >-
+        launch.environment.WISH_GOAL_ENABLED === '0' ||
+        launch.environment.WISH_GOAL_SESSION_FEATURE_ENABLED === '0'
 
     - id: workflow-session-feature
       name: 'cordis:workflow-session-feature'

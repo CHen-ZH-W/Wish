@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 import { chromium } from "playwright";
 
 const repository = dirname(dirname(fileURLToPath(import.meta.url))), execute = promisify(execFile);
@@ -19,11 +20,9 @@ async function capture(page, name) {
   assert.equal(metrics.overflow, false); await writeFile(join(directory, `${name}.json`), JSON.stringify(metrics, null, 2));
 }
 
-async function createDefaultSession(page) {
-  await page.locator(".empty-state").getByRole("button", { name: "新建会话", exact: true }).click();
-  await page.getByRole("heading", { name: "许个愿吧", exact: true }).waitFor();
-  await page.locator('.workspace-choice input[type="radio"]').first().check();
-  await page.getByRole("button", { name: "创建会话", exact: true }).click();
+async function createDefaultSession(page, booted, directory) {
+  await booted.surfaceContext.get("sessions").manager.create({ sessionId: randomUUID(), agentId: booted.surfaceContext.get("agents").agentId, scope: directory });
+  await page.reload();
   await page.locator("#wish-composer").waitFor();
 }
 
@@ -54,11 +53,12 @@ test("real module builds hot-replace Browser plugins without losing Session, dra
     page.on("pageerror", error => errors.push(error.message));
     page.on("request", request => { resources.push(request.url()); if (request.isNavigationRequest()) documents.push(request.url()); });
     await page.goto(base);
-    await createDefaultSession(page);
+    await createDefaultSession(page, booted, directory);
+    const initialDocumentCount = documents.length;
     await page.locator("#wish-composer").fill("代码更新后仍要保留的草稿");
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
     await page.getByRole("button", { name: "Skills", exact: true }).click();
-    await page.getByRole("heading", { name: "Skills", exact: true }).waitFor();
+    await page.locator("h1").filter({ hasText: /^Skills$/u }).waitFor();
     await page.evaluate(() => { window.uiAcceptanceIdentity = crypto.randomUUID(); });
     const identity = await page.evaluate(() => window.uiAcceptanceIdentity);
     const sessions = await booted.surfaceContext.get("sessions").manager.list();
@@ -143,7 +143,7 @@ test("real module builds hot-replace Browser plugins without losing Session, dra
     assert.notEqual((await manifest()).core, coreAfterCodeEdit, "shared CSS changes must also request a deliberate refresh");
     assert.equal(await page.evaluate(() => window.uiAcceptanceIdentity), identity);
     assert.equal(await page.locator("#wish-composer").inputValue(), "代码更新后仍要保留的草稿");
-    assert.equal(documents.length, 1);
+    assert.equal(documents.length, initialDocumentCount, "UI code replacement must not navigate the document");
     assert.deepEqual((await booted.surfaceContext.get("sessions").manager.list()).map(item => item.sessionId), sessions.map(item => item.sessionId));
     assert.ok(errors.every(error => error.includes("fixture render failure")), JSON.stringify(errors));
     for (const path of ["/assets/modules/missing-AAAAAAAA.js", "/assets/modules/%2e%2e%2fserver.js", "/assets/modules/SkillsClientUi.js"]) assert.equal((await fetch(base + path)).status, 404);

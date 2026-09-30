@@ -57,6 +57,13 @@ export interface WishRunPayload {
   readonly model?: ModelRef;
   /** Fixed at new-Run admission; follow-up and steering cannot change it. */
   readonly reasoningEffort?: ModelReasoningEffort;
+  /** Runtime-produced continuation identity; never trusted without UserTurn provenance. */
+  readonly continuation?: {
+    readonly kind: "goal_round";
+    readonly goalId: string;
+    readonly revision: number;
+    readonly round: number;
+  };
 }
 
 export type WishAgentProtocol = RuntimeAgentProtocol<

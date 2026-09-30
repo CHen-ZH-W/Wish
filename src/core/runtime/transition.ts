@@ -8,6 +8,7 @@ import {
   type RuntimeCancellation,
   type RuntimeFailure,
   type StepState,
+  type UserTurnProvenance,
   type UserTurnState,
 } from "./state.js";
 import type { RunInputSource, UserTurnId } from "../agent/types.js";
@@ -20,6 +21,7 @@ export type RuntimeTransition<Payload = unknown, Result = unknown> =
       readonly ordinal: number;
       readonly input: Payload;
       readonly inputSource?: RunInputSource;
+      readonly provenance: UserTurnProvenance;
       readonly at: string;
     }
   | {
@@ -84,6 +86,11 @@ export type RuntimeTransition<Payload = unknown, Result = unknown> =
   | {
       readonly type: "control.follow_up_dequeued";
       readonly controlId: string;
+      readonly at: string;
+    }
+  | {
+      readonly type: "control.follow_ups_preempted";
+      readonly controlIds: readonly string[];
       readonly at: string;
     }
   | {
@@ -172,6 +179,7 @@ export function applyRuntimeTransition<Payload, Result>(
         ...(transition.inputSource === undefined
           ? {}
           : { inputSource: transition.inputSource }),
+        provenance: freezeUserTurnProvenance(transition.provenance),
         startedAt: transition.at,
         steps: Object.freeze([] as StepState[]),
       });
@@ -316,6 +324,22 @@ export function applyRuntimeTransition<Payload, Result>(
         queuedFollowUps: state.queuedFollowUps - 1,
       });
 
+    case "control.follow_ups_preempted":
+      requireRunningRun(state);
+      requireState(
+        transition.controlIds.length > 0,
+        "Follow-up preemption must contain at least one control",
+      );
+      requireState(
+        transition.controlIds.length <= state.queuedFollowUps,
+        "Preempted follow-ups exceed the pending count",
+      );
+      return freezeState({
+        ...state,
+        version: state.version + 1,
+        queuedFollowUps: state.queuedFollowUps - transition.controlIds.length,
+      });
+
     case "control.rejected":
       requireRunningRun(state);
       return freezeState({ ...state, version: state.version + 1 });
@@ -406,7 +430,10 @@ export function freezeRuntimeTransition<Payload, Result>(
       cancellation: freezeCancellation(transition.cancellation),
     });
   }
-  if (transition.type === "control.steering_delivered") {
+  if (
+    transition.type === "control.steering_delivered" ||
+    transition.type === "control.follow_ups_preempted"
+  ) {
     return Object.freeze({
       ...transition,
       controlIds: Object.freeze([...transition.controlIds]),
@@ -424,6 +451,7 @@ export function freezeRuntimeTransition<Payload, Result>(
     return Object.freeze({
       ...transition,
       input: cloneAndFreezePlainValue(transition.input) as Payload,
+      provenance: freezeUserTurnProvenance(transition.provenance),
     });
   }
   if (
@@ -436,6 +464,43 @@ export function freezeRuntimeTransition<Payload, Result>(
     });
   }
   return Object.freeze({ ...transition });
+}
+
+function freezeUserTurnProvenance(
+  provenance: UserTurnProvenance,
+): UserTurnProvenance {
+  if (
+    provenance.origin !== "run_input" &&
+    provenance.origin !== "follow_up"
+  ) {
+    throw new Error("Unknown UserTurn provenance origin");
+  }
+  if (
+    typeof provenance.source !== "string" ||
+    provenance.source.trim().length === 0
+  ) {
+    throw new Error("UserTurn provenance source must not be empty");
+  }
+  if (
+    typeof provenance.receivedAt !== "string" ||
+    provenance.receivedAt.trim().length === 0
+  ) {
+    throw new Error("UserTurn provenance receivedAt must not be empty");
+  }
+  if (
+    provenance.origin === "follow_up" &&
+    (typeof provenance.controlId !== "string" ||
+      provenance.controlId.trim().length === 0)
+  ) {
+    throw new Error("Follow-up UserTurn provenance requires a control id");
+  }
+  if (
+    provenance.origin === "run_input" &&
+    provenance.controlId !== undefined
+  ) {
+    throw new Error("Initial UserTurn provenance cannot carry a control id");
+  }
+  return Object.freeze({ ...provenance });
 }
 
 function finishStep<Payload, Result>(

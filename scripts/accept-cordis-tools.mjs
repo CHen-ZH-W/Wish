@@ -43,6 +43,8 @@ const coordinatorNames = [
   "exit_coordinator_mode",
 ];
 const taskNames = ["tasks_read", "tasks_update"];
+const todoNames = ["todo_write"];
+const goalNames = ["get_goal", "create_goal", "update_goal"];
 const workflowNames = ["workflow_read", "workflow_start", "workflow_cancel", "workflow_retry"];
 const skillNames = ["list_skills", "read_skill"];
 const memoryNames = ["memory_search", "memory_read", "memory_write"];
@@ -52,6 +54,8 @@ const productNames = [
   ...subagentNames,
   ...coordinatorNames,
   ...taskNames,
+  ...todoNames,
+  ...goalNames,
   ...workflowNames,
   ...skillNames,
   ...memoryNames,
@@ -210,7 +214,7 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
     assert.equal(await defaultBoot.completion, 0);
     assertBootTools(
       defaultBoot,
-      [...basicNames, ...planNames, ...coordinatorNames, ...taskNames, ...workflowNames, ...skillNames, ...memoryNames],
+      [...basicNames, ...planNames, ...coordinatorNames, ...taskNames, ...todoNames, ...goalNames, ...workflowNames, ...skillNames, ...memoryNames],
       "Subagent model Tools must be independently disableable",
     );
     assert.notEqual(defaultBoot.surfaceContext.get("tmux"), undefined);

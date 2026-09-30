@@ -4,6 +4,8 @@ import type { ModelsConfiguration } from "../models/types.js";
 import type { PermissionSnapshot } from "../permissions/index.js";
 import type { WorkspaceSnapshot } from "../workspace/index.js";
 import type { SessionHistorySnapshot } from "../sessions/types.js";
+import type { RunInputSource } from "../core/agent/types.js";
+import type { UserTurnProvenance } from "../core/runtime/state.js";
 
 /** Provider-neutral Model facts fixed for one Tool execution Step. */
 export interface ToolModelContext {
@@ -24,6 +26,20 @@ export interface WishToolExecutionContext {
   readonly modelSupportsImages?: boolean;
   /** Generic Run continuation Port; omitted by narrow standalone embedders. */
   readonly runContinuation?: RunContinuation;
+  /** Runtime-authenticated UserTurn facts captured with this Step. */
+  readonly userTurn?: {
+    readonly runId: string;
+    readonly parentRunId?: string;
+    readonly userTurnId: string;
+    readonly ordinal: number;
+    readonly inputSource?: RunInputSource;
+    readonly provenance: UserTurnProvenance;
+    readonly goalRound?: {
+      readonly goalId: string;
+      readonly revision: number;
+      readonly round: number;
+    };
+  };
   /** Host-bound read-only view of this Session's committed facts; no path or Session selector. */
   readonly sessionHistory?: {
     read(signal?: AbortSignal): Promise<SessionHistorySnapshot>;

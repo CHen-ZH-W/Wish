@@ -105,11 +105,155 @@ test("outer Run loop starts follow-up UserTurns while inner Step ordinals reset"
     completion.snapshot.userTurns.map((turn) => turn.steps.map((step) => step.ordinal)),
     [[1, 2], [1]],
   );
+  assert.deepEqual(completion.snapshot.userTurns[0].provenance, {
+    origin: "run_input",
+    source: "unknown",
+    receivedAt: "2026-01-01T00:00:02Z",
+  });
+  assert.deepEqual(completion.snapshot.userTurns[1].provenance, {
+    origin: "follow_up",
+    source: "runtime",
+    controlId: "follow-1",
+    receivedAt: "2026-01-01T00:00:05Z",
+  });
   assert.equal(new Set(executions.map((item) => item.runId)).size, 1);
   assert.equal(
     events.filter((event) => event.payload.type === "user_turn.started").length,
     2,
   );
+});
+
+test("the continuation policy can open turns and return one trusted follow-up", async () => {
+  const services = deterministicServices();
+  const opened = [];
+  const decided = [];
+  const runtime = new Runtime({
+    ...services,
+    continuationPolicy: {
+      openUserTurn({ userTurn }) {
+        opened.push({ ordinal: userTurn.ordinal, provenance: userTurn.provenance });
+      },
+      afterUserTurn({ userTurn, pending }) {
+        decided.push({ ordinal: userTurn.ordinal, pending });
+        return userTurn.ordinal === 1
+          ? {
+              type: "follow_up",
+              payload: { text: "policy round" },
+              text: "policy round",
+              source: "goal-round-driver",
+              reserveCapacity: true,
+            }
+          : { type: "none" };
+      },
+    },
+    stepPipeline: {
+      async execute({ snapshot }) {
+        return { status: "completed", result: snapshot.userTurn.input.text };
+      },
+    },
+  });
+  const completion = await runtime.startRun(
+    { id: "policy-agent" },
+    { scope: "policy", payload: { text: "initial" }, inputSource: "user" },
+  ).completion;
+
+  assert.equal(completion.status, "completed");
+  assert.deepEqual(opened.map((item) => item.ordinal), [1, 2]);
+  assert.deepEqual(decided.map((item) => item.ordinal), [1, 2]);
+  assert.deepEqual(opened[0].provenance, {
+    origin: "run_input",
+    source: "user",
+    receivedAt: "2026-01-01T00:00:02Z",
+  });
+  assert.equal(opened[1].provenance.source, "goal-round-driver");
+  assert.equal(opened[1].provenance.controlId, "control-1");
+  assert.equal(Object.isFrozen(decided[0].pending.completionHolds), true);
+});
+
+test("an already queued follow-up preempts continuation policy scheduling", async () => {
+  const services = deterministicServices();
+  const decided = [];
+  let runtime;
+  let handle;
+  runtime = new Runtime({
+    ...services,
+    continuationPolicy: {
+      afterUserTurn({ userTurn }) {
+        decided.push(userTurn.ordinal);
+        return { type: "none" };
+      },
+    },
+    stepPipeline: {
+      async execute({ snapshot }) {
+        if (snapshot.userTurn.ordinal === 1) {
+          assert.equal(runtime.control("preempt-agent", handle.runId, {
+            type: "follow_up",
+            source: "wish-webui",
+            payload: "human",
+            text: "human",
+          }).accepted, true);
+        }
+        return { status: "completed", result: snapshot.userTurn.input };
+      },
+    },
+  });
+  handle = runtime.startRun(
+    { id: "preempt-agent" },
+    { scope: "preempt", payload: "initial", inputSource: "user" },
+  );
+  const completion = await handle.completion;
+  assert.equal(completion.status, "completed");
+  assert.deepEqual(decided, [2]);
+  assert.equal(completion.snapshot.userTurns[1].provenance.source, "wish-webui");
+});
+
+test("trusted human follow-up displaces an already queued preemptible policy turn", async () => {
+  const services = deterministicServices();
+  let runtime;
+  runtime = new Runtime({
+    ...services,
+    continuationPolicy: {
+      afterUserTurn({ userTurn }) {
+        return userTurn.ordinal === 1
+          ? {
+              type: "follow_up",
+              payload: "automatic",
+              text: "automatic",
+              source: "policy-driver",
+              preemptible: true,
+            }
+          : { type: "none" };
+      },
+    },
+    lifecycle: {
+      openRun() {}, finishRun() {}, openUserTurn() {}, openStep() {}, finishStep() {},
+      finishUserTurn({ run, userTurn }) {
+        if (userTurn.ordinal === 1) {
+          assert.equal(runtime.control("human-preempt-agent", run.runId, {
+            type: "follow_up",
+            source: "wish-webui",
+            payload: "human",
+            text: "human",
+          }).accepted, true);
+        }
+      },
+    },
+    stepPipeline: {
+      async execute({ snapshot }) {
+        return { status: "completed", result: snapshot.userTurn.input };
+      },
+    },
+  });
+  const handle = runtime.startRun(
+    { id: "human-preempt-agent" },
+    { scope: "human-preempt", payload: "initial", inputSource: "user" },
+  );
+  const eventsPromise = collect(runtime.observe("human-preempt-agent", handle.runId));
+  const completion = await handle.completion;
+  const events = await eventsPromise;
+  assert.equal(completion.status, "completed");
+  assert.deepEqual(completion.snapshot.userTurns.map(turn => turn.input), ["initial", "human"]);
+  assert.equal(events.filter(event => event.payload.type === "control.follow_ups_preempted").length, 1);
 });
 
 test("in-flight steering is ordered, delivered once, and forces the next Step", async () => {
@@ -767,6 +911,11 @@ test("pure transitions reject paths outside the Run-UserTurn-Step hierarchy", ()
     userTurnId: "turn-state",
     ordinal: 1,
     input: "task",
+    provenance: {
+      origin: "run_input",
+      source: "user",
+      receivedAt: "t2",
+    },
     at: "t2",
   });
   state = applyRuntimeTransition(state, {

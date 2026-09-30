@@ -42,12 +42,23 @@ export interface StepState {
   readonly error?: RuntimeFailure;
 }
 
+/** Runtime-authenticated origin of one UserTurn input. */
+export interface UserTurnProvenance {
+  readonly origin: "run_input" | "follow_up";
+  /** Host or runtime component that supplied the input. */
+  readonly source: string;
+  /** Present only when the UserTurn was created from an accepted control. */
+  readonly controlId?: string;
+  readonly receivedAt: string;
+}
+
 export interface UserTurnState<Payload = unknown, Result = unknown> {
   readonly id: UserTurnId;
   readonly ordinal: number;
   readonly status: UserTurnStatus;
   readonly input: Payload;
   readonly inputSource?: RunInputSource;
+  readonly provenance: UserTurnProvenance;
   readonly startedAt: string;
   readonly endedAt?: string;
   readonly steps: readonly StepState[];

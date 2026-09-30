@@ -148,7 +148,11 @@ export default { inject: ["tools", "filesystem"], apply(ctx) {
       return view;
     };
     f.reconfigure = () => writeFile(profile, config + "\n# changed deployment while code batch is pending\n");
-    f.disableReadInConfiguration = () => writeFile(profile, config.replace("name: 'cordis:read'", "name: 'cordis:read'\n      disabled: true"));
+    f.disableReadInConfiguration = () => {
+      const updated = config.replace(/^(\s*name:\s*)(?:'cordis:read'|cordis:read)$/mu, "$1'cordis:read'\n      disabled: true");
+      assert.notEqual(updated, config, "fixture must mutate either source or normalized YAML");
+      return writeFile(profile, updated);
+    };
     await f.boot();
     await run(f);
   } catch (error) { throw Error(`${error.message}\nReload: ${JSON.stringify(f.booted?.codeReload.snapshot())}`, { cause: error }); }
