@@ -18,16 +18,26 @@ Cordis services and lifecycle generations.
   `startRun()` together. Rejected preflight releases only that admission fence; approved
   idle shutdown awaits generation retirement/resource release. Active Runs are blocked,
   never implicitly aborted to make an administrative stop pass. Old references remain closed.
+- `runtime-service.ts` also owns the live `UserTurnContinuationPolicy` registry. Each Core Runtime
+  generation receives one composite policy; domain plugins own their state and unregister through
+  their Fiber lifecycle. The first policy follow-up decision wins at a UserTurn boundary.
 - `step-execution.ts`: per-Runtime Step acquisition/replacement barrier. It owns only
   in-flight lease counts and replacement admission, not Run state, queues, plugin loading,
   permissions, persistence or retries.
 - `agent-service.ts`: owns the default Wish Agent definition and facade.
-- `tool-context.ts`: immutable Wish product facts fixed for one Tool execution Step.
+- `tool-context.ts`: immutable Wish product facts fixed for one Tool execution Step, including
+  Runtime-authenticated UserTurn provenance and an exact Goal-round identity only for trusted
+  GoalRoundDriver follow-ups.
 - `coding-tools.ts`: explicit standalone composition of the default Coding Tool Consumers.
 
 Core state machines and transition rules remain under `src/core/`; this directory must not become
 the canonical owner of Session, Run, Step, Tool or Subagent state. Cordis is used here only for
 composition, injection, replacement and lifecycle cleanup.
+
+The continuation registry is a narrow product adapter rather than a second scheduler. Policies
+cannot mutate Core queues directly; Core validates their decisions, creates the follow-up and owns
+human-input preemption. Likewise, Tool consumers may use `tool-context.userTurn` as authenticated
+identity but must still request and validate the relevant Permission Grant.
 
 ## Execution replacement
 

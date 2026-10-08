@@ -14,13 +14,13 @@ Run 外层循环
 ## 文件职责
 
 - `runtime.ts`：活动 Run 注册、双层驱动循环、scope 唯一性、控制路由与释放。
-- `state.ts`：Run、UserTurn、Step 的 canonical state，以及初始身份、层级和
-  不可变数据约束。
+- `state.ts`：Run、UserTurn、Step 的 canonical state，Runtime 认证的 UserTurn
+  provenance，以及初始身份、层级和不可变数据约束。
 - `snapshot.ts`：只读 `RunSnapshot`、`UserTurnSnapshot` 和一次性捕获的
   `StepSnapshot`。
 - `lifecycle.ts`：终态决策、取消首因、observer pipeline 和持久化 Port。
 - `transition.ts`：带不变量检查的纯状态转换。
-- `control.ts`：steer inbox、follow-up queue、abort DTO 和明确回执。
+- `control.ts`：steer inbox、follow-up queue、可抢占自动 follow-up、abort DTO 和明确回执。
 - `generation.ts`：跨配置代的 Run 准入、活动 Run 归属、单次取消与诚实排空。
 - `../../composition/runtime-service.ts`：Cordis `runEngine` Service，拥有生产环境的 Runtime 构造和生命周期。
 - `durability/`：Runtime-owned lifecycle Definition、Journal authority、恢复分类和
@@ -39,6 +39,12 @@ Run 外层循环
 外层循环串行执行初始 UserTurn 和已接受的 follow-up。follow-up 保留
 `runId`，但创建新的 `userTurnId`；失败或取消不会因为队列中还有 follow-up
 而继续执行。
+
+每个 UserTurn 都携带 Runtime 创建并冻结的 `provenance`。初始输入记录
+`origin=run_input` 和可信 adapter source；follow-up 记录 `origin=follow_up`、source、
+control ID 与接收时间。后续模块只能消费这份身份，不能根据 payload、消息 role 或模型文本
+反推人类来源。可信 CLI/WebUI 人工 follow-up 会排到队首，并取消尚未开始且明确标记为
+`preemptible` 的策略 follow-up；普通模型或插件来源不能取得该抢占权限。
 
 内层循环只驱动当前 UserTurn 的 Step。`StepPipeline` 是 Model、Context 和
 Tool 链路的接入点，默认实现由 `agent-loop/AgentLoop` 提供，生产构造由
@@ -61,6 +67,12 @@ Core 不认识插件名称、Cordis、HMR 或 Registry。
 完成的 UserTurn 结果可以进入显式 `UserTurnResultPipeline`，用于组合需要
 发生在终态提交前的处理阶段；Runtime 不提供通用 hook 注册机制。
 
+组合层还可提供一个窄 `UserTurnContinuationPolicy`。Runtime 在 UserTurn 打开时通知策略，
+并且只在 UserTurn 成功、没有取消、没有已排队 follow-up 时请求一次 `afterUserTurn`
+决策。策略只能返回 `none` 或一条候选 follow-up，不能直接修改状态或队列；Runtime 负责
+验证文本、source、容量和抢占属性，再创建正常的下一 UserTurn。Run 终态通过 `finishRun`
+通知策略清理进程内绑定。该 seam 当前供 GoalRoundDriver 使用，不是通用 Hook 或持久任务恢复。
+
 ## 控制语义
 
 - steer 按接收顺序进入当前 UserTurn 的 next-step inbox，每条最多投递一次。
@@ -70,6 +82,9 @@ Core 不认识插件名称、Cordis、HMR 或 Registry。
 - follow-up 只进入下一 UserTurn，队列同时限制条目数和 UTF-8 字节数。
 - follow-up payload 在入队时建立不可变快照，调用方后续修改不会改变未来
   UserTurn 的输入。
+- `preemptible` 明确标记可以被可信人工输入替换的待执行 follow-up；当前默认产品只让
+  Runtime policy 生成这种控制。可信 CLI/WebUI 人工 follow-up 会取消这些待执行项，
+  回执原因记录为 `human_input_preempted`。其他 follow-up 保持原有顺序且不会被隐式删除。
 - `deferRunCompletion()` 返回显式 completion hold。当前 UserTurn 完成且 follow-up 队列
   暂空时，只要仍有 hold，Run 就保持活动；释放最后一个 hold 后才重新判断终态。
   异步能力可通过通用 `RunContinuation` Port 等待外部结果，再通过正常 follow-up 控制
@@ -126,8 +141,8 @@ Runtime 在入口复制 definition、metadata 和 plain DTO；状态、transitio
 
 ## 模块边界
 
-双层调度、canonical state、控制队列、不可变快照、取消、生命周期 Port、统一事件和
-终态收束均由 Runtime 所有。Runtime 不依赖默认
+双层调度、canonical state、provenance、控制队列、continuation policy 决策应用、
+不可变快照、取消、生命周期 Port、统一事件和终态收束均由 Runtime 所有。Runtime 不依赖默认
 实现，也不理解具体 Context、Model 或 Tool；组合根可以使用 `AgentLoop` 完成默认
 连接，也可以提供遵守相同 Step 契约的其他显式 `StepPipeline`。持久化和进程重启
 恢复分类由 `durability/` 中的具体 authority 承担。`runtime.ts` 与 `generation.ts` 等算法文件仍不依赖
@@ -140,6 +155,10 @@ Runtime Service 注入 `launch`、`sessions`、`models` 与 `runtimeLifecycle`�
 lease 和 Application-facing Models view；每 Step 通过动态 AgentLoop 入口获取当前 pipeline。
 它构造一代 Core Runtime 和包裹它的 `RunGeneration`。Cordis 保留 `ctx.runtime` 作为插件 runtime accessor，因此
 Wish 的能力键使用 `runEngine`，Loader 名称仍为 `cordis:runtime`。
+
+领域插件可用 `runEngine.registerContinuationPolicy()` 注册当前 generation 可见的
+UserTurn 边界策略；Fiber 释放时注销只影响未来调用。组合器按注册顺序通知所有策略，
+`afterUserTurn` 采用第一条 follow-up 决策。策略状态仍由所属模块管理，Runtime 不持久化它。
 
 `runtime-lifecycle-journal` Provider 注入选中的 `storageBackend`，要求 Journal 支持
 原子 batch 与 `fsync` durability，并持有 Backend lease 直到自身关闭。默认使用全局
@@ -172,12 +191,14 @@ npm run test:runtime
 npm run test:cordis-runtime
 npm run test:run-generation
 npm run test:step-execution
+npm run test:goal-round-driver
 npm test
 ```
 
 Runtime 验收覆盖双层循环、Step 序号、steer/follow-up/abort、预算、completion
 hold、scope、生命周期、事件重放、不可变边界、端口协议、capture 取消、输出端口
-失效、observer 隔离、初始化回收和纯状态机不变量。Generation 验收额外覆盖旧代准入关闭、
+失效、UserTurn provenance、人工输入抢占、continuation policy、observer 隔离、初始化回收
+和纯状态机不变量。Generation 验收额外覆盖旧代准入关闭、
 单次 abort、原 completion 排空、超时 fail-closed、Cordis 更新先后顺序和零重放。
 Durability 验收额外覆盖敏感 payload 只留指纹、四种恢复分类、终态排除、原子中断封口、
 启动扫描准入、跨重启 reconciliation 投影、resolution 的持久化/幂等/冲突/证据哈希、

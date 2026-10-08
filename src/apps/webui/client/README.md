@@ -1,7 +1,8 @@
 # Browser Client
 
 `npm run webui` 默认且唯一提供本界面，布局使用执行记录方向。这里只保存浏览器当前知道的
-状态和 UI 状态，Session、Run、Plan、Workflow、Settings 的规范事实仍由 Host 所有者维护。
+状态和 UI 状态，Session、Run、Todo、Goal、Plan、Workflow、Settings 的规范事实仍由 Host
+所有者维护。
 
 ```text
 Host API / events -> connection -> React-free Client Models
@@ -54,7 +55,7 @@ Host API / events -> connection -> React-free Client Models
   Workspace 注册表，Workspace 的规范身份与文件边界仍由 Host Workspace 能力所有。
 
 Settings 描述与 Client Model 位于 `src/settings`；审批 Client Model 和 UI 位于
-`src/approval`；Plan、Skills、Memory、Tasks、Workflow、Context、tmux、Subagents、Models
+`src/approval`；Plan、Todo、Goal、Skills、Memory、Tasks、Workflow、Context、tmux、Subagents、Models
 各自贡献模块页面。Skills 声明全局左栏入口，并用自己的 React-free Client Model、目录侧栏
 与正文视图替换默认会话导航；目录仍由当前 Session 的 Host Workspace 决定。Models 声明设置区入口并拥有自己的 React-free
 Client Model，连接公开 Settings 描述、按模型上下文覆盖与脱敏 Credentials 状态。密钥输入只写
@@ -62,6 +63,8 @@ Client Model，连接公开 Settings 描述、按模型上下文覆盖与脱敏 
 `theme.ts` 只把 Host Settings 快照投影为根元素的主题、语言和字号，不另存一份偏好事实。
 各模块 UI Consumer 提供自己的英文文案，Shell 不按模块 ID 翻译；会话正文和工作区文件保持原文。通用 SessionFeature UI
 只转发显示过的 token/action/feedback；过期确认必须重查。
+Todo 模块只显示当前 UserTurn 的整表进度；Goal 模块显示持久 phase、进程内 activation、
+轮次及带 revision 的人工操作。浏览器不生成自动 Goal round，也不把 UI 快照当作授权来源。
 没有 Runtime 状态迁入 React，也没有在 Tools 下集中实现这些业务能力。
 
 SessionFeature 的可选 `data` 是模块拥有的只读展示投影；Apps 只传递，不解释字段。

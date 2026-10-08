@@ -91,6 +91,8 @@ approval <- process-surface answerer hub
 approvalRules <- Storage Domain provider <- storageBackend KV
 sandboxPolicy <- default preflight provider <- filesystem + shell policy generation
 permissions <- default policy provider <- approval + approvalRules + sandboxPolicy
+todo <- process-local UserTurn state <- runEngine
+goal <- Session-keyed Storage Domain; goalRoundDriver <- goal + runEngine
 plan <- Session-keyed Storage Domain; optional mode adapter -> Permissions + Context
 coordinator <- Run-keyed Storage Domain; optional mode adapter -> Permissions + Context
 tasks <- Session-keyed versioned graph Storage Domain
@@ -103,6 +105,8 @@ tools <- read/write/edit consumers <- filesystem
       <- grep consumer <- filesystemSearch
       <- bash consumer <- shell + toolOutputArtifacts
       <- subagent Tool consumer <- subagents + runtime completion control
+      <- Todo Tool consumer <- todo
+      <- Goal Tool consumer <- goal
       <- Plan Tool consumer <- plan
       <- Tasks / Workflow Tool consumers <- independent capability services
       <- workflow_start consumer <- workflowGraphScheduler
@@ -151,6 +155,8 @@ Boot 不拥有具体 UI。业务 surface 缺席或 pending 时管理面仍可供
 - Approval：进程表面 answerer 的生命周期；ApprovalRuleStore：持久 backend 与规则上限；
 - SandboxPolicy：当前 Filesystem/Shell generation 的审批前可执行性；
 - Permissions：默认 profile 与 policy version；
+- Todo：进程内 UserTurn 状态；Goal：Storage Backend 与默认轮次上限；
+  GoalRoundDriver：Runtime UserTurn continuation policy；
 - Plan：Storage Backend；Coordinator：Storage Backend 与现有 Subagents capability；
 - Models：配置来源、默认模型、fallback 与重试次数；
 - ContextEngine / Compaction：各自的预算；
@@ -176,6 +182,15 @@ Plan 默认启用，可分别用 `WISH_PLAN_ENABLED=0` 和
 `WISH_COORDINATOR_ENABLED=0` / `WISH_COORDINATOR_TOOLS_ENABLED=0` 分别关闭其能力和模型入口。
 两者是独立一级模块：Plan 只冻结已审批方案，不启动 Workflow；Coordinator 只改变当前
 Run 的委派策略，不接管 tmux 或 child lifecycle。
+
+Todo 与 Goal 默认启用。Todo 的状态、Context、模型入口和 SessionFeature 分别由
+`WISH_TODO_ENABLED`、`WISH_TODO_CONTEXT_ENABLED`、`WISH_TODO_TOOLS_ENABLED`、
+`WISH_TODO_SESSION_FEATURE_ENABLED` 控制。Goal 对应使用 `WISH_GOAL_ENABLED`、
+`WISH_GOAL_CONTEXT_ENABLED`、`WISH_GOAL_TOOLS_ENABLED`、
+`WISH_GOAL_SESSION_FEATURE_ENABLED`；`WISH_GOAL_MAX_ROUNDS` 设置默认轮次上限，
+`WISH_GOAL_AUTO_CONTINUE_ENABLED=0` 只卸载 GoalRoundDriver，
+`WISH_GOAL_BLOCKED_AFTER_ROUNDS` 约束自动轮次报告阻塞的最低轮次。Todo 是当前 UserTurn
+进度，不替代 Tasks；Goal 是 Session 持久目标，其 activation 和自动续轮不持久化。
 
 Tasks 与 Workflow 默认启用；`WISH_TASKS_ENABLED=0` / `WISH_WORKFLOW_ENABLED=0` 分别关闭
 能力，`WISH_TASK_TOOLS_ENABLED=0` / `WISH_WORKFLOW_TOOLS_ENABLED=0` 只隐藏相应模型入口。
@@ -374,6 +389,10 @@ npm run test:cordis-lifecycle
 npm run test:cordis-isolation
 npm run test:run-generation
 npm run test:step-execution
+npm run test:todo
+npm run test:goal
+npm run test:goal-round-driver
+npm run test:goal-todo-cordis
 npm run test:tmux
 npm run test:subagents
 npm run test:subagent-tools

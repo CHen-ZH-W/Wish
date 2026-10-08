@@ -30,6 +30,8 @@ src/apps/
 Cordis Sessions service -> SessionManager / history views
 Cordis Workspace service -> immutable per-Step Workspace Snapshot
 CLI | WebUI -> Cordis Approval Hub -> Cordis Permissions service
+Cordis Todo service -> current-UserTurn progress view
+Cordis Goal service + GoalRoundDriver -> durable objective + bounded follow-up
 Cordis Models service -> ConfiguredModel / request stack
 Cordis ContextEngine + Compaction services
 Cordis Tools service <- Basic Tool plugins
@@ -58,8 +60,8 @@ Application 负责 Session 操作、模型选择校验和公开 DTO 适配，不
 surface 只收集用户的审批与有效期选择，是否需要审批和是否允许复用由 Permissions 决定。
 
 可选业务模块通过 `SessionFeature` 接口贡献当前 Session 的状态投影、带版本凭证的人工操作，
-以及普通用户消息到达前的通知。Application 只注册和转发，不拥有 Plan、Tasks 或 Workflow
-状态。CLI `/review` 与 WebUI 的 Session Features 面板共享此接口；Plan 审批与 Workflow
+以及普通用户消息到达前的通知。Application 只注册和转发，不拥有 Todo、Goal、Plan、Tasks
+或 Workflow 状态。CLI `/review` 与 WebUI 的 Session Features 面板共享此接口；Plan 审批与 Workflow
 结果核对不是模型可调用的 Tool，也不等同于单次 Tool 权限审批。
 WebUI 提供 `GET /api/sessions/:id/features` 与
 `POST /api/sessions/:id/features/:key`；后者必须携带显示过的 `action`、`token`，必要时携带
@@ -98,6 +100,11 @@ models.configurationPath
 - `WISH_COMPACTION_KEEP_RECENT_TOKENS`、
   `WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS`；
 - `WISH_MAX_STEPS`、`WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS`；
+- `WISH_TODO_ENABLED`、`WISH_TODO_CONTEXT_ENABLED`、`WISH_TODO_TOOLS_ENABLED`、
+  `WISH_TODO_SESSION_FEATURE_ENABLED`；
+- `WISH_GOAL_ENABLED`、`WISH_GOAL_MAX_ROUNDS`、`WISH_GOAL_CONTEXT_ENABLED`、
+  `WISH_GOAL_TOOLS_ENABLED`、`WISH_GOAL_AUTO_CONTINUE_ENABLED`、
+  `WISH_GOAL_BLOCKED_AFTER_ROUNDS`、`WISH_GOAL_SESSION_FEATURE_ENABLED`；
 - `WISH_WEBUI_HOST`、`WISH_WEBUI_PORT`、`WISH_WEBUI_WORKSPACE_ROOT`。
 
 `WISH_AGENT_INSTRUCTIONS` 是追加在 Wish 稳定基础 Prompt 之后的部署级或 Agent 级
@@ -131,9 +138,10 @@ Session
 Sessions 是 CLI 与 WebUI 唯一的持久对话事实源。Runtime delta 只用于活动 Run 的临时展示；
 Run 终态后界面重新读取规范 transcript，不维护第二份 conversation/message store。
 
-Skills 浏览和 Memory 候选审核通过通用 `SessionFeature` 接入，CLI／WebUI 不导入对应
-业务实现。浏览 Skill 只展示内容，不代表激活；审核 Memory 使用当前候选的版本和 digest，
-模型文字不能代替人类操作。子 Agent 提案保留子会话来源，审核路由由 Host 指向父会话。
+Todo 进度、Goal 控制、Skills 浏览和 Memory 候选审核都通过通用 `SessionFeature` 接入，
+CLI／WebUI 不导入对应业务实现。Todo 只读展示当前 UserTurn 列表；Goal 人工操作携带当前
+`goalId/revision`。浏览 Skill 只展示内容，不代表激活；审核 Memory 使用当前候选的版本和
+digest，模型文字不能代替人类操作。子 Agent 提案保留子会话来源，审核路由由 Host 指向父会话。
 
 ## 输入与控制
 
@@ -143,6 +151,10 @@ Skills 浏览和 Memory 候选审核通过通用 `SessionFeature` 接入，CLI�
 新建会话输入框先保留 Browser 草稿及思考选择，不创建 Host Session；首次发送按
 “创建 Session → 应用可选能力设置 → 启动首个 Run”的顺序执行。能力设置失败时保留
 已创建的 Session 和草稿，明确告知首条消息未发送，不会退回默认强度偷偷发送。
+
+Runtime 内部还可在 payload 中携带 goal-round continuation identity；它只有与 Runtime
+认证的 UserTurn provenance 同时匹配时才构成权限事实，surface 或模型提交同形 JSON
+不能伪造 Goal 自动轮次。
 
 Apps 不根据正文猜测控制意图，只提供确定映射：
 
@@ -275,8 +287,8 @@ Root 监听端口由 `WISH_WEBUI_PORT` 指定，默认 8790；业务插件行的
 模型、按版本加载及界面代码更新边界见 [Browser Client](webui/client/README.md)。
 业务 UI 修改后可单独运行 `npm run build:webui-client`，不重写 Host 插件；浏览器在 core
 版本兼容时局部替换模块，保留会话选择和草稿；共享运行库或全局 CSS 更新需保存草稿后刷新。
-Plan、Skills、Memory、Tasks、
-Workflow 与观察模块分别在自己的 `consumers/webui` 注册视图；Host 能力失效会卸载相关
+Plan、Todo、Goal、Skills、Memory、Tasks、Workflow 与观察模块分别在自己的
+`consumers/webui` 注册视图；Host 能力失效会卸载相关
 Browser 插件，历史仍使用通用 Tool renderer。模块停用可能因未完成工作或缺少安全清理
 协议被拒绝；这不是“所有插件随时可强制关闭”的开关。
 
@@ -327,6 +339,10 @@ npm run test:apps-composition
 npm run test:apps-cli
 npm run test:apps-webui
 npm run test:run-generation
+npm run test:todo
+npm run test:goal
+npm run test:goal-round-driver
+npm run test:goal-todo-cordis
 npm run test:subagent-child
 npm run test:webui-next
 # 另需安装 Playwright Chromium 及操作系统运行库；使用临时数据和本地模拟 Provider

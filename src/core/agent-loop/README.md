@@ -31,7 +31,9 @@ AgentLoop 单 Step：
 2. 以 Session scope 调用 Workspace Service 一次，取得不可变 `WorkspaceSnapshot`；再调用
    Permissions Service 一次，把 Agent 配置、运行身份和 Workspace 固定成
    `PermissionSnapshot`。同一 Step 的 Context 与全部 Tool Call 共用这些快照以及当前
-   Application generation 的 Filesystem 与 Shell Provider。
+   Application generation 的 Filesystem 与 Shell Provider。产品组合还把 Runtime 认证的
+   UserTurn provenance 放入不可变 Tool context；只有可信 GoalRoundDriver follow-up 会附带
+   精确 Goal-round identity。
 3. 首个 Step 固定主模型；同一 UserTurn 后续 Step 不接受外部默认模型漂移。
 4. 在模型调用前捕获 Registry version、authority version 和 available Tools
    的不可变执行快照。

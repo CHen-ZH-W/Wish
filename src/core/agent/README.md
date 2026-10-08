@@ -12,7 +12,8 @@
   `RunInput`、`RunHandle`、`ObserveOptions` 和 `AgentProtocol`。
 - `agent.ts`：参数边界校验、scope 规范化、公开 DTO 快照以及到
   `AgentRuntimeService` 的委托。
-- `service.ts`：Cordis `agents` Service，拥有默认 Agent 定义、生产构造与生命周期。
+- `../../composition/agent-service.ts`：Cordis `agents` Service，拥有默认 Agent 定义、
+  生产构造与生命周期。
 
 Agent 不实现主循环，不持有可变 Run 状态，也不决定终态、重试、事件
 保留、控制排队或授权。上述行为分别属于 Runtime、Event、Model、
@@ -35,7 +36,8 @@ Context 和 Tool 模块。
 ## 模块边界
 
 Agent facade 与公共 DTO 通过 `AgentRuntimeService` 接入 Runtime。
-`agent.ts` 和 `types.ts` 仍只依赖最小契约；同目录 `service.ts` 注入 `runEngine`，调用
+`agent.ts` 和 `types.ts` 仍只依赖最小契约；`src/composition/agent-service.ts` 注入
+`runEngine`，调用
 当前 Runtime generation 后构造默认 Agent。Agent 实际消费的是同代 `RunGeneration` 的
 窄 Runtime surface；`ApplicationFacade` 只消费已经构造好的 Agent，不拥有 Agent
 或 Runtime 构造权。

@@ -54,7 +54,13 @@ Wish 的 Workspace、Permissions、Models 或 Runtime 类型。
 | `bash` | `shell/consumers` | Shell |
 | `web_search` / `web_fetch` | `web/tools.ts` | Web Search / Fetch |
 | `spawn_agent` 等 | `subagents/consumers/model-tools` | Subagents |
+| `list_skills` / `read_skill` | `skills/consumers/model-tools.ts` | Skills |
+| `memory_search` / `memory_read` / `memory_write` | `memory/consumers/model-tools.ts` | Memory |
+| `todo_write` | `todo/consumers/model-tool.ts` | Todo |
+| `get_goal` / `create_goal` / `update_goal` | `goal/consumers/model-tools.ts` | Goal |
 | `enter_plan_mode` 等 | `plan/consumers/model-tools` | Plan |
+| `tasks_read` / `tasks_update` | `tasks/consumers` | Tasks |
+| `workflow_read` / `workflow_start` 等 | `workflow/consumers` | Workflow |
 | `enter_coordinator_mode` 等 | `coordinator/consumers/model-tools` | Coordinator |
 
 五个 Coding Tool 的 standalone 兼容组合位于 `src/composition/coding-tools.ts`；通用结果
