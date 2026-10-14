@@ -29,7 +29,17 @@ for (const [flag, enabled] of [[undefined, true], ["0", false], ["1", true], ["f
       { code: "management_target_read_only" });
       assert.equal(booted.context.loader.resolve("include:hmr").disabled, !enabled);
       assert.equal(snapshot.configuration.watching, true, "turning off code HMR does not turn off controlled config watch");
-      assert.equal((await fetch(base + "/")).status, 200);
+      const initialDocument = await fetch(base + "/");
+      assert.equal(initialDocument.status, 200);
+      if (flag === undefined) {
+        const settings = booted.context.get("settings").port;
+        const appearance = settings.describe().sections.find(section => section.namespace === "webui-appearance");
+        await settings.replace({ namespace: appearance.namespace, revision: appearance.revision,
+          user: { theme: "dark", language: "en-US", "font-size": "extra-large" } });
+        assert.match(await (await fetch(base + "/")).text(),
+          /<html lang="en-US" data-theme="dark" data-font-size="extra-large">/u,
+          "first document projects the authoritative appearance before client startup");
+      }
     } finally { await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
     if (enabled) { assert.equal(fiber.state, 4); assert.deepEqual(fiber.getEffects(), []); }
   });

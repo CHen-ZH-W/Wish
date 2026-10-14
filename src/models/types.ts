@@ -66,7 +66,10 @@ export type ModelReasoningEffort = "none" | "low" | "high" | "max";
 
 /** Only an explicitly advertised protocol mapping may expose a picker. */
 export interface ModelReasoningControl {
-  readonly format: "deepseek-chat" | "openai-responses";
+  readonly format:
+    | "deepseek-chat"
+    | "deepseek-responses"
+    | "openai-responses";
   readonly efforts: readonly ModelReasoningEffort[];
   readonly defaultEffort: ModelReasoningEffort;
 }
@@ -136,6 +139,9 @@ export interface ResolvedModel {
 }
 
 export type ModelEnvironment = Readonly<Record<string, string | undefined>>;
+
+/** Host-only secret lookup. Values must never enter public Model configuration. */
+export type ModelCredentialResolver = (reference: string) => string | undefined;
 
 export type ModelFetch = (
   input: RequestInfo | URL,

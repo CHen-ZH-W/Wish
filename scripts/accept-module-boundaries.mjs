@@ -29,7 +29,10 @@ test("WebUI keeps transport, React-free models, presentation and module adapters
   assert.doesNotMatch(models, /apps\/webui|react/u);
   const client = await readFile(join(root, "src/apps/webui/client/main.tsx"), "utf8");
   assert.doesNotMatch(client, /ModelsClientUi|id: ["']models["']/u, "stable Browser composition does not own the Models panel");
-  assert.doesNotMatch(await readFile(join(root, "src/apps/webui/server.ts"), "utf8"), /directory-picker\/local/u, "HTTP adapter consumes the directory browser interface, not its local implementation");
+  const server = await readFile(join(root, "src/apps/webui/server.ts"), "utf8");
+  assert.doesNotMatch(server, /directory-picker\/local/u, "HTTP adapter consumes the directory browser interface, not its local implementation");
+  assert.doesNotMatch(server, /models\/(?:config|session-reasoning|pricing)|model-(?:reasoning|usage)|reasoningEffort/u,
+    "generic WebUI server does not own Models control protocols");
 });
 
 test("Host capabilities and model Tool Consumers use disjoint plugin catalogs", () => {

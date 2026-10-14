@@ -220,7 +220,7 @@ test("saved retired DeepSeek selections resolve to current Flash without discard
     close: async () => {},
   });
   const adapter = root.plugin({ inject: ["models"], apply(ctx) {
-    for (const protocol of ["openai-chat-completions", "openai-responses", "anthropic-messages"]) {
+    for (const protocol of ["deepseek-responses", "openai-chat-completions", "openai-responses", "anthropic-messages"]) {
       ctx.models.register(protocol, () => ({ async *stream() {} }));
     }
   } });
@@ -286,6 +286,7 @@ test("Loader updates and disables Models and one Adapter by stable id", async ()
     });
     assert.equal(await booted.completion, 0);
     assert.deepEqual(booted.surfaceContext.get("models").registry.protocols(), [
+      "deepseek-responses",
       "openai-chat-completions",
       "openai-responses",
       "anthropic-messages",
@@ -297,12 +298,14 @@ test("Loader updates and disables Models and one Adapter by stable id", async ()
     assert.equal(booted.context.loader.resolve(adapterId), adapterEntry);
     assert.equal(adapterEntry.disabled, true);
     assert.deepEqual(booted.surfaceContext.get("models").registry.protocols(), [
+      "deepseek-responses",
       "openai-chat-completions",
       "anthropic-messages",
     ]);
     await booted.context.loader.update(adapterId, { disabled: false });
     assert.equal(booted.context.loader.resolve(adapterId), adapterEntry);
     assert.deepEqual(booted.surfaceContext.get("models").registry.protocols(), [
+      "deepseek-responses",
       "openai-chat-completions",
       "anthropic-messages",
       "openai-responses",
@@ -315,6 +318,7 @@ test("Loader updates and disables Models and one Adapter by stable id", async ()
     assert.equal(booted.context.loader.resolve(modelsId), modelsEntry);
     assert.notEqual(booted.surfaceContext.get("models"), first);
     assert.deepEqual(new Set(booted.surfaceContext.get("models").registry.protocols()), new Set([
+      "deepseek-responses",
       "openai-chat-completions",
       "openai-responses",
       "anthropic-messages",
@@ -323,7 +327,7 @@ test("Loader updates and disables Models and one Adapter by stable id", async ()
       booted.context.loader.update(modelsId, { config: { maxRetries: -1 } }),
       /expected number >= 0/u,
     );
-    assert.equal(booted.surfaceContext.get("models").registry.protocols().length, 3);
+    assert.equal(booted.surfaceContext.get("models").registry.protocols().length, 4);
 
     const activeRegistry = booted.surfaceContext.get("models").registry;
     await booted.context.loader.update(modelsId, { disabled: true });
@@ -331,6 +335,7 @@ test("Loader updates and disables Models and one Adapter by stable id", async ()
     assert.equal(booted.surfaceContext.get("models"), undefined);
     assert.deepEqual(activeRegistry.protocols(), []);
     for (const id of [
+      "include:model-deepseek-responses",
       "include:model-openai-chat-completions",
       "include:model-openai-responses",
       "include:model-anthropic-messages",
@@ -344,7 +349,7 @@ test("Loader updates and disables Models and one Adapter by stable id", async ()
 
     await booted.context.loader.update(modelsId, { disabled: false });
     assert.equal(modelsEntry.disabled, false);
-    assert.equal(booted.surfaceContext.get("models").registry.protocols().length, 3);
+    assert.equal(booted.surfaceContext.get("models").registry.protocols().length, 4);
     await booted.context.loader.resolve("include:application").fiber.await();
     assert.equal(
       booted.context.loader.resolve("include:application").fiber.state,

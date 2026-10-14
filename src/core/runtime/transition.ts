@@ -444,6 +444,7 @@ export function freezeRuntimeTransition<Payload, Result>(
       transition.inputSource !== undefined &&
       transition.inputSource !== "user" &&
       transition.inputSource !== "follow_up" &&
+      transition.inputSource !== "continuation" &&
       transition.inputSource !== "unknown"
     ) {
       throw new Error("Unknown Runtime input source");
@@ -471,7 +472,8 @@ function freezeUserTurnProvenance(
 ): UserTurnProvenance {
   if (
     provenance.origin !== "run_input" &&
-    provenance.origin !== "follow_up"
+    provenance.origin !== "follow_up" &&
+    provenance.origin !== "continuation"
   ) {
     throw new Error("Unknown UserTurn provenance origin");
   }
@@ -488,11 +490,11 @@ function freezeUserTurnProvenance(
     throw new Error("UserTurn provenance receivedAt must not be empty");
   }
   if (
-    provenance.origin === "follow_up" &&
+    (provenance.origin === "follow_up" || provenance.origin === "continuation") &&
     (typeof provenance.controlId !== "string" ||
       provenance.controlId.trim().length === 0)
   ) {
-    throw new Error("Follow-up UserTurn provenance requires a control id");
+    throw new Error("Continued UserTurn provenance requires a control id");
   }
   if (
     provenance.origin === "run_input" &&

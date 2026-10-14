@@ -348,6 +348,8 @@ function liveProfile({
 
     - id: models
       name: 'cordis:models'
+    - id: model-deepseek-responses
+      name: 'cordis:model-deepseek-responses'
     - id: model-openai-chat-completions
       name: 'cordis:model-openai-chat-completions'
     - id: model-openai-responses

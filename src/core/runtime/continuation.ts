@@ -10,16 +10,20 @@ export interface RunContinuationReceipt {
   readonly reason?: string;
 }
 
-export interface RunFollowUp {
+export interface RunContinuationInput {
   readonly source: string;
   readonly text: string;
   readonly reserveCapacity?: boolean;
 }
 
+/** @deprecated Use RunContinuationInput. */
+export type RunFollowUp = RunContinuationInput;
+
 /** Run-bound continuation Port; Consumers cannot address another Run through it. */
 export interface RunContinuation {
   deferCompletion(reason: string): RunCompletionHold | undefined;
-  followUp(input: RunFollowUp): RunContinuationReceipt;
+  /** Resume parent work with Host-authenticated internal data, not human input. */
+  resume(input: RunContinuationInput): RunContinuationReceipt;
 }
 
 /** Resolve one continuation against immutable facts for the current Runtime Step. */

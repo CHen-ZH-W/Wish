@@ -7,6 +7,10 @@ import {
   createAnthropicMessagesAdapter,
 } from "./providers/anthropic-messages.js";
 import {
+  createDeepSeekResponsesAdapter,
+  DEEPSEEK_RESPONSES_PROTOCOL,
+} from "./providers/deepseek-responses.js";
+import {
   createOpenAICompatibleAdapter,
   OPENAI_CHAT_COMPLETIONS_PROTOCOL,
 } from "./providers/openai-compatible.js";
@@ -27,6 +31,14 @@ function register(ctx: Context, protocol: string, factory: ModelAdapterFactory):
 }
 
 /** Independent protocol plugins; Models.register owns caller-fiber cleanup. */
+export const DeepSeekResponses = {
+  name: "deepseek-responses-model-adapter",
+  inject,
+  apply(ctx: Context): void {
+    register(ctx, DEEPSEEK_RESPONSES_PROTOCOL, createDeepSeekResponsesAdapter);
+  },
+};
+
 export const OpenAIChatCompletions = {
   name: "openai-chat-completions-model-adapter",
   inject,

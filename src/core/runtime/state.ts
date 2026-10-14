@@ -44,7 +44,7 @@ export interface StepState {
 
 /** Runtime-authenticated origin of one UserTurn input. */
 export interface UserTurnProvenance {
-  readonly origin: "run_input" | "follow_up";
+  readonly origin: "run_input" | "follow_up" | "continuation";
   /** Host or runtime component that supplied the input. */
   readonly source: string;
   /** Present only when the UserTurn was created from an accepted control. */

@@ -15,6 +15,13 @@ interface StoredSubagentResult {
   readonly result: SubagentResult;
 }
 
+interface StoredSubagentCredentials {
+  readonly schemaVersion: 1;
+  readonly type: "wish_subagent_credentials";
+  readonly identity: SubagentLaunchIdentity;
+  readonly values: Readonly<Record<string, string>>;
+}
+
 export class FileSubagentExchange implements SubagentResultReader {
   readonly dataDirectory: string;
   readonly rootDirectory: string;
@@ -139,6 +146,79 @@ export class FileSubagentExchange implements SubagentResultReader {
     });
   }
 
+  credentialsPath(id: string): string {
+    return join(this.childDataDirectory(id), "credentials.json");
+  }
+
+  /** Write a child-scoped secret envelope. Its path, never its values, is launch-visible. */
+  async writeCredentials(
+    identity: SubagentLaunchIdentity,
+    values: Readonly<Record<string, string>>,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    throwIfAborted(signal);
+    const path = this.credentialsPath(identity.id);
+    const stable = snapshotCredentials(values);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await writeFile(path, `${JSON.stringify({
+      schemaVersion: 1,
+      type: "wish_subagent_credentials",
+      identity,
+      values: stable,
+    } satisfies StoredSubagentCredentials)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    try {
+      throwIfAborted(signal);
+      return path;
+    } catch (error: unknown) {
+      await unlink(path).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Consume and unlink the exact launcher-owned envelope before opening Models. */
+  async consumeCredentials(
+    identity: SubagentLaunchIdentity,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Readonly<Record<string, string>>> {
+    throwIfAborted(signal);
+    const expected = this.credentialsPath(identity.id);
+    if (resolve(path) !== expected) {
+      throw new Error("Subagent credentials file is outside the child data directory");
+    }
+    let text: string;
+    try {
+      text = await readFile(expected, "utf8");
+    } finally {
+      await unlink(expected).catch(() => undefined);
+    }
+    throwIfAborted(signal);
+    let parsed: Partial<StoredSubagentCredentials>;
+    try {
+      parsed = JSON.parse(text) as Partial<StoredSubagentCredentials>;
+    } catch {
+      throw new Error("Subagent credentials envelope is invalid");
+    }
+    if (
+      parsed.schemaVersion !== 1 ||
+      parsed.type !== "wish_subagent_credentials" ||
+      !sameIdentity(parsed.identity, identity)
+    ) {
+      throw new Error("Subagent credentials envelope identity is invalid");
+    }
+    return snapshotCredentials(parsed.values);
+  }
+
+  async removeCredentials(id: string): Promise<void> {
+    await unlink(this.credentialsPath(id)).catch((error: unknown) => {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    });
+  }
+
   async writeResult(result: SubagentResult, signal?: AbortSignal): Promise<void> {
     const stable = snapshotResult(result);
     throwIfAborted(signal);
@@ -209,6 +289,42 @@ export function snapshotResult(value: unknown): SubagentResult {
 
 function key(id: string): string {
   return createHash("sha256").update(requireText(id, "Subagent id")).digest("hex");
+}
+
+function snapshotCredentials(value: unknown): Readonly<Record<string, string>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Subagent credentials envelope is invalid");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 32) {
+    throw new TypeError("Subagent credentials envelope exceeds its reference limit");
+  }
+  const result: Record<string, string> = {};
+  for (const [reference, secret] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(reference)) {
+      throw new TypeError("Subagent credential reference is invalid");
+    }
+    if (
+      typeof secret !== "string" || secret.length === 0 ||
+      secret.length > 8192 || secret.includes("\0") ||
+      secret.includes("\r") || secret.includes("\n")
+    ) {
+      throw new TypeError(`Subagent credential ${reference} is invalid`);
+    }
+    result[reference] = secret;
+  }
+  return Object.freeze(result);
+}
+
+function sameIdentity(
+  value: unknown,
+  expected: SubagentLaunchIdentity,
+): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const identity = value as Partial<SubagentLaunchIdentity>;
+  return identity.id === expected.id &&
+    identity.childSessionId === expected.childSessionId &&
+    identity.childRunId === expected.childRunId;
 }
 
 function requireTask(value: unknown): string {

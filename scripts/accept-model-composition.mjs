@@ -231,7 +231,7 @@ test("Agent completes the fixed Core and Models composition through retry, fallb
   assert.equal(modelEvents.every((event) => Object.isFrozen(event.payload)), true);
 });
 
-test("DeepSeek thinking Tool call replays complete reasoning and streamed usage in the next Step", async () => {
+test("DeepSeek Responses replays complete reasoning and Tool output in the next Step", async () => {
   const configuration = loadModelsConfiguration({ environment: {} });
   const requests = [];
   const fullReasoning = "Need " + "arithmetic.";
@@ -241,37 +241,50 @@ test("DeepSeek thinking Tool call replays complete reasoning and streamed usage 
     usageEstimator: new TokenizerUsageEstimator(),
     environment: { DEEPSEEK_API_KEY: "deepseek-test-key" },
     async fetch(url, init) {
-      assert.equal(url, "https://api.deepseek.com/chat/completions");
+      assert.equal(url, "https://api.deepseek.com/responses");
       assert.equal(init.headers.authorization, "Bearer deepseek-test-key");
       const body = JSON.parse(init.body);
       requests.push(body);
       assert.equal(body.model, "deepseek-flash");
-      assert.deepEqual(body.thinking, { type: "enabled" });
-      assert.equal(body.reasoning_effort, "low");
-      assert.deepEqual(body.stream_options, { include_usage: true });
-      assert.equal(body.tools[0].function.name, "sum");
+      assert.deepEqual(body.reasoning, { effort: "low" });
+      assert.equal("stream_options" in body, false);
+      assert.equal(body.tools[0].name, "sum");
       if (requests.length === 1) {
-        assert.deepEqual(body.messages.map((message) => message.role), ["user"]);
+        assert.deepEqual(body.input.map((item) => item.role ?? item.type), ["user"]);
         return sse([
-          { choices: [{ index: 0, delta: { reasoning_content: "Need " }, finish_reason: null }], usage: null },
-          { choices: [{ index: 0, delta: { reasoning_content: "arithmetic." }, finish_reason: null }], usage: null },
-          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "sum", arguments: '{"a":2,"b":3}' } }] }, finish_reason: "tool_calls" }] },
-          { choices: [], usage: { prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 4 }, completion_tokens: 6, total_tokens: 26 } },
-          "[DONE]",
+          { type: "response.created", response: { id: "resp-1", model: "deepseek-flash", status: "in_progress", created_at: 1789963200 } },
+          { type: "response.output_item.added", item: { id: "reasoning-1", type: "reasoning", content: [] } },
+          { type: "response.reasoning_text.delta", item_id: "reasoning-1", delta: "Need " },
+          { type: "response.reasoning_text.delta", item_id: "reasoning-1", delta: "arithmetic." },
+          { type: "response.output_item.done", item: { id: "reasoning-1", type: "reasoning", content: [{ type: "reasoning_text", text: fullReasoning }] } },
+          { type: "response.output_item.added", item: { id: "function-1", type: "function_call", call_id: "call-1", name: "sum", arguments: "" } },
+          { type: "response.function_call_arguments.done", item_id: "function-1", arguments: '{"a":2,"b":3}' },
+          { type: "response.output_item.done", item: { id: "function-1", type: "function_call", call_id: "call-1", name: "sum", arguments: '{"a":2,"b":3}' } },
+          { type: "response.completed", response: {
+            id: "resp-1", model: "deepseek-flash", status: "completed", created_at: 1789963200,
+            output: [{ id: "function-1", type: "function_call", call_id: "call-1", name: "sum", arguments: '{"a":2,"b":3}' }],
+            usage: { input_tokens: 20, input_tokens_details: { cached_tokens: 4 }, output_tokens: 6, total_tokens: 26 },
+          } },
         ]);
       }
       if (requests.length !== 2 ||
-        body.messages.length !== 3 ||
-        body.messages[1].reasoning_content !== fullReasoning ||
-        body.messages[1].tool_calls?.[0]?.id !== "call-1" ||
-        body.messages[2].tool_call_id !== "call-1" ||
-        JSON.parse(body.messages[2].content).output?.value !== 5) {
-        return Response.json({ error: { message: "Missing reasoning_content or Tool reply" } }, { status: 400 });
+        body.input.length !== 4 ||
+        body.input[1].type !== "reasoning" ||
+        body.input[1].content?.[0]?.text !== fullReasoning ||
+        body.input[2].type !== "function_call" ||
+        body.input[2].call_id !== "call-1" ||
+        body.input[3].type !== "function_call_output" ||
+        JSON.parse(body.input[3].output).output?.value !== 5) {
+        return Response.json({ error: { message: "Missing reasoning item or Tool reply" } }, { status: 400 });
       }
       return sse([
-        { choices: [{ index: 0, delta: { content: "5" }, finish_reason: "stop" }], usage: null },
-        { choices: [], usage: { prompt_tokens: 14, prompt_tokens_details: { cached_tokens: 2 }, completion_tokens: 1, total_tokens: 15 } },
-        "[DONE]",
+        { type: "response.created", response: { id: "resp-2", model: "deepseek-flash", status: "in_progress", created_at: 1789963201 } },
+        { type: "response.output_text.delta", item_id: "message-2", delta: "5" },
+        { type: "response.completed", response: {
+          id: "resp-2", model: "deepseek-flash", status: "completed", created_at: 1789963201,
+          output: [],
+          usage: { input_tokens: 14, input_tokens_details: { cached_tokens: 2 }, output_tokens: 1, total_tokens: 15 },
+        } },
       ]);
     },
   });
@@ -299,7 +312,7 @@ test("DeepSeek thinking Tool call replays complete reasoning and streamed usage 
   assert.equal(completion.status, "completed");
   assert.equal(completion.result.output.text, "5");
   assert.equal(requests.length, 2, "the Tool result must trigger exactly one new model request");
-  assert.equal(requests[1].messages[1].reasoning_content, fullReasoning);
+  assert.equal(requests[1].input[1].content[0].text, fullReasoning);
   assert.deepEqual(tools.executions, [{ a: 2, b: 3 }]);
   assert.deepEqual(completion.result.usage, {
     inputTokens: 34,

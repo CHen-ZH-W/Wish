@@ -17,13 +17,69 @@ export interface UiPanel {
 export interface UiNavigation { readonly id: string; readonly View: ComponentType; readonly forPanel?: string }
 export interface UiComposerItem { readonly id: string; readonly View: ComponentType<{ sessionId: string; busy: boolean }> }
 export interface UiNewSessionComposerItem { readonly id: string; readonly View: ComponentType<{ disabled: boolean }> }
+export interface UiSessionStatusItem { readonly id: string; readonly View: ComponentType<{ sessionId: string }> }
+export interface UiSessionSidebarResource {
+  readonly kind: string;
+  readonly contentId: string;
+  readonly title: string;
+  readonly params?: Readonly<Record<string, unknown>>;
+}
+export interface UiSessionSidebarTab {
+  readonly id: string;
+  readonly kind: string;
+  readonly contentId: string;
+  readonly title: string;
+  readonly params?: Readonly<Record<string, unknown>>;
+  readonly visible: boolean;
+}
+export interface UiSessionSidebarTabActions {
+  openTab(kind: string, options?: { readonly title?: string; readonly params?: Readonly<Record<string, unknown>>; readonly replace?: boolean }): void;
+  openResource(resource: UiSessionSidebarResource): void;
+  update(params: Readonly<Record<string, unknown>>, title?: string): void;
+  close(): void;
+}
+export interface UiSessionSidebarViewProps {
+  readonly sessionId: string;
+  readonly tab: UiSessionSidebarTab;
+  readonly actions: UiSessionSidebarTabActions;
+}
+export interface UiSessionSidebarGuideProps {
+  readonly sessionId: string;
+  open(options?: { readonly title?: string; readonly params?: Readonly<Record<string, unknown>>; readonly replace?: boolean }): void;
+}
+export interface UiSessionSidebarItem {
+  readonly id: string;
+  /** Stable tab kind. Defaults to id. */
+  readonly kind?: string;
+  /** Stable guide position; lower values appear first regardless of module load order. */
+  readonly order?: number;
+  readonly label: string;
+  readonly labelEn?: string;
+  readonly description?: string;
+  readonly descriptionEn?: string;
+  readonly icon?: "terminal" | "tmux" | "trace" | "book" | "model" | "folder" | "plug";
+  /** Whether repeated guide opens create independent tabs. */
+  readonly multiple?: boolean;
+  /** Resource-only definitions do not appear in the new-tab guide. */
+  readonly guide?: boolean;
+  readonly accepts?: (resource: UiSessionSidebarResource) => boolean;
+  /** Optional owner-rendered launcher, for example a Host-discovered shell menu. */
+  readonly Guide?: ComponentType<UiSessionSidebarGuideProps>;
+  readonly View: ComponentType<UiSessionSidebarViewProps>;
+  readonly onClose?: (sessionId: string, tab: UiSessionSidebarTab) => void;
+}
+export interface UiLedgerContribution {
+  readonly id: string;
+  readonly source: { getSnapshot(): readonly LedgerBlock[]; subscribe(listener: () => void): () => void };
+  readonly View: ComponentType<{ block: LedgerBlock }>;
+}
 export interface UiToolView { readonly toolName: string; readonly View: ComponentType<{ block: LedgerBlock }>; readonly category?: { readonly id: string; readonly label: string; readonly labelEn?: string } }
 export interface UiToolAvailability { readonly toolName: string; readonly state: "available" | "unavailable" | "unknown" }
-export interface UiSlotSnapshot { readonly panels: readonly UiPanel[]; readonly navigation: readonly UiNavigation[]; readonly interactions: readonly UiNavigation[]; readonly composerItems: readonly UiComposerItem[]; readonly newSessionComposerItems: readonly UiNewSessionComposerItem[]; readonly toolViews: readonly UiToolView[]; readonly toolAvailability: readonly UiToolAvailability[]; readonly notices: readonly UiNavigation[] }
+export interface UiSlotSnapshot { readonly panels: readonly UiPanel[]; readonly navigation: readonly UiNavigation[]; readonly interactions: readonly UiNavigation[]; readonly composerItems: readonly UiComposerItem[]; readonly newSessionComposerItems: readonly UiNewSessionComposerItem[]; readonly sessionStatusItems: readonly UiSessionStatusItem[]; readonly sessionSidebarItems: readonly UiSessionSidebarItem[]; readonly ledgerContributions: readonly UiLedgerContribution[]; readonly toolViews: readonly UiToolView[]; readonly toolAvailability: readonly UiToolAvailability[]; readonly notices: readonly UiNavigation[] }
 
 /** Presentation registrations only. Removing an owner removes its seats, not business history. */
 export class UiSlots extends SnapshotStore<UiSlotSnapshot> {
-  constructor() { super(Object.freeze({ panels: Object.freeze([]), navigation: Object.freeze([]), interactions: Object.freeze([]), composerItems: Object.freeze([]), newSessionComposerItems: Object.freeze([]), toolViews: Object.freeze([]), toolAvailability: Object.freeze([]), notices: Object.freeze([]) })); }
+  constructor() { super(Object.freeze({ panels: Object.freeze([]), navigation: Object.freeze([]), interactions: Object.freeze([]), composerItems: Object.freeze([]), newSessionComposerItems: Object.freeze([]), sessionStatusItems: Object.freeze([]), sessionSidebarItems: Object.freeze([]), ledgerContributions: Object.freeze([]), toolViews: Object.freeze([]), toolAvailability: Object.freeze([]), notices: Object.freeze([]) })); }
   private pending: UiSlotSnapshot | undefined;
   private current(): UiSlotSnapshot { return this.pending ?? this.getSnapshot(); }
   protected override publish(value: UiSlotSnapshot): void { if (this.pending) this.pending = Object.freeze(value); else super.publish(value); }
@@ -40,7 +96,7 @@ export class UiSlots extends SnapshotStore<UiSlotSnapshot> {
       };
       super.publish(next === before ? next : { ...next,
         panels: order(before.panels, next.panels, item => item.id), navigation: order(before.navigation, next.navigation, item => item.id),
-        interactions: order(before.interactions, next.interactions, item => item.id), composerItems: order(before.composerItems, next.composerItems, item => item.id), newSessionComposerItems: order(before.newSessionComposerItems, next.newSessionComposerItems, item => item.id), notices: order(before.notices, next.notices, item => item.id),
+        interactions: order(before.interactions, next.interactions, item => item.id), composerItems: order(before.composerItems, next.composerItems, item => item.id), newSessionComposerItems: order(before.newSessionComposerItems, next.newSessionComposerItems, item => item.id), sessionStatusItems: order(before.sessionStatusItems, next.sessionStatusItems, item => item.id), sessionSidebarItems: orderedSessionSidebar(order(before.sessionSidebarItems, next.sessionSidebarItems, item => item.id)), ledgerContributions: order(before.ledgerContributions, next.ledgerContributions, item => item.id), notices: order(before.notices, next.notices, item => item.id),
         toolViews: order(before.toolViews, next.toolViews, item => item.toolName) });
     }
   }
@@ -81,6 +137,29 @@ export class UiSlots extends SnapshotStore<UiSlotSnapshot> {
     this.publish({ ...this.current(), newSessionComposerItems: Object.freeze([...this.current().newSessionComposerItems, item]) });
     return () => this.publish({ ...this.current(), newSessionComposerItems: Object.freeze(this.current().newSessionComposerItems.filter(candidate => candidate !== item)) });
   }
+  sessionStatus(entry: UiSessionStatusItem): () => void {
+    if (this.current().sessionStatusItems.some(item => item.id === entry.id)) throw new Error(`Duplicate Session status item: ${entry.id}`);
+    const item = Object.freeze({ ...entry });
+    this.publish({ ...this.current(), sessionStatusItems: Object.freeze([...this.current().sessionStatusItems, item]) });
+    return () => this.publish({ ...this.current(), sessionStatusItems: Object.freeze(this.current().sessionStatusItems.filter(candidate => candidate !== item)) });
+  }
+  sessionSidebar(entry: UiSessionSidebarItem): () => void {
+    if (this.current().sessionSidebarItems.some(item => item.id === entry.id)) throw new Error(`Duplicate Session sidebar item: ${entry.id}`);
+    const item = Object.freeze({ ...entry });
+    this.publish({ ...this.current(), sessionSidebarItems: orderedSessionSidebar([...this.current().sessionSidebarItems, item]) });
+    return () => this.publish({ ...this.current(), sessionSidebarItems: Object.freeze(this.current().sessionSidebarItems.filter(candidate => candidate !== item)) });
+  }
+  ledger(entry: UiLedgerContribution): () => void {
+    if (this.current().ledgerContributions.some(item => item.id === entry.id)) throw new Error(`Duplicate ledger contribution: ${entry.id}`);
+    const item = Object.freeze({ ...entry });
+    const refresh = () => this.publish({ ...this.current() });
+    const unsubscribe = item.source.subscribe(refresh);
+    this.publish({ ...this.current(), ledgerContributions: Object.freeze([...this.current().ledgerContributions, item]) });
+    return () => {
+      unsubscribe();
+      this.publish({ ...this.current(), ledgerContributions: Object.freeze(this.current().ledgerContributions.filter(candidate => candidate !== item)) });
+    };
+  }
   panel(panel: UiPanel): () => void {
     if (this.current().panels.some(item => item.id === panel.id)) throw new Error(`Duplicate UI panel: ${panel.id}`);
     const entry = Object.freeze({ ...panel });
@@ -92,4 +171,8 @@ export class UiSlots extends SnapshotStore<UiSlotSnapshot> {
     this.publish({ ...this.current(), navigation: Object.freeze([...this.current().navigation, entry]) });
     return () => this.publish({ ...this.current(), navigation: Object.freeze(this.current().navigation.filter(item => item !== entry)) });
   }
+}
+
+function orderedSessionSidebar(items: readonly UiSessionSidebarItem[]): readonly UiSessionSidebarItem[] {
+  return Object.freeze([...items].sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER)));
 }

@@ -8,6 +8,7 @@ import type {
 export interface BuiltInProviderDefinition {
   readonly id: string;
   readonly protocol:
+    | "deepseek-responses"
     | "openai-chat-completions"
     | "openai-responses"
     | "anthropic-messages";
@@ -71,18 +72,18 @@ export const BUILT_IN_PROVIDER_DEFINITIONS: readonly BuiltInProviderDefinition[]
   Object.freeze([
     provider({
       id: "deepseek",
-      protocol: "openai-chat-completions",
+      protocol: "deepseek-responses",
       baseUrl: "https://api.deepseek.com",
       auth: bearer("DEEPSEEK_API_KEY"),
       defaultModel: "deepseek-flash",
+      // DeepSeek accepts `developer` input items but treats them as user messages.
+      // Preserve Wish's host-owned dynamic instruction authority as system.
+      developerRoleMode: "system-fallback",
       request: Object.freeze({
         streamUsage: true,
-        supportsTemperature: false,
-        maxTokensField: "max_tokens" as const,
-        extraBody: Object.freeze({
-          thinking: Object.freeze({ type: "enabled" }),
-          reasoning_effort: "high",
-        }),
+        supportsTemperature: true,
+        maxTokensField: "max_output_tokens" as const,
+        extraBody: Object.freeze({}),
       }),
     }),
     provider({

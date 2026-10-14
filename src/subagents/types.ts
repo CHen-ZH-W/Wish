@@ -157,6 +157,8 @@ export interface SubagentLauncher {
     request: SpawnSubagentRequest,
     identity: SubagentLaunchIdentity,
   ): Promise<SubagentLaunch> | SubagentLaunch;
+  /** Idempotent cleanup for one-use launch material after terminal reconciliation. */
+  cleanupLaunchSecrets?(identity: SubagentLaunchIdentity): Promise<void> | void;
 }
 
 export interface SubagentRecordStore {

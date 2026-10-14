@@ -80,7 +80,7 @@ export class SubagentResultRelay {
         if (timer !== undefined) clearTimeout(timer);
         signal.removeEventListener("abort", aborted);
         unsubscribe();
-        if (text !== undefined) followUp(input.continuation, text);
+        if (text !== undefined) resume(input.continuation, text);
         resolve();
       };
       const observeRecord = (record: SubagentRecord) => {
@@ -115,8 +115,8 @@ export class SubagentResultRelay {
   }
 }
 
-function followUp(continuation: RunContinuation, text: string): void {
-  continuation.followUp({
+function resume(continuation: RunContinuation, text: string): void {
+  continuation.resume({
     source: "wish-subagent-result",
     text,
     reserveCapacity: true,

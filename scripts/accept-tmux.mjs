@@ -9,6 +9,8 @@ import {
 import { NodeTmuxCommandRunner } from
   "../dist/tmux/providers/node-command-runner.js";
 import { TmuxService } from "../dist/tmux/service.js";
+import { createTmuxSessionFeature } from
+  "../dist/tmux/consumers/session-feature.js";
 
 const separator = "\u001f";
 
@@ -25,6 +27,7 @@ function snapshotLine(overrides = {}) {
     overrides.workspaceRoot ?? "/workspace",
     overrides.label ?? "scout",
     overrides.createdAt ?? "2026-09-12T12:00:00.000Z",
+    overrides.runtimeDirectory ?? "",
   ].join(separator);
 }
 
@@ -71,7 +74,7 @@ test("private tmux command runner is synchronous and bounded", async () => {
 });
 
 test("Local tmux start publishes real target and discovery metadata", async () => {
-  const outputs = new Array(6).fill(undefined).map(() => ({ stdout: "", stderr: "" }));
+  const outputs = new Array(7).fill(undefined).map(() => ({ stdout: "", stderr: "" }));
   outputs.push({ stdout: `${snapshotLine()}\n`, stderr: "" });
   const runner = scriptedRunner(outputs);
   const tmux = new LocalTmuxBackend({
@@ -141,6 +144,7 @@ test("Local tmux capture, send, and stop stay transparent", async () => {
     { stdout: "0123456789", stderr: "" },
     { stdout: "", stderr: "" },
     { stdout: "", stderr: "" },
+    { stdout: `${snapshotLine()}\n`, stderr: "" },
     { stdout: "", stderr: "" },
   ]);
   const tmux = new LocalTmuxBackend({ socketPath: "/tmp/wish.sock", runner });
@@ -154,9 +158,59 @@ test("Local tmux capture, send, and stop stay transparent", async () => {
     "send-keys", "-t", "wish-child-1:scout.0", "-l", "continue",
   ]);
   assert.equal(runner.calls[2].args.at(-1), "Enter");
-  assert.deepEqual(runner.calls[3].args.slice(-3), [
+  assert.deepEqual(runner.calls[4].args.slice(-3), [
     "kill-session", "-t", "wish-child-1",
   ]);
+});
+
+test("tmux Session feature retains each final terminal view until explicit deletion", async () => {
+  let visible = [featureSnapshot("server-1", true), featureSnapshot("worker-1", false)];
+  const captured = [], stopped = [];
+  let tick = 0;
+  const feature = createTmuxSessionFeature({
+    agentId: "agent",
+    async getSession(sessionId) {
+      assert.equal(sessionId, "parent");
+      return { agentId: "agent", status: "active", scope: "/workspace" };
+    },
+    async resolveWorkspaceRoot(scope) { assert.equal(scope, "/workspace"); return scope; },
+    now: () => `2026-10-11T00:00:0${tick++}.000Z`,
+    tmux: {
+      async list(request) { assert.equal(request.workspaceRoot, "/workspace"); return visible; },
+      async capture(request) { captured.push(request.target.sessionId); return `screen:${request.target.sessionId}:${captured.length}`; },
+      async stop(request) { stopped.push(request.target.sessionId); visible = visible.filter(item => item.target.sessionId !== request.target.sessionId); },
+    },
+  });
+
+  const initial = await feature.inspect("parent");
+  assert.deepEqual(initial.actions.map(action => action.name), ["capture", "delete"]);
+  assert.deepEqual(initial.data.captures, []);
+  assert.equal(initial.token.schemaVersion, 1);
+  await feature.act("parent", "capture", initial.token, "server-1");
+  await feature.act("parent", "capture", initial.token, "worker-1");
+  let inspected = await feature.inspect("parent");
+  assert.deepEqual(inspected.data.captures.map(item => ({ id: item.sessionId, active: item.active })), [
+    { id: "server-1", active: true },
+    { id: "worker-1", active: false },
+  ]);
+
+  visible = [featureSnapshot("server-1", false), featureSnapshot("worker-1", false)];
+  await feature.act("parent", "capture", inspected.token, "server-1");
+  inspected = await feature.inspect("parent");
+  assert.equal(inspected.data.captures.find(item => item.sessionId === "server-1").active, false, "the final dead-pane capture stops live polling");
+  const deletedToken = inspected.token;
+  await feature.act("parent", "delete", deletedToken, "server-1");
+  let afterDelete = await feature.inspect("parent");
+  assert.deepEqual(stopped, ["server-1"]);
+  assert.equal(afterDelete.data.sessions.some(item => item.target.sessionId === "server-1"), false);
+  assert.equal(afterDelete.data.captures.some(item => item.sessionId === "server-1"), false);
+
+  visible = [featureSnapshot("server-1", true, "2026-10-11T01:00:00.000Z"), ...visible];
+  await assert.rejects(feature.act("parent", "delete", deletedToken, "server-1"), /target changed/u,
+    "a stale sidebar action must not delete a recreated terminal with the same id");
+  assert.deepEqual(stopped, ["server-1"]);
+  afterDelete = await feature.inspect("parent");
+  assert.equal(afterDelete.data.sessions.some(item => item.target.sessionId === "server-1"), true);
 });
 
 test("Local tmux fails loud and treats an absent server as an empty index", async () => {
@@ -177,7 +231,28 @@ test("Local tmux fails loud and treats an absent server as an empty index", asyn
   });
   const empty = new LocalTmuxBackend({ runner: scriptedRunner([absent]) });
   assert.deepEqual(await empty.list(), []);
+  const missingSocket = Object.assign(new Error("socket missing"), {
+    stderr: "error connecting to /tmp/wish.sock (No such file or directory)",
+  });
+  assert.deepEqual(await new LocalTmuxBackend({ runner: scriptedRunner([missingSocket]) }).list(), []);
 });
+
+function featureSnapshot(sessionId, active, createdAt = "2026-10-11T00:00:00.000Z") {
+  return Object.freeze({
+    target: Object.freeze({
+      ...target(),
+      sessionId,
+      session: `wish-${sessionId}`,
+      target: `wish-${sessionId}:main.0`,
+      attachCommand: `tmux attach-session -t wish-${sessionId}`,
+      captureCommand: `tmux capture-pane -p -t wish-${sessionId}:main.0`,
+    }),
+    metadata: Object.freeze({ workspaceRoot: "/workspace", label: sessionId }),
+    createdAt,
+    active,
+    ...(active ? { currentCommand: "node", panePid: 4242 } : { exitCode: 0 }),
+  });
+}
 
 test("Tmux Service supports Cordis replacement and unload", async () => {
   class FixtureTmux extends TmuxService {
@@ -186,6 +261,7 @@ test("Tmux Service supports Cordis replacement and unload", async () => {
     async inspect() { return undefined; }
     async capture() { return ""; }
     async send() {}
+    async attach() { throw new Error("not used"); }
     async stop() {}
   }
   const root = new Context();

@@ -24,6 +24,7 @@ let backend;
 let kv;
 let server;
 let spawned;
+const childApiKey = "scoped-child-secret";
 
 try {
   await mkdir(workspace, { recursive: true });
@@ -33,6 +34,7 @@ try {
     request.on("data", (chunk) => { body += chunk; });
     request.on("end", () => {
       assert.match(request.url ?? "", /chat\/completions/u);
+      assert.equal(request.headers.authorization, `Bearer ${childApiKey}`);
       assert.match(body, /Inspect the transparent child/u);
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.end([
@@ -49,15 +51,16 @@ try {
   const address = server.address();
   assert.notEqual(address, null);
   assert.equal(typeof address, "object");
-  await writeFile(modelsPath, `${JSON.stringify({
+  const modelsConfiguration = {
     schemaVersion: 1,
-    defaultModel: "fixture/primary",
+    defaultModel: { provider: "fixture", model: "primary" },
+    fallbackModels: [],
     maxRetries: 0,
     providers: [{
       id: "fixture",
       protocol: "openai-chat-completions",
       baseUrl: `http://127.0.0.1:${address.port}/v1`,
-      auth: { type: "none" },
+      auth: { type: "bearer", apiKeyEnv: "FIXTURE_CHILD_API_KEY" },
       developerRoleMode: "native",
       request: {
         streamUsage: false,
@@ -76,7 +79,8 @@ try {
         developerRole: true,
       }],
     }],
-  }, null, 2)}\n`, { mode: 0o600 });
+  };
+  await writeFile(modelsPath, `${JSON.stringify(modelsConfiguration, null, 2)}\n`, { mode: 0o600 });
 
   kv = new FileKvStorageBackend({
     backendId: "fixture",
@@ -91,6 +95,10 @@ try {
   const launcher = new WishCliSubagentLauncherBackend({
     dataDirectory,
     modelsConfigurationPath: modelsPath,
+    resolveCredential(reference) {
+      assert.equal(reference, "FIXTURE_CHILD_API_KEY");
+      return childApiKey;
+    },
   });
   backend = new SubagentRuntime({
     execution: new TmuxSubagentExecutionBackend(new LocalTmuxBackend({
@@ -112,6 +120,7 @@ try {
     role: "reviewer",
     permissionProfile: "read-only",
     availableTools: ["read", "grep"],
+    modelsConfiguration,
   });
   assert.equal(spawned.status, "running");
   assert.equal(spawned.target.locator.socketPath, socketPath);

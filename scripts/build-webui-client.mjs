@@ -6,7 +6,10 @@ import { createHash } from "node:crypto";
 // Composition metadata only; implementations stay in their owning modules.
 const modules = [
   ["skills", "SkillsClientUi", ["include:skills-local", "include:skills-session-feature"]],
-  ["models", "ModelsClientUi", ["include:models"]],
+  ["models", "ModelsClientUi", ["include:models", "include:models-webui-control"]],
+  ["permissions", "PermissionsClientUi", ["include:session-permissions", "include:permissions-webui-control"]],
+  ["models/pricing", "ModelUsageClientUi", ["include:model-usage-webui-control"]],
+  ["system-prompt", "SystemPromptHistoryClientUi", ["include:system-prompt-history-webui-control"]],
   ["plan", "PlanClientUi", ["include:plan-session-feature"]],
   ["todo", "TodoClientUi", ["include:todo-session-feature"]],
   ["goal", "GoalClientUi", ["include:goal-session-feature"]],
@@ -17,6 +20,9 @@ const modules = [
   ["context", "ContextClientUi", ["include:context-session-feature"]],
   ["subagents", "SubagentsClientUi", ["include:subagents-session-feature"]],
   ["tmux", "TmuxClientUi", ["include:tmux-session-feature"]],
+  ["workspace-files", "WorkspaceFilesClientUi", ["include:workspace-files-local", "include:workspace-files-webui-control"]],
+  ["document-preview", "DocumentPreviewClientUi", ["include:workspace-files-local", "include:workspace-files-webui-control"]],
+  ["terminal", "UserTerminalClientUi", ["include:user-terminal-local", "include:user-terminal-session-feature", "include:user-terminal-webui-control"]],
   ["shell", "ShellClientUi", ["include:tool-bash"]],
   ["filesystem", "ReadClientUi", ["include:tool-read"]],
   ["filesystem", "WriteClientUi", ["include:tool-write"]],
@@ -26,7 +32,7 @@ const modules = [
 const outdir = resolve("dist/apps/webui/public");
 const entryPoints = { "core/client": "src/apps/webui/client/main.tsx" };
 for (const item of modules) entryPoints[`modules/${item.id}`] = item.file;
-const css = await readFile("src/apps/webui/public/app.css", "utf8");
+const css = `${await readFile("node_modules/@xterm/xterm/css/xterm.css", "utf8")}\n${await readFile("src/apps/webui/public/app.css", "utf8")}`;
 const shellRevision = createHash("sha256").update(css).digest("hex");
 // One build graph means one React/Cordis runtime. A shared/core change changes the
 // core URL; an open browser refuses to mix it with its already-loaded runtime.

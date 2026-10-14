@@ -170,6 +170,38 @@ test("the continuation policy can open turns and return one trusted follow-up", 
   assert.equal(Object.isFrozen(decided[0].pending.completionHolds), true);
 });
 
+test("Host continuation resumes the Run without claiming human follow-up provenance", async () => {
+  const services = deterministicServices();
+  const runtime = new Runtime({
+    ...services,
+    stepPipeline: {
+      async execute({ snapshot }) {
+        return { status: "completed", result: snapshot.userTurn.input };
+      },
+    },
+  });
+  const handle = runtime.startRun(
+    { id: "continuation-agent" },
+    { scope: "continuation", payload: "initial", inputSource: "user" },
+  );
+  const receipt = runtime.resume("continuation-agent", handle.runId, {
+    payload: "child result",
+    text: "child result",
+    source: "wish-subagent-result",
+    reserveCapacity: true,
+  });
+  assert.equal(receipt.accepted, true);
+  const completion = await handle.completion;
+  assert.equal(completion.status, "completed");
+  assert.deepEqual(completion.snapshot.userTurns.map(turn => turn.inputSource), ["user", "continuation"]);
+  assert.deepEqual(completion.snapshot.userTurns[1].provenance, {
+    origin: "continuation",
+    source: "wish-subagent-result",
+    controlId: receipt.controlId,
+    receivedAt: "2026-01-01T00:00:03Z",
+  });
+});
+
 test("an already queued follow-up preempts continuation policy scheduling", async () => {
   const services = deterministicServices();
   const decided = [];

@@ -19,6 +19,10 @@ import { ModelsSettingsClientModel, parseCapacity } from "../dist/models/consume
 import { bindAppearance, bindTheme, selectedFontSize, selectedLanguage, selectedTheme } from "../dist/apps/webui/client/theme.js";
 import { ComposerPreferences } from "../dist/apps/webui/host/preferences.js";
 import { PluginPage } from "../dist/apps/webui/client/ui/plugins.js";
+import { Icon } from "../dist/apps/webui/client/ui/primitives.js";
+import { closeSessionDockPane, closeSessionDockTab, createSessionDockLayout, openSessionDockGuide, openSessionDockTab, reconcileSessionDockLayout, selectSessionDockTab, splitSessionDockPane, toggleSessionDockFullscreen, updateSessionDockTab } from "../dist/apps/webui/client/ui/session-dock.js";
+import { defaultRightSidebarWidth, LEFT_SIDEBAR_MAX_WIDTH, LEFT_SIDEBAR_MIN_WIDTH, resizeSidebarWidth, rightSidebarMaxWidth, RIGHT_SIDEBAR_MIN_WIDTH, SidebarResizeHandle } from "../dist/apps/webui/client/ui/sidebar-resize.js";
+import { TmuxClientUi, tmuxLiveSyncEnabled } from "../dist/tmux/consumers/webui/index.js";
 
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 test("WebUI appearance settings expose live language and font-size choices without replacing theme", () => {
@@ -38,6 +42,28 @@ test("shipped WebUI stylesheet scales fixed text sizes for both larger choices",
   assert.doesNotMatch(css, /font-size:\d+px/);
   assert.match(css, /\.configuration-readonly[^}]*color:var\(--muted\)/);
   assert.match(css, /\.configuration-incomplete[^}]*color:var\(--warning\)/);
+  assert.match(css, /\.conversation\{--session-sidebar-width:clamp\(420px,42vw,640px\);display:grid;grid-template-columns:minmax\(0,1fr\) var\(--session-sidebar-width\)/u);
+  assert.match(css, /\.conversation\.session-sidebar-fullscreen \.session-sidebar\{position:fixed;z-index:30;inset:0;width:100vw;height:100dvh/u);
+  assert.match(css, /\.session-sidebar-guide\{display:flex;box-sizing:border-box;min-height:100%/u);
+  assert.match(css, /\.session-sidebar-guide-entry\{display:flex;align-items:center;gap:14px/u);
+  assert.match(css, /\.sidebar-resize-handle\{position:absolute;z-index:9;top:0;bottom:0;width:9px;cursor:col-resize/u);
+  assert.match(css, /\.conversation\.session-sidebar-fullscreen \.right-sidebar-resize-handle\{display:none\}/u);
+  assert.match(css, /@media\(max-width:1180px\)[^{]*\{\.conversation\{grid-template-columns:minmax\(0,1fr\)\}/u);
+  assert.match(css, /\.tmux-sidebar-view\{container-type:inline-size;display:flex;flex:1;min-width:0;min-height:0;width:100%;height:100%/u);
+  assert.match(css, /\.tmux-sidebar-toolbar\{[^}]*align-self:stretch[^}]*width:100%[^}]*height:38px;min-height:38px[^}]*border-bottom:1px solid var\(--line\)/u);
+  assert.match(css, /\.tmux-sidebar-toolbar button\{position:absolute;top:5px;right:6px/u, "the refresh action stays anchored to the stationary sidebar edge while resizing");
+  assert.doesNotMatch(css, /tmux-observed-at/u, "tmux exposes one concise status row instead of a second scrolling notice");
+  assert.match(css, /\.tmux-sidebar-view \.terminal-list\{[^}]*flex:1[^}]*min-height:0[^}]*overflow:auto/u);
+  assert.match(css, /@container \(max-width:420px\)\{[^@]*\.tmux-process-heading\{align-items:flex-start;flex-direction:column/u);
+  assert.doesNotMatch(css, /\.tmux-sidebar-toolbar\{display:flex;align-items:flex-start/u, "obsolete page-style tmux toolbar rules are removed");
+});
+test("native select menus retain explicit light and dark theme surfaces", async () => {
+  const css = await readFile(new URL("../dist/apps/webui/public/app.css", import.meta.url), "utf8");
+  assert.match(css, /--control-surface:#fff;--control-text:#202c3e/u);
+  assert.match(css, /select option,select optgroup\{color:var\(--control-text\);background-color:var\(--control-surface\)\}/u);
+  assert.match(css, /select option:hover,select option:focus,select option:checked\{color:var\(--control-text\);background-color:var\(--active\)\}/u);
+  assert.match(css, /--control-surface:#0d0d0f;--control-text:#e7e7eb/u);
+  assert.match(css, /:root\[data-theme=dark\] select\{color-scheme:dark\}/u);
 });
 test("plugin page renders Host-classified Kernel as a gray read-only control", () => {
   const entry = { id: "include:timer", name: "cordis:timer", parentId: "include", kind: "plugin", managementClass: "kernel",
@@ -110,12 +136,117 @@ test("a UI owner can choose the initial panel without overriding later navigatio
   assert.deepEqual(seen, ["new-session", "preferences"], "an owner cannot take over after explicit navigation");
   unsubscribe(); dispose();
 });
+test("session sidebar seats are ordered, replaceable UI contributions", async () => {
+  const slots = new UiSlots(), View = () => null;
+  const future = slots.sessionSidebar({ id: "future", label: "未来功能", View });
+  const tmux = slots.sessionSidebar({ id: "tmux", order: 30, label: "tmux", View });
+  const files = slots.sessionSidebar({ id: "files", order: 20, label: "文件", labelEn: "Files", View });
+  const terminal = slots.sessionSidebar({ id: "terminal", order: 10, label: "终端", labelEn: "Terminal", View });
+  assert.deepEqual(slots.getSnapshot().sessionSidebarItems.map(item => item.id), ["terminal", "files", "tmux", "future"], "terminal and Files lead the guide regardless of module load order; unranked future features follow tmux");
+  assert.throws(() => slots.sessionSidebar({ id: "terminal", label: "重复", View }), /Duplicate Session sidebar item/u);
+  await slots.batch(async () => { terminal(); slots.sessionSidebar({ id: "terminal", order: 10, label: "新终端", labelEn: "New terminal", View }); });
+  assert.deepEqual(slots.getSnapshot().sessionSidebarItems.map(item => item.id), ["terminal", "files", "tmux", "future"], "a replacement keeps the explicit feature order");
+  files(); tmux(); future();
+  assert.deepEqual(slots.getSnapshot().sessionSidebarItems.map(item => item.id), ["terminal"]);
+});
+test("tmux owns a session-sidebar feature instead of a workspace page", async () => {
+  const root = new Context(), slots = new UiSlots();
+  root.provide("wishUiSlots", slots);
+  const target = (sessionId, active) => ({ target: { sessionId, session: `wish-${sessionId}`, window: "main", pane: "%0", target: `wish-${sessionId}:main.0`, attachCommand: `tmux attach-session -t wish-${sessionId}`, captureCommand: `tmux capture-pane -p -t wish-${sessionId}:main.0` }, metadata: { workspaceRoot: "/workspace", label: sessionId }, createdAt: "2026-10-11T00:00:00.000Z", active, ...(active ? { currentCommand: "node", panePid: 42 } : { exitCode: 0 }) });
+  const feature = { key: "tmux", title: "tmux", text: "", token: {}, actions: [{ name: "capture", label: "同步", feedback: true }, { name: "delete", label: "删除", feedback: true }], data: { kind: "tmux-observation", observedAt: "2026-10-11T00:00:00.000Z", sessions: [target("live", true), target("finished", false)], captures: [{ sessionId: "live", observedAt: "2026-10-11T00:00:00.000Z", output: "running", active: true }, { sessionId: "finished", observedAt: "2026-10-11T00:00:00.000Z", output: "done", active: false }] } };
+  root.provide("wishFeatures", new SnapshotStore({ sessionId: "session-one", views: [feature], error: null, available: true, pending: false }));
+  const tmux = await root.plugin(TmuxClientUi);
+  try {
+    assert.equal(slots.getSnapshot().panels.some(panel => panel.id === "tmux"), false);
+    assert.deepEqual(slots.getSnapshot().sessionSidebarItems.map(item => ({ id: item.id, order: item.order, label: item.label, icon: item.icon, description: item.description })), [{ id: "tmux", order: 30, label: "tmux", icon: "tmux", description: "观察当前 Workspace 中由 Wish 管理的 tmux 会话" }]);
+    const terminalIcon = renderToStaticMarkup(createElement(Icon, { name: "terminal" }));
+    const tmuxIcon = renderToStaticMarkup(createElement(Icon, { name: "tmux" }));
+    assert.notEqual(tmuxIcon, terminalIcon, "tmux uses a split-session icon instead of the interactive terminal prompt");
+    assert.match(tmuxIcon, /viewBox="0 0 16 16"[^>]*fill="currentColor"/u, "tmux keeps the solid cut-square Codicon geometry");
+    assert.match(terminalIcon, /viewBox="0 0 24 24"[^>]*fill="none"[^>]*stroke="currentColor"/u, "the interactive terminal remains a line icon");
+    const View = slots.getSnapshot().sessionSidebarItems[0].View;
+    assert.equal(typeof View, "function");
+    const markup = renderToStaticMarkup(createElement(View, { sessionId: "session-one", tab: { id: "tab-tmux", kind: "tmux", contentId: "page:tmux", title: "tmux", visible: true }, actions: { openTab() {}, openResource() {}, update() {}, close() {} } }));
+    assert.match(markup, /class="tmux-sidebar-view"/u);
+    assert.match(markup, /aria-label="刷新 tmux 列表"/u);
+    assert.match(markup, /自动同步 · /u);
+    assert.equal((markup.match(/role="status"/gu) ?? []).length, 1, "tmux renders exactly one top-level status line");
+    assert.match(markup, /class="tmux-delete-trigger"[^>]*title="停止并删除 live"/u);
+    assert.match(markup, /运行中 · 自动同步/u);
+    assert.match(markup, /已退出 · 画面已保留/u);
+    assert.match(markup, /停止并删除 live/u);
+    assert.match(markup, /aria-label="删除 finished"/u);
+    assert.doesNotMatch(markup, /settings-page|page-heading/u, "the sidebar contribution must not retain full-page chrome");
+  } finally { await tmux.dispose(); await root.fiber.dispose(); }
+  assert.deepEqual(slots.getSnapshot().sessionSidebarItems, []);
+});
+test("tmux live capture follows the dock's effective visibility", () => {
+  assert.equal(tmuxLiveSyncEnabled(true, true, 1), true);
+  assert.equal(tmuxLiveSyncEnabled(false, true, 1), false, "a hidden retained tab must not poll");
+  assert.equal(tmuxLiveSyncEnabled(true, false, 1), false);
+  assert.equal(tmuxLiveSyncEnabled(true, true, 0), false);
+});
+test("right sidebar icons mirror the left sidebar geometry", () => {
+  const open = renderToStaticMarkup(createElement(Icon, { name: "panel-right-open" }));
+  const close = renderToStaticMarkup(createElement(Icon, { name: "panel-right-close" }));
+  assert.match(open, /M15 4v16M11 9l-3 3 3 3/u, "open mirrors the left-side open icon");
+  assert.match(close, /M15 4v16M8 9l3 3-3 3/u, "close mirrors the left-side close icon");
+});
+test("sidebar resizing follows the DSH constrained column model", () => {
+  assert.equal(resizeSidebarWidth(280, -999, "left", LEFT_SIDEBAR_MIN_WIDTH, LEFT_SIDEBAR_MAX_WIDTH), 264);
+  assert.equal(resizeSidebarWidth(280, 999, "left", LEFT_SIDEBAR_MIN_WIDTH, LEFT_SIDEBAR_MAX_WIDTH), 420);
+  assert.equal(resizeSidebarWidth(450, -40, "right", RIGHT_SIDEBAR_MIN_WIDTH, 600), 490, "moving the right divider left widens the panel");
+  assert.equal(resizeSidebarWidth(450, 999, "right", RIGHT_SIDEBAR_MIN_WIDTH, 600), 300);
+  assert.equal(rightSidebarMaxWidth(1000), 600, "the center keeps 400px before the 70% ceiling is considered");
+  assert.equal(rightSidebarMaxWidth(650), 0, "a normal right track is unavailable when its minimum and the center minimum cannot fit");
+  assert.equal(defaultRightSidebarWidth(1000), 450);
+  const markup = renderToStaticMarkup(createElement(SidebarResizeHandle, { side: "left", width: 280, min: 264, max: 420, label: "调整左侧栏宽度", controls: "wish-sidebar", onChange() {} }));
+  assert.match(markup, /role="separator"/u);
+  assert.match(markup, /aria-valuemin="264" aria-valuemax="420" aria-valuenow="280"/u);
+  assert.match(markup, /aria-controls="wish-sidebar"/u);
+});
+test("session dock owns resource tabs, preserves hidden tabs, and gives each new pane a guide", () => {
+  const initial = createSessionDockLayout(["tmux", "tasks"]);
+  assert.deepEqual(initial.panes.map(pane => pane.activeTabId), [null], "a new dock opens on the feature guide");
+  assert.equal(splitSessionDockPane(initial, initial.activePaneId), initial, "the narrow sidebar cannot split before fullscreen");
+  const withTmux = openSessionDockTab(initial, initial.activePaneId, { kind: "tmux", contentId: "page:tmux", title: "tmux" });
+  const tmuxId = withTmux.panes[0].activeTabId;
+  assert.ok(tmuxId);
+  const deduplicated = openSessionDockTab(withTmux, withTmux.activePaneId, { kind: "tmux", contentId: "page:tmux", title: "tmux" });
+  assert.equal(deduplicated, withTmux, "opening a singleton resource selects its existing tab");
+  const firstTerminal = openSessionDockTab(withTmux, withTmux.activePaneId, { kind: "terminal", contentId: "terminal:first", title: "bash", multiple: true });
+  const secondTerminal = openSessionDockTab(firstTerminal, firstTerminal.activePaneId, { kind: "terminal", contentId: "terminal:second", title: "bash", multiple: true });
+  assert.equal(secondTerminal.panes[0].tabIds.length, 3, "multiple terminal resources remain independent tabs");
+  const updated = updateSessionDockTab(secondTerminal, secondTerminal.panes[0].activeTabId, { terminalId: "pty-2" }, "bash · 2");
+  assert.equal(updated.tabs[updated.panes[0].activeTabId].params.terminalId, "pty-2");
+  const fullscreen = toggleSessionDockFullscreen(selectSessionDockTab(updated, updated.activePaneId, tmuxId));
+  assert.equal(fullscreen.fullscreen, true);
+  const guide = openSessionDockGuide(fullscreen, fullscreen.activePaneId);
+  assert.deepEqual(guide.panes.map(pane => pane.activeTabId), [null], "the add control shows the guide without destroying open resources");
+  assert.equal(Object.keys(guide.tabs).length, 3);
+  const restored = selectSessionDockTab(guide, guide.activePaneId, tmuxId);
+  const split = splitSessionDockPane(restored, restored.activePaneId);
+  assert.equal(split.panes.length, 2);
+  assert.equal(split.activePaneId, split.panes[1].id);
+  assert.deepEqual(split.panes.map(pane => pane.activeTabId), [tmuxId, null], "a new pane opens on its own feature guide instead of copying the source");
+  const selected = openSessionDockTab(split, split.panes[1].id, { kind: "tasks", contentId: "page:tasks", title: "Tasks" });
+  assert.deepEqual(selected.panes.map(pane => pane.activeTabId !== null && selected.tabs[pane.activeTabId].kind), ["tmux", "tasks"]);
+  const collapsed = toggleSessionDockFullscreen(selected);
+  assert.equal(collapsed.fullscreen, false);
+  assert.equal(collapsed.panes.length, 2, "exiting fullscreen does not destroy a resource pane");
+  const reconciled = reconcileSessionDockLayout(selected, ["tmux"]);
+  assert.deepEqual(reconciled.panes.map(pane => pane.activeTabId !== null && reconciled.tabs[pane.activeTabId].kind), ["tmux", "tasks"], "temporarily unloaded resource kinds retain their tabs for recovery");
+  const recovered = reconcileSessionDockLayout({ panes: "broken", tabs: null }, ["tmux"]);
+  assert.deepEqual(recovered, initial, "corrupt persisted layout falls back to a clean guide instead of breaking the conversation");
+  assert.deepEqual(closeSessionDockPane(reconciled, reconciled.panes[0].id).panes.map(pane => pane.id), [reconciled.panes[1].id]);
+  assert.equal(closeSessionDockTab(withTmux, tmuxId).panes[0].activeTabId, null);
+});
 test("theme adapter follows the Host settings snapshot and releases its subscription", () => {
   class Probe extends SnapshotStore { update(value) { this.publish(value); } }
   const model = new Probe({ sections: [], writable: true, error: null, pending: false });
-  const attributes = new Map(), root = { setAttribute(name, value) { attributes.set(name, value); } };
+  const attributes = new Map([["data-theme", "dark"]]), root = { setAttribute(name, value) { attributes.set(name, value); } };
   const stop = bindTheme(model, root);
-  assert.equal(selectedTheme(model), "light"); assert.equal(attributes.get("data-theme"), "light");
+  assert.equal(selectedTheme(model), "light"); assert.equal(attributes.get("data-theme"), "dark", "Host-projected theme survives the empty client snapshot");
   model.update({ ...model.getSnapshot(), sections: [{ namespace: "webui-appearance", value: { theme: "dark" } }] });
   assert.equal(selectedTheme(model), "dark"); assert.equal(attributes.get("data-theme"), "dark");
   stop(); model.update({ ...model.getSnapshot(), sections: [{ namespace: "webui-appearance", value: { theme: "light" } }] });
@@ -124,20 +255,21 @@ test("theme adapter follows the Host settings snapshot and releases its subscrip
 test("appearance adapter applies language and font size live, then preserves the last state after disposal", () => {
   class Probe extends SnapshotStore { update(value) { this.publish(value); } }
   const model = new Probe({ sections: [], writable: true, error: null, pending: false });
-  const attributes = new Map(), root = { setAttribute(name, value) { attributes.set(name, value); } };
+  const attributes = new Map([["data-theme", "dark"], ["lang", "en-US"], ["data-font-size", "extra-large"]]);
+  const root = { setAttribute(name, value) { attributes.set(name, value); } };
   const stop = bindAppearance(model, root);
+  assert.equal(attributes.get("lang"), "en-US", "Host-projected language survives the empty client snapshot");
+  assert.equal(attributes.get("data-font-size"), "extra-large", "Host-projected font size survives the empty client snapshot");
+  model.update({ ...model.getSnapshot(), sections: [{ namespace: "webui-appearance", value: { theme: "light", language: "zh-CN", "font-size": "standard" } }] });
+  assert.equal(selectedLanguage(model), "zh-CN");
+  assert.equal(selectedFontSize(model), "standard");
+  assert.equal(attributes.get("data-theme"), "light");
   assert.equal(attributes.get("lang"), "zh-CN");
   assert.equal(attributes.get("data-font-size"), "standard");
-  model.update({ ...model.getSnapshot(), sections: [{ namespace: "webui-appearance", value: { theme: "dark", language: "en-US", "font-size": "extra-large" } }] });
-  assert.equal(selectedLanguage(model), "en-US");
-  assert.equal(selectedFontSize(model), "extra-large");
-  assert.equal(attributes.get("data-theme"), "dark");
-  assert.equal(attributes.get("lang"), "en-US");
-  assert.equal(attributes.get("data-font-size"), "extra-large");
   stop();
-  model.update({ ...model.getSnapshot(), sections: [{ namespace: "webui-appearance", value: { language: "zh-CN", "font-size": "standard" } }] });
-  assert.equal(attributes.get("lang"), "en-US");
-  assert.equal(attributes.get("data-font-size"), "extra-large");
+  model.update({ ...model.getSnapshot(), sections: [{ namespace: "webui-appearance", value: { language: "en-US", "font-size": "extra-large" } }] });
+  assert.equal(attributes.get("lang"), "zh-CN");
+  assert.equal(attributes.get("data-font-size"), "standard");
 });
 test("Browser Cordis disposes UI seats on effective capability loss and recreates on Host generation change", async () => {
   class Probe extends SnapshotStore { update(value) { this.publish(value); } }
@@ -295,13 +427,13 @@ test("connection owns CSRF token, rejects API errors, closes SSE and inflight re
   const sent = [], events = { addEventListener() {}, close() { this.closed = true; } };
   const fetcher = async (path, options) => {
     sent.push({ path, options });
-    return { ok: path !== "/api/fail", status: 409, json: async () => path === "/api/management/bootstrap" ? { token: "a".repeat(64), instanceId: "root", businessAvailable: false } : { error: { code: "conflict" } } };
+    return { ok: path !== "/api/fail", status: 409, json: async () => path === "/api/management/bootstrap" ? { token: "a".repeat(64), instanceId: "root", businessAvailable: false } : { error: { code: "conflict", message: "请先完成或清除当前 Goal。" } } };
   };
   const connection = new ClientConnection(fetcher, () => events);
   await connection.start(); await connection.request("/api/action", { test: true });
   assert.equal(sent[1].options.headers["X-Wish-Management-Token"], "a".repeat(64));
   assert.equal(connection.getSnapshot().businessAvailable, false);
-  await assert.rejects(connection.request("/api/fail"), { code: "conflict" });
+  await assert.rejects(connection.request("/api/fail"), { code: "conflict", message: "请先完成或清除当前 Goal。" });
   connection.close(); assert.equal(events.closed, true);
   await assert.rejects(connection.request("/api/action"), { code: "connection_closed" });
 });

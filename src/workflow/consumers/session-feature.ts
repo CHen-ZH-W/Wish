@@ -1,10 +1,20 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { registerManagedSessionFeature } from "../../apps/session-feature-owner.js";
+import { activeAttempt } from "../transition.js";
+import type { WorkflowRun } from "../types.js";
+
+/** Deletion fences execution and uncertain effects, not an explicitly retryable idle ledger. */
+export function workflowBlocksSessionRemoval(run: WorkflowRun): boolean {
+  if (run.status === "running" || run.status === "interrupted") return true;
+  return run.steps.some(step => step.attempts.some(attempt => activeAttempt(attempt) ||
+    (attempt.status === "interrupted" && attempt.disposition !== "retry-safe" && attempt.disposition !== "terminal-failed")));
+}
+
 export default { name: "workflow-session-feature", inject: ["application", "workflow", "workflowScheduler"], apply(ctx: Context) {
   registerManagedSessionFeature(ctx, "workflow", {
     async beforeRemoval(sessionId) {
       const runs = (await ctx.workflow.state.list()).filter(run => run.owner.parentSessionId === sessionId);
-      if (runs.some(run => !["completed", "failed", "cancelled"].includes(run.status) || run.steps.some(step => step.attempts.some(attempt => ["prepared", "dispatched", "running"].includes(attempt.status) || (attempt.status === "interrupted" && attempt.disposition === "needs-reconciliation"))))) {
+      if (runs.some(workflowBlocksSessionRemoval)) {
         throw new Error("关联 Workflow 尚未结束或需要核对，请先处理 Workflow。 ");
       }
     },

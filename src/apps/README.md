@@ -215,10 +215,10 @@ WISH_MODELS_CONFIG=./models.json npm run webui
 | `POST` | `/api/runtime-recovery/reconciliations` | 持久化一项 Tool 人工核对结论 |
 | `GET/POST` | `/api/sessions` | 列出或创建 Session |
 | `GET/PATCH` | `/api/sessions/:sessionId` | 读取或修改标题 |
-| `GET` | `/api/model-reasoning/default` | 不创建 Session，读取当前默认模型可选思考强度 |
+| `GET` | `/api/controls/:key/default` | 通过领域 Control Consumer 读取不依赖 Session 的默认投影 |
 | `POST` | `/api/sessions/:sessionId/archive` | archive Session |
 | `GET` | `/api/sessions/:sessionId/history` | 读取规范 transcript |
-| `GET/POST` | `/api/sessions/:sessionId/model-reasoning` | 读取或设置下一个新 Run 的思考强度 |
+| `GET/POST` | `/api/sessions/:sessionId/controls/:key` | 通过领域 Control Consumer 读取或更新 Session 控制面 |
 | `GET/POST` | `/api/sessions/:sessionId/runs` | 查询或启动 Run |
 | `GET` | `/api/runs/:runId` | 查询进程内 Run 投影 |
 | `POST` | `/api/runs/:runId/controls` | 提交 steer、follow-up 或 abort |
@@ -234,7 +234,8 @@ WISH_MODELS_CONFIG=./models.json npm run webui
 
 页面从 `src/apps/webui/client/` 和 `public/` 构建，提供规范历史、活动 Run 输出、
 显式 steer/follow-up/abort 和四种有效期的 Tool approval。HTML 不含内联脚本或样式，
-Server 设置 CSP、`nosniff` 与 no-referrer；模型正文以安全纯文本显示，不自动加载远程内容。
+Server 设置 CSP、`nosniff` 与 no-referrer；脚本仍仅允许同源，样式允许 xterm DOM renderer
+生成实例级调色板与字符对比度样式。模型正文以安全纯文本显示，不自动加载远程内容。
 `/api/health.runtimeRecovery` 暴露启动恢复快照；CLI 可报告被封口的 Run 与待人工核对的
 Run ID，并通过 Application 的窄 Recovery Port 管理结论，不直接写 Journal 或重放 Tool。
 

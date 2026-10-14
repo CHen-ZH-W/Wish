@@ -109,7 +109,7 @@ try {
     true,
     summarizeRequests(requests),
   );
-  console.log("real Subagent completion hold and parent follow-up passed");
+  console.log("real Subagent completion hold and parent continuation passed");
 } finally {
   await execFileAsync("tmux", ["-S", socketPath, "kill-server"]).catch(() => undefined);
   await new Promise((resolve) => server?.close(() => resolve()) ?? resolve());

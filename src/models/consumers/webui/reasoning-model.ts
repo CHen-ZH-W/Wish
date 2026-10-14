@@ -28,9 +28,9 @@ export class ReasoningClientModel extends SnapshotStore<ReasoningClientSnapshot>
       const sessionId = state.sessionId;
       if (!sessionId || !this.available() || state.pending) return;
       try {
-        const response = await this.connection.request<{ selection: SessionReasoningView }>(`/api/sessions/${encodeURIComponent(sessionId)}/model-reasoning`);
+        const response = await this.connection.request<{ value: SessionReasoningView }>(`/api/sessions/${encodeURIComponent(sessionId)}/controls/model-reasoning`);
         if (current() && this.getSnapshot().sessionId === sessionId && !this.getSnapshot().pending) {
-          this.publish({ ...this.getSnapshot(), view: response.selection, loading: false, error: null });
+          this.publish({ ...this.getSnapshot(), view: response.value, loading: false, error: null });
         }
       } catch (error) {
         if (current() && this.getSnapshot().sessionId === sessionId) {
@@ -54,12 +54,12 @@ export class ReasoningClientModel extends SnapshotStore<ReasoningClientSnapshot>
     const selected = effort === control.defaultEffort ? null : effort;
     this.publish({ ...state, pending: true, error: null, status: "正在设置…" });
     try {
-      const response = await this.connection.request<{ selection: SessionReasoningView }>(
-        `/api/sessions/${encodeURIComponent(state.sessionId)}/model-reasoning`,
+      const response = await this.connection.request<{ value: SessionReasoningView }>(
+        `/api/sessions/${encodeURIComponent(state.sessionId)}/controls/model-reasoning`,
         { model: state.view.model, effort: selected },
       );
       if (!this.closed && this.getSnapshot().sessionId === state.sessionId) {
-        this.publish({ ...this.getSnapshot(), view: response.selection, pending: false, status: "下次新运行生效" });
+        this.publish({ ...this.getSnapshot(), view: response.value, pending: false, status: "下次新运行生效" });
       }
     } catch (error) {
       if (!this.closed && this.getSnapshot().sessionId === state.sessionId) {

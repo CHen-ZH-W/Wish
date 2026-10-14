@@ -24,6 +24,14 @@ async function capture(page, name, resetScroll = true) {
   await writeFile(join(directory, `${name}.json`), JSON.stringify(metrics, null, 2));
 }
 
+async function dragHorizontal(page, locator, deltaX) {
+  const box = await locator.boundingBox();
+  assert.ok(box, "resize handle has measurable geometry");
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  await page.mouse.move(x, y); await page.mouse.down();
+  await page.mouse.move(x + deltaX, y, { steps: 6 }); await page.mouse.up();
+}
+
 async function createDefaultSession(page, booted, directory) {
   // Other browser scenarios need a settled Session, not an unconfigured model Run.
   await booted.surfaceContext.get("sessions").manager.create({ sessionId: randomUUID(), agentId: booted.surfaceContext.get("agents").agentId, scope: directory });
@@ -59,11 +67,17 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     await page.waitForFunction(() => !document.querySelector("#wish-new-session-reasoning-effort")?.disabled);
     assert.equal(await reasoning.inputValue(), "high");
     assert.equal(await reasoning.locator('option[value="default"]').count(), 0);
+    const permission = page.getByRole("combobox", { name: "新会话权限" });
+    await permission.waitFor();
+    await page.waitForFunction(() => !document.querySelector("#wish-new-session-permission-profile")?.disabled);
+    assert.equal(await permission.inputValue(), "approval-required");
+    assert.deepEqual(await permission.locator("option").allTextContents(), ["只读", "需要审批", "工作区可写", "完全访问（无隔离）"]);
     const card = await page.locator(".new-session-composer").boundingBox(), effortBox = await reasoning.boundingBox(), sendBox = await page.locator(".new-session-send").boundingBox();
     assert.ok(card && effortBox && sendBox && effortBox.x >= card.x && effortBox.y >= card.y &&
       sendBox.x + sendBox.width <= card.x + card.width && sendBox.y + sendBox.height <= card.y + card.height,
     "reasoning and send belong to the same centered composer card");
     await reasoning.selectOption("low");
+    await permission.selectOption("workspace-write");
     assert.equal((await manager.list()).length, 0, "changing first-run effort does not create a Session");
     const center = await page.locator(".new-session-center").boundingBox(), main = await page.locator(".workspace-content").boundingBox();
     assert.ok(center && main && Math.abs(center.x + center.width / 2 - (main.x + main.width / 2)) < 2, "composer is centered in the content area");
@@ -96,8 +110,15 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     await page.locator("#wish-composer").waitFor();
     assert.equal((await manager.list())[0].scope, other);
     const createdId = (await manager.list())[0].sessionId;
-    const firstSelection = await page.evaluate(async id => (await (await fetch(`/api/sessions/${encodeURIComponent(id)}/model-reasoning`)).json()).selection, createdId);
+    const firstSelection = await page.evaluate(async id => (await (await fetch(`/api/sessions/${encodeURIComponent(id)}/controls/model-reasoning`)).json()).value, createdId);
     assert.equal(firstSelection.selected, "low", "the first Run and later Runs share the Session's selected effort");
+    const firstPermission = await page.evaluate(async id => (await (await fetch(`/api/sessions/${encodeURIComponent(id)}/controls/permission-profile`)).json()).value, createdId);
+    assert.equal(firstPermission.selected, "workspace-write", "the first Run and later Runs share the Session's selected permission");
+    const currentPermission = page.getByRole("combobox", { name: "下次运行的权限" });
+    await currentPermission.waitFor();
+    assert.equal(await currentPermission.inputValue(), "workspace-write");
+    await currentPermission.selectOption("read-only");
+    await page.waitForFunction(() => document.querySelector("#wish-permission-profile")?.value === "read-only");
     await page.getByRole("button", { name: "新建会话", exact: true }).click();
     await page.getByRole("heading", { name: "许个愿吧", exact: true }).waitFor();
     assert.equal(await page.getByRole("navigation", { name: "可用视图" }).getByRole("button", { name: "新建会话" }).count(), 0);
@@ -255,12 +276,21 @@ test("global Archive navigation and active/archived workspace grouping work on d
     await rail.getByRole("button", { name: "归档", exact: true }).click();
     await archived.getByRole("button", { name: /^发布记录/ }).waitFor();
 
+    // DSH-style constrained resize: the left column stays inside 264–420px.
+    const leftResize = page.getByRole("separator", { name: "调整左侧栏宽度", exact: true });
+    await leftResize.press("End");
+    assert.equal((await page.locator("#wish-sidebar").boundingBox()).width, 420);
+    await leftResize.press("Home");
+    assert.equal((await page.locator("#wish-sidebar").boundingBox()).width, 264);
+    await leftResize.press("ArrowRight"); await leftResize.press("ArrowRight");
+    assert.equal((await page.locator("#wish-sidebar").boundingBox()).width, 280);
+
     // Collapse only the Session sidebar; the rail stays in the exact same place.
-    const railBox = await rail.boundingBox(), mainBox = await page.locator(".workspace-main").boundingBox();
+    const railBox = await rail.boundingBox(), sidebarBox = await page.locator("#wish-sidebar").boundingBox(), mainBox = await page.locator(".workspace-main").boundingBox();
     await page.getByRole("button", { name: "收起侧栏", exact: true }).click();
     await page.locator(".session-index").waitFor({ state: "hidden" });
     assert.deepEqual(await rail.boundingBox(), railBox);
-    assert.equal((await page.locator(".workspace-main").boundingBox()).width, mainBox.width + 208);
+    assert.equal((await page.locator(".workspace-main").boundingBox()).width, mainBox.width + sidebarBox.width);
     assert.equal((await page.locator(".workspace-main").boundingBox()).y, 0);
     const expand = page.getByRole("button", { name: "展开侧栏", exact: true });
     await page.mouse.move(800, 400); await expand.evaluate(node => node.blur());
@@ -480,6 +510,10 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     await page.locator("html[data-theme=dark]").waitFor();
     await page.locator("select#webui-composer-busy-delivery").selectOption("steer");
     await page.locator(".setting-commit-status").filter({ hasText: "已应用" }).waitFor();
+    await page.locator("select#permissions-default-profile").selectOption("workspace-write");
+    await page.locator(".setting-commit-status").filter({ hasText: "已保存，将用于新会话" }).waitFor();
+    const unchangedSessionPermission = await page.evaluate(async id => (await (await fetch(`/api/sessions/${encodeURIComponent(id)}/controls/permission-profile`)).json()).value, session.sessionId);
+    assert.equal(unchangedSessionPermission.selected, "approval-required", "changing the general default does not rewrite an existing Session");
     await page.getByRole("button", { name: "模型配置", exact: true }).click();
     await page.locator("select#models-default-model").selectOption("deepseek/deepseek-v4-pro");
     await page.locator(".setting-commit-status").filter({ hasText: "已应用于新运行" }).waitFor();
@@ -508,6 +542,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     assert.equal(savedSettings.find(section => section.namespace === "webui-appearance").value.language, "en-US");
     assert.equal(savedSettings.find(section => section.namespace === "webui-appearance").value["font-size"], "extra-large");
     assert.equal(savedSettings.find(section => section.namespace === "webui-composer").value["busy-delivery"], "steer");
+    assert.equal(savedSettings.find(section => section.namespace === "permissions").value["default-profile"], "workspace-write");
     assert.equal(savedSettings.find(section => section.namespace === "models").value["default-model"], "deepseek/deepseek-v4-pro");
     assert.equal(JSON.parse(savedSettings.find(section => section.namespace === "models").value["max-output-token-overrides"])["deepseek/deepseek-v4-pro"], 16000);
     await page.close(); await booted.dispose(); booted = await bootstrap(options);
@@ -516,6 +551,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     assert.equal(restoredSettings.find(section => section.namespace === "webui-appearance").value.language, "en-US");
     assert.equal(restoredSettings.find(section => section.namespace === "webui-appearance").value["font-size"], "extra-large");
     assert.equal(restoredSettings.find(section => section.namespace === "webui-composer").value["busy-delivery"], "steer");
+    assert.equal(restoredSettings.find(section => section.namespace === "permissions").value["default-profile"], "workspace-write");
     assert.equal(restoredSettings.find(section => section.namespace === "models").value["default-model"], "deepseek/deepseek-v4-pro");
     assert.equal(JSON.parse(restoredSettings.find(section => section.namespace === "models").value["max-output-token-overrides"])["deepseek/deepseek-v4-pro"], 16000);
     assert.ok(booted.surfaceContext.get("webFetch"), "user-enabled default-off Provider survives restart");
@@ -559,7 +595,7 @@ test("real child Agent renders inline with owned identity, snapshot, attachment 
     await page.locator(".ledger-tool").getByText("spawn_agent", { exact: true }).waitFor();
     await page.locator(".ledger-tool > .event-body > details > summary").click();
     await page.locator(".child-evidence").waitFor({ timeout: 10000 });
-    await page.locator(".child-evidence").getByRole("button", { name: "刷新快照", exact: true }).click();
+    await page.locator(".child-evidence").getByRole("button", { name: "立即同步", exact: true }).click();
     await page.locator(".terminal-output").filter({ hasText: "透明子任务" }).waitFor();
     await page.locator(".child-evidence").getByRole("button", { name: "复制 tmux 连接命令", exact: true }).click();
     assert.ok((await page.evaluate(() => navigator.clipboard.readText())).includes("attach-session"));
@@ -604,7 +640,7 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
       }
       response.write(`data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { role: "assistant", content: "已收到请求。" }, finish_reason: null }] })}\n\n`);
       await gate;
-      response.end(`data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { content: "这是一条本地验收回复。" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      response.end(`data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { content: "这是一条本地验收回复。\n\n## Markdown 验收\n\n- 会话列表项\n\n```ts\nconst rendered = true;\n```" }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 75 } } })}\n\ndata: [DONE]\n\n`);
     })(); });
   });
   try {
@@ -641,12 +677,27 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     await capture(page, "desktop-busy-composer");
     release();
     await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
+    await page.locator(".ledger-assistant .message-markdown h2").filter({ hasText: "Markdown 验收" }).waitFor();
+    await page.locator(".ledger-assistant .message-markdown li").filter({ hasText: "会话列表项" }).waitFor();
+    await page.locator(".ledger-assistant .message-code-block code").filter({ hasText: "const rendered = true;" }).waitFor();
+    const cache = page.locator(".model-usage-trigger");
+    await cache.filter({ hasText: "缓存命中 75%" }).waitFor();
+    const composerBox = await page.locator(".composer-card").boundingBox(), cacheBox = await cache.boundingBox();
+    assert.ok(composerBox && cacheBox && cacheBox.x + cacheBox.width <= composerBox.x + composerBox.width + 1,
+      "cache summary is aligned to the lower-right edge of the composer");
+    await cache.click();
+    const usageDialog = page.getByRole("dialog", { name: "本会话模型用量", exact: true });
+    await usageDialog.waitFor();
+    assert.match(await usageDialog.innerText(), /缓存读取\s+75/u);
+    await capture(page, "desktop-model-usage");
+    await page.keyboard.press("Escape");
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
     await page.getByRole("button", { name: "执行工作区", exact: true }).click();
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
     await page.reload();
     await page.locator(".message-text").filter({ hasText: "这是一条本地验收回复。" }).waitFor();
+    await page.locator(".ledger-assistant .message-markdown h2").filter({ hasText: "Markdown 验收" }).waitFor();
     assert.equal(await page.locator(".ledger-assistant").count(), 1); assert.equal(requests, 1); assert.deepEqual(errors, []);
     await page.locator("#wish-composer").fill("将验收正文写入 approved.txt");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
@@ -670,21 +721,75 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     const terminal = await tmux.start({ sessionId: "browser-fixture", windowName: "observe", command: { executable: "/bin/cat", cwd: directory }, metadata: { workspaceRoot: directory, label: "Browser acceptance only" } });
     tmuxTarget = terminal.target;
     await tmux.send({ target: tmuxTarget, text: "TMUX_BROWSER_VERIFIED", enter: true });
-    await page.getByRole("button", { name: "tmux", exact: true }).click();
-    await page.getByRole("button", { name: "刷新状态", exact: true }).click();
-    await page.getByRole("button", { name: "刷新快照", exact: true }).click();
-    await page.locator(".terminal-output").filter({ hasText: "TMUX_BROWSER_VERIFIED" }).waitFor();
-    assert.ok((await page.locator(".terminal-attach").textContent()).includes("attach-session"));
-    await capture(page, "desktop-tmux");
     await page.getByRole("button", { name: "执行记录", exact: true }).click();
+    const sessionSidebar = page.getByRole("complementary", { name: "会话侧栏", exact: true });
+    await sessionSidebar.waitFor();
+    const rightResize = page.getByRole("separator", { name: "调整右侧栏宽度", exact: true });
+    const conversationBox = await page.locator(".conversation").boundingBox();
+    assert.ok(conversationBox);
+    const rightMax = Math.round(Math.min(conversationBox.width * 0.7, conversationBox.width - 400));
+    assert.equal(Number(await rightResize.getAttribute("aria-valuemax")), rightMax);
+    await rightResize.press("End");
+    assert.equal(Math.round((await sessionSidebar.boundingBox()).width), rightMax);
+    assert.ok((await page.locator(".conversation-main").boundingBox()).width >= 399, "right resize preserves the center minimum");
+    await rightResize.press("Home");
+    assert.equal(Math.round((await sessionSidebar.boundingBox()).width), 300);
+    await rightResize.press("ArrowLeft");
+    assert.equal(Math.round((await sessionSidebar.boundingBox()).width), 308);
+    await rightResize.press("ArrowRight");
+    const rightDefault = Math.round(conversationBox.width * 0.45);
+    await dragHorizontal(page, rightResize, -(rightDefault - 300));
+    assert.equal(Math.round((await sessionSidebar.boundingBox()).width), rightDefault);
+    const openTmux = sessionSidebar.getByRole("button", { name: "打开 tmux", exact: true });
+    await openTmux.waitFor();
+    assert.equal(await sessionSidebar.getByRole("button", { name: "刷新列表", exact: true }).count(), 0, "tmux stays unmounted until selected from the guide");
+    await openTmux.click();
+    await sessionSidebar.getByRole("button", { name: "刷新列表", exact: true }).click();
+    await page.locator(".terminal-output").filter({ hasText: "TMUX_BROWSER_VERIFIED" }).waitFor();
+    await tmux.send({ target: tmuxTarget, text: "TMUX_BROWSER_LIVE", enter: true });
+    await page.locator(".terminal-output").filter({ hasText: "TMUX_BROWSER_LIVE" }).waitFor({ timeout: 6000 });
+    assert.ok((await page.locator(".terminal-attach").textContent()).includes("attach-session"));
+    await sessionSidebar.getByRole("button", { name: "新标签页", exact: true }).click();
+    await openTmux.waitFor();
+    assert.equal(await sessionSidebar.getByRole("button", { name: "刷新列表", exact: true }).count(), 0, "the add control returns to the guide and unmounts tmux");
+    await openTmux.click();
+    await capture(page, "desktop-tmux");
+    const splitPane = sessionSidebar.getByRole("button", { name: "分屏", exact: true });
+    await splitPane.waitFor();
+    assert.equal(await splitPane.isDisabled(), true, "the dock must enter fullscreen before it can split");
+    assert.equal(await splitPane.getAttribute("title"), "请先全屏再分屏");
+    await sessionSidebar.getByRole("button", { name: "全屏", exact: true }).click();
+    const shellBox = await page.locator(".wish-shell").boundingBox(), fullscreenBox = await sessionSidebar.boundingBox();
+    assert.ok(shellBox && fullscreenBox && Math.abs(shellBox.x - fullscreenBox.x) < 1 && Math.abs(shellBox.y - fullscreenBox.y) < 1 && Math.abs(shellBox.width - fullscreenBox.width) < 1 && Math.abs(shellBox.height - fullscreenBox.height) < 1, "fullscreen dock covers the application viewport");
+    await page.waitForFunction(() => !document.querySelector('#session-sidebar button[aria-label="分屏"]')?.disabled);
+    assert.equal(await splitPane.isEnabled(), true);
+    await splitPane.click();
+    assert.equal(await sessionSidebar.locator(".session-dock-pane").count(), 2);
+    assert.equal(await sessionSidebar.getByRole("button", { name: "打开 tmux", exact: true }).count(), 1, "the new pane starts on the feature guide");
+    await capture(page, "desktop-tmux-split-fullscreen");
+    await sessionSidebar.getByRole("button", { name: "退出全屏", exact: true }).click();
+    assert.equal(await sessionSidebar.locator(".session-dock-pane").count(), 2, "exiting fullscreen preserves both resource panes");
+    await sessionSidebar.getByRole("button", { name: "打开 tmux", exact: true }).click();
     await page.locator(".ledger-tool summary").first().click();
     await page.locator("#wish-composer").fill("再检查一下失败恢复的处理");
+    await sessionSidebar.locator(".tmux-sidebar-toolbar [role=status]").filter({ hasText: "自动同步 ·" }).waitFor();
+    await sessionSidebar.getByRole("button", { name: "收起会话侧栏", exact: true }).click();
+    await sessionSidebar.waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "打开会话侧栏", exact: true }).click();
+    await sessionSidebar.waitFor();
     await capture(page, "desktop-ledger");
     await page.setViewportSize({ width: 1586, height: 992 });
     await capture(page, "comp-size-ledger");
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.locator(".app-header").count(), 0);
+    const openSessionSidebar = page.getByRole("button", { name: "打开会话侧栏", exact: true });
+    await openSessionSidebar.waitFor();
     await capture(page, "mobile-ledger");
+    await openSessionSidebar.click();
+    await sessionSidebar.waitFor();
+    await capture(page, "mobile-session-sidebar");
+    await sessionSidebar.getByRole("button", { name: "收起会话侧栏", exact: true }).click();
+    assert.equal(await openSessionSidebar.evaluate(node => node === document.activeElement), true);
     await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
     await capture(page, "mobile-navigation");
     await page.keyboard.press("Escape");
@@ -708,8 +813,15 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     await page.locator(".connection-state.online").waitFor();
     assert.equal(await page.locator(".connection-state").evaluate(node => getComputedStyle(node).backgroundColor), "rgb(22, 93, 204)");
     await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
-    await page.getByRole("button", { name: "tmux", exact: true }).waitFor();
+    assert.equal(await page.locator("#wish-sidebar").getByRole("button", { name: "tmux", exact: true }).count(), 0, "tmux no longer owns a workspace navigation entry");
     await page.keyboard.press("Escape");
+    await openSessionSidebar.click();
+    await sessionSidebar.getByRole("tab", { name: "tmux", exact: true }).waitFor();
+    await sessionSidebar.getByRole("button", { name: "停止并删除 Browser acceptance only", exact: true }).click();
+    await sessionSidebar.getByRole("button", { name: "确认停止并删除", exact: true }).click();
+    await sessionSidebar.getByText("当前 Workspace 没有保留的 tmux 终端。", { exact: true }).waitFor();
+    tmuxTarget = undefined;
+    await sessionSidebar.getByRole("button", { name: "收起会话侧栏", exact: true }).click();
     assert.equal(requests, 3, "reconnect must not replay a model or Tool request");
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator("#wish-composer").fill("查看 Skill 目录用于历史能力验收");

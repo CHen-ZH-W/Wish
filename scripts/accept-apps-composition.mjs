@@ -587,7 +587,7 @@ test("recovers one Context overflow by appending a Session checkpoint", async ()
 
     const first = await application.startRun({
       sessionId: "session-compact",
-      payload: { text: "old question" },
+      payload: { text: "old question", permissionProfile: "workspace-write" },
     });
     assert.equal((await first.completion).status, "completed");
     const second = await application.startRun({
@@ -602,7 +602,7 @@ test("recovers one Context overflow by appending a Session checkpoint", async ()
     assert.equal(permissionRequests.length, 2);
     assert.deepEqual(
       permissionRequests.map((request) => request.agent?.profile),
-      ["read-only", "read-only"],
+      ["workspace-write", "read-only"],
     );
     assert.deepEqual(permissionRequests[0].workspace, resolvedWorkspaces[0]);
     assert.deepEqual(permissionRequests[1].workspace, resolvedWorkspaces[1]);

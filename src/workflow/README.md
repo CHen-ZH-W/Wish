@@ -115,6 +115,10 @@ list/capture/send/stop/collect remain backed by Subagents throughout. Queueing
 returns a durable Workflow id; do not submit another child merely because it is queued.
 CLI `/review` and the WebUI Session Features panel expose the execution ledger and exact
 Attempt reconciliation controls. Direct host APIs remain usable without model Tools.
+Session deletion is fenced by active, resumable or outcome-uncertain Attempts. A quiescent
+`blocked` Run whose Attempts have already failed is retained in the ledger but does not make
+its owner Session permanently undeletable; retry remains explicit and the scheduler never
+restarts a blocked Run on its own.
 
 `WISH_WORKFLOW_ENABLED=0` disables the capability; `WISH_WORKFLOW_TOOLS_ENABLED=0` hides
 Workflow model controls only. Existing Subagent Tool exposure remains controlled by

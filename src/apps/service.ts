@@ -10,6 +10,8 @@ import {
   type WishHostConfiguration,
 } from "./config.js";
 import type { WishApplication, WishRuntimeRecovery } from "./types.js";
+import type { SessionPermissionProfilesPort } from "../permissions/index.js";
+import type { ModelCredentialResolver } from "../models/types.js";
 
 /** Application owns no Loader row settings; its inputs come from its services. */
 export interface Config {}
@@ -30,7 +32,10 @@ export interface ApplicationConfigurationOverrides {
   readonly modelsConfigurationPath?: string;
 }
 
-export interface ApplicationOpenInput extends ApplicationConfigurationOverrides {}
+export interface ApplicationOpenInput extends ApplicationConfigurationOverrides {
+  /** Host-only, generation-scoped resolver used by internal child processes. */
+  readonly modelCredential?: ModelCredentialResolver;
+}
 
 const EXECUTION_READY_TIMEOUT_MS = 30_000;
 
@@ -114,11 +119,16 @@ export class Application extends Service {
         reservedOutputTokens: configuration.reservedOutputTokens,
         keepRecentTokens: configuration.keepRecentTokens,
         summaryMaxOutputTokens: configuration.summaryMaxOutputTokens,
+        ...(input.modelCredential === undefined
+          ? {}
+          : { modelCredential: input.modelCredential }),
       });
+      const sessionPermissions = dynamicSessionPermissions(this.ctx);
       return guardApplication(new ApplicationFacade({
         sessionFeatures: this.features,
         sessions: resources.sessions,
         models: resources.models,
+        ...(sessionPermissions === undefined ? {} : { sessionPermissions }),
         agent: resources.agent,
         runGeneration: resources.generation,
         recovery,
@@ -154,6 +164,24 @@ export class Application extends Service {
       else if (this.ctx.get("agentLoop")) finish();
     });
   }
+}
+
+/** Optional for legacy embedders, but never retain a replaced service generation. */
+function dynamicSessionPermissions(ctx: Context): SessionPermissionProfilesPort | undefined {
+  if (ctx.get("sessionPermissions") === undefined) return undefined;
+  const current = (): SessionPermissionProfilesPort => {
+    const service = ctx.get("sessionPermissions");
+    if (service === undefined) throw new Error("Session permission profiles are temporarily unavailable");
+    return service.port;
+  };
+  const port: SessionPermissionProfilesPort = {
+    inspectDefault: () => current().inspectDefault(),
+    inspect: (sessionId, signal) => current().inspect(sessionId, signal),
+    initialize: (sessionId, profile, signal) => current().initialize(sessionId, profile, signal),
+    select: (sessionId, profile, signal) => current().select(sessionId, profile, signal),
+    forRun: (sessionId, signal) => current().forRun(sessionId, signal),
+  };
+  return Object.freeze(port);
 }
 
 /** Give every Loader config generation a distinct service-provider fiber. */

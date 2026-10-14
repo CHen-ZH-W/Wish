@@ -66,6 +66,7 @@ import StorageApprovalRules from
 import DefaultPermissions, {
   Config as PermissionsConfig,
 } from "../dist/permissions/providers/default.js";
+import SessionPermissions from "../dist/permissions/session-profiles.js";
 import LocalFilesystem, {
   Config as FilesystemConfig,
 } from "../dist/filesystem/providers/local.js";
@@ -285,9 +286,11 @@ test("stable Agent config updates replace the downstream Application generation"
       availableTools: ["read", "grep"],
       allowedCapabilities: ["filesystem.read"],
     });
+    await root.plugin(ModelPlugins.DeepSeekResponses);
     await root.plugin(ModelPlugins.OpenAIChatCompletions);
     await root.plugin(ModelPlugins.OpenAIResponses);
     await root.plugin(ModelPlugins.AnthropicMessages);
+    await root.plugin(SessionPermissions);
     await root.plugin(Application);
     const consumerFiber = await root.plugin(consumer);
     assert.equal(configurations.length, 1);
@@ -627,6 +630,8 @@ function webProfile({ port, dataDirectory, maxSteps = 32 }) {
 
     - id: models
       name: 'cordis:models'
+    - id: model-deepseek-responses
+      name: 'cordis:model-deepseek-responses'
     - id: model-openai-chat-completions
       name: 'cordis:model-openai-chat-completions'
     - id: model-openai-responses
@@ -666,6 +671,9 @@ function webProfile({ port, dataDirectory, maxSteps = 32 }) {
 
     - id: agents
       name: 'cordis:agents'
+
+    - id: session-permissions
+      name: 'cordis:session-permissions'
 
     - id: application
       name: 'cordis:application'

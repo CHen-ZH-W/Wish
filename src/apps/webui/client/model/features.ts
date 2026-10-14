@@ -35,8 +35,17 @@ export class FeaturesClientModel extends SnapshotStore<FeaturesSnapshot> {
     if (this.sessions.getSnapshot().sessions.find(item => item.sessionId === sessionId)?.status === "archived") throw new Error("会话已归档，请先取消归档");
     if (!state.views.some(item => item.key === view.key) || !view.actions.some(item => item.name === action)) throw new Error("操作已不可用");
     this.publish({ ...state, pending: true });
-    try { await this.connection.request(`/api/sessions/${encodeURIComponent(sessionId)}/features/${encodeURIComponent(view.key)}`, { action, token: view.token, ...(feedback ? { feedback } : {}) }); }
-    finally { this.publish({ ...this.getSnapshot(), pending: false }); await this.refresh(); }
+    try {
+      const { features } = await this.connection.request<{ features: readonly SessionFeatureView[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/features/${encodeURIComponent(view.key)}`, { action, token: view.token, ...(feedback ? { feedback } : {}) });
+      const selected = this.sessions.getSnapshot();
+      if (!this.closed && selected.available && selected.selectedId === sessionId && !selected.working) {
+        const archived = selected.sessions.find(item => item.sessionId === sessionId)?.status === "archived";
+        this.publish({ ...this.getSnapshot(), sessionId, views: archived ? features.map(item => ({ ...item, actions: [] })) : features, available: true, pending: false, error: null });
+      } else if (!this.closed) this.publish({ ...this.getSnapshot(), pending: false });
+    } catch (error) {
+      if (!this.closed) { this.publish({ ...this.getSnapshot(), pending: false }); await this.refresh(); }
+      throw error;
+    }
   };
   close(): void { this.closed = true; this.queue.close(); this.remove(); }
 }

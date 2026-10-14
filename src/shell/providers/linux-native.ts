@@ -24,6 +24,8 @@ import {
 import { ShellService } from "../service.js";
 import type {
   PreflightShellCommandRequest,
+  PrepareShellCommandRequest,
+  PreparedShellCommand,
   ResolveShellCommandRequest,
   RunShellCommandRequest,
   Shell,
@@ -117,17 +119,20 @@ export class LinuxNativeShellBackend implements Shell {
       this.options.defaultTimeoutSeconds,
       this.options.limits.maxTimeoutSeconds,
     );
-    const readPaths = await preflightScopes(
+    const fullAccess = request.context.permissions.profile === "full-access";
+    const readPaths = fullAccess ? Object.freeze([]) : await preflightScopes(
       request,
       this.filesystem,
       "filesystem.read",
     );
-    const writePaths = await preflightScopes(
+    const writePaths = fullAccess ? Object.freeze([]) : await preflightScopes(
       request,
       this.filesystem,
       "filesystem.write",
     );
-    const networkEnabled = resolveCapabilityNetwork(request.capabilities);
+    const networkEnabled = fullAccess
+      ? true
+      : resolveCapabilityNetwork(request.capabilities);
     throwIfAborted(request.signal);
     return Object.freeze({
       command,
@@ -175,6 +180,46 @@ export class LinuxNativeShellBackend implements Shell {
     if (typeof request.onData !== "function") {
       throw new ShellInvalidInputError("Shell onData must be a function");
     }
+    const prepared = await this.prepare({
+      spec: request.spec,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    let failure: unknown;
+    try {
+      return await spawnShellProcess({
+        executable: prepared.executable,
+        args: prepared.args,
+        cwd: prepared.cwd,
+        env: prepared.environment ?? process.env,
+        timeoutSeconds: request.spec.timeoutSeconds,
+        onData: request.onData,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+    } catch (error: unknown) {
+      failure = error;
+      throw error;
+    } finally {
+      try {
+        if (prepared.runtimeDirectory !== undefined) {
+          await rm(prepared.runtimeDirectory, { recursive: true, force: true });
+        }
+      } catch (cleanupError: unknown) {
+        if (failure === undefined) {
+          throw new ShellExecutionFailedError(
+            `Failed to clean Shell temporary directory: ${errorMessage(cleanupError)}`,
+            { cause: cleanupError },
+          );
+        }
+      }
+    }
+  }
+
+  async prepare(
+    request: PrepareShellCommandRequest,
+  ): Promise<PreparedShellCommand> {
+    if (request === null || typeof request !== "object") {
+      throw new ShellInvalidInputError("Shell prepare request must be an object");
+    }
     if (!this.resolved.delete(request.spec)) {
       throw new ShellPermissionDeniedError(
         "Shell command Spec was not resolved by this Provider or was already consumed",
@@ -188,74 +233,65 @@ export class LinuxNativeShellBackend implements Shell {
         "Shell command Spec belongs to another policy generation",
       );
     }
+    if (request.spec.context.permissions.profile === "full-access") {
+      return Object.freeze({
+        executable: "/bin/sh",
+        args: Object.freeze(["-lc", request.spec.command]),
+        cwd: request.spec.cwd,
+      });
+    }
 
     await assertLauncher(this.options.launcherPath);
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), "wish-shell-"));
-    let failure: unknown;
-    try {
-      const filesystemPolicy = this.filesystem.policy;
-      return await spawnShellProcess({
-        executable: this.options.launcherPath,
-        args: [
-          "--workspace",
-          request.spec.context.workspace.root,
-          ...request.spec.readPaths.flatMap((path) => ["--read-path", path]),
-          ...request.spec.writePaths.flatMap((path) => ["--write-path", path]),
-          "--network",
-          request.spec.networkEnabled ? "enabled" : "disabled",
-          ...filesystemPolicy.protectedDirectoryNames.flatMap((name) =>
-            ["--protect-name", name]
-          ),
-          ...filesystemPolicy.protectedFileNames.flatMap((name) =>
-            ["--protect-name", name]
-          ),
-          ...filesystemPolicy.protectedFilePrefixes.flatMap((prefix) =>
-            ["--protect-prefix", prefix]
-          ),
-          ...filesystemPolicy.protectedNameExceptions.flatMap((name) =>
-            ["--allow-protected-name", name]
-          ),
-          "--cwd",
-          request.spec.cwd,
-          "--tmp",
-          temporaryDirectory,
-          "--cpu-seconds",
-          `${Math.ceil(request.spec.timeoutSeconds) + 1}`,
-          "--max-processes",
-          `${this.policy.resourceLimits.maxProcesses}`,
-          "--max-open-files",
-          `${this.policy.resourceLimits.maxOpenFiles}`,
-          "--max-file-size-bytes",
-          `${this.policy.resourceLimits.maxFileSizeBytes}`,
-          "--max-memory-bytes",
-          `${this.policy.resourceLimits.maxMemoryBytes}`,
-          "--",
-          "/bin/sh",
-          "-lc",
-          request.spec.command,
-        ],
-        cwd: request.spec.context.workspace.root,
-        env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin" },
-        timeoutSeconds: request.spec.timeoutSeconds,
-        onData: request.onData,
-        ...(request.signal === undefined ? {} : { signal: request.signal }),
-      });
-    } catch (error: unknown) {
-      failure = error;
-      throw error;
-    } finally {
-      try {
-        await rm(temporaryDirectory, { recursive: true, force: true });
-      } catch (cleanupError: unknown) {
-        if (failure === undefined) {
-          throw new ShellExecutionFailedError(
-            `Failed to clean Shell temporary directory: ${errorMessage(cleanupError)}`,
-            { cause: cleanupError },
-          );
-        }
-      }
-    }
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "wish-shell-terminal-"));
+    const filesystemPolicy = this.filesystem.policy;
+    return Object.freeze({
+      executable: this.options.launcherPath,
+      args: Object.freeze([
+        "--workspace",
+        request.spec.context.workspace.root,
+        ...request.spec.readPaths.flatMap((path) => ["--read-path", path]),
+        ...request.spec.writePaths.flatMap((path) => ["--write-path", path]),
+        "--network",
+        request.spec.networkEnabled ? "enabled" : "disabled",
+        ...filesystemPolicy.protectedDirectoryNames.flatMap((name) =>
+          ["--protect-name", name]
+        ),
+        ...filesystemPolicy.protectedFileNames.flatMap((name) =>
+          ["--protect-name", name]
+        ),
+        ...filesystemPolicy.protectedFilePrefixes.flatMap((prefix) =>
+          ["--protect-prefix", prefix]
+        ),
+        ...filesystemPolicy.protectedNameExceptions.flatMap((name) =>
+          ["--allow-protected-name", name]
+        ),
+        "--cwd",
+        request.spec.cwd,
+        "--tmp",
+        runtimeDirectory,
+        "--cpu-seconds",
+        `${Math.ceil(request.spec.timeoutSeconds) + 1}`,
+        "--max-processes",
+        `${this.policy.resourceLimits.maxProcesses}`,
+        "--max-open-files",
+        `${this.policy.resourceLimits.maxOpenFiles}`,
+        "--max-file-size-bytes",
+        `${this.policy.resourceLimits.maxFileSizeBytes}`,
+        "--max-memory-bytes",
+        `${this.policy.resourceLimits.maxMemoryBytes}`,
+        "--",
+        "/bin/sh",
+        "-lc",
+        request.spec.command,
+      ]),
+      cwd: request.spec.context.workspace.root,
+      environment: Object.freeze({
+        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+      }),
+      runtimeDirectory,
+    });
   }
+
 }
 
 /** Cordis Provider for Landlock + seccomp constrained command execution. */
@@ -282,6 +318,10 @@ export class LinuxNativeShell extends ShellService {
 
   resolve(request: ResolveShellCommandRequest): Promise<ShellCommandSpec> {
     return this.work.run(() => this.backend.resolve(request));
+  }
+
+  prepare(request: PrepareShellCommandRequest): Promise<PreparedShellCommand> {
+    return this.work.run(() => this.backend.prepare(request));
   }
 
   run(request: RunShellCommandRequest): Promise<ShellExecutionResult> {
@@ -339,8 +379,8 @@ function createPolicy(
     backend: "linux-native" as const,
     filesystem: "path-scoped" as const,
     network: "per-call" as const,
-    environment: "clean" as const,
-    automaticPermissionProfiles: ["workspace-write" as const],
+    environment: "profile-scoped" as const,
+    automaticPermissionProfiles: ["workspace-write" as const, "full-access" as const],
     resourceLimits,
     filesystemPolicyVersion: filesystem.policy.version,
   };

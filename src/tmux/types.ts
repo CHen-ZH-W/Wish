@@ -8,6 +8,8 @@ export interface TmuxCommand {
   readonly cwd: string;
   /** Complete environment additions fixed for this workload. */
   readonly environment?: Readonly<Record<string, string>>;
+  /** Shell-owned scratch directory removed with this terminal. */
+  readonly runtimeDirectory?: string;
 }
 
 /** Metadata kept in tmux user options so live work remains discoverable. */
@@ -43,6 +45,8 @@ export interface TmuxSessionSnapshot {
   readonly metadata: TmuxSessionMetadata;
   readonly createdAt: string;
   readonly active: boolean;
+  /** Internal lifecycle metadata; never used as executable input. */
+  readonly runtimeDirectory?: string;
   readonly exitCode?: number;
   readonly currentCommand?: string;
   readonly panePid?: number;

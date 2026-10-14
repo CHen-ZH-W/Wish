@@ -3,7 +3,7 @@ import { useLanguage } from "../i18n.js";
 
 export interface ReadableSnapshot<T> { getSnapshot(): T; subscribe(listener: () => void): () => void }
 export function useSnapshot<T>(store: ReadableSnapshot<T>): T { return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot); }
-export function Icon({ name }: { name: "conversation" | "settings" | "gear" | "menu" | "plus" | "close" | "trace" | "more" | "archive" | "chevron" | "panel-open" | "panel-close" | "plug" | "book" | "model" | "folder" | "send" }) {
+export function Icon({ name }: { name: "conversation" | "settings" | "gear" | "menu" | "plus" | "close" | "trace" | "more" | "archive" | "chevron" | "panel-open" | "panel-close" | "panel-right-open" | "panel-right-close" | "split" | "fullscreen" | "fullscreen-exit" | "plug" | "book" | "model" | "folder" | "send" | "cube" | "terminal" | "tmux" }) {
   const paths = {
     conversation: "M4 4h16v12H9l-5 4V4m4 4h8M8 12h5",
     settings: "M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6",
@@ -20,8 +20,17 @@ export function Icon({ name }: { name: "conversation" | "settings" | "gear" | "m
     chevron: "m9 5 7 7-7 7",
     "panel-open": "M3 4h18v16H3zM9 4v16m4-11 3 3-3 3",
     "panel-close": "M3 4h18v16H3zM9 4v16m7-11-3 3 3 3",
+    "panel-right-open": "M3 4h18v16H3zM15 4v16M11 9l-3 3 3 3",
+    "panel-right-close": "M3 4h18v16H3zM15 4v16M8 9l3 3-3 3",
+    split: "M4 4h16v16H4zM12 4v16",
+    fullscreen: "M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5",
+    "fullscreen-exit": "M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5",
+    cube: "m12 3 7 4v10l-7 4-7-4V7l7-4zM5 7l7 4 7-4M12 11v10",
+    terminal: "M4 5h16v14H4zM7 9l3 3-3 3M12 15h5",
+    tmux: "M8 13H7V1H2C1.448 1 1 1.448 1 2V14C1 14.552 1.448 15 2 15H14C14.552 15 15 14.552 15 14V8H8V13ZM14 1H8V7H15V2C15 1.448 14.552 1 14 1Z",
   };
-  return <svg viewBox="0 0 24 24" aria-hidden="true" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
+  const filled = name === "tmux";
+  return <svg viewBox={filled ? "0 0 16 16" : "0 0 24 24"} aria-hidden="true" width="20" height="20" fill={filled ? "currentColor" : "none"} stroke={filled ? undefined : "currentColor"} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
 }
 const errorNames: Record<string, readonly [string, string]> = {
   management_revision_conflict: ["配置已被其他操作修改，界面正在重新同步，请再次确认。", "Configuration changed elsewhere. The page is resyncing; review and try again."],
@@ -47,6 +56,18 @@ const errorNames: Record<string, readonly [string, string]> = {
   directory_invalid_path: ["目录路径无效，请从列表中重新选择。", "Invalid folder path. Choose again from the list."],
   directory_unreadable: ["Host 无法读取这个目录。请选择其他文件夹，或检查目录权限。", "Host cannot read this folder. Choose another or check permissions."],
   directory_browser_unavailable: ["Host 当前没有提供目录浏览能力。请检查 WebUI 装配状态。", "Host folder browsing is unavailable. Check the WebUI configuration."],
+  workspace_files_invalid_path: ["文件路径无效，请从工作区列表重新选择。", "Invalid file path. Choose it again from the workspace listing."],
+  workspace_files_path_escape: ["文件路径超出了当前会话工作区。", "The file path escapes this Session workspace."],
+  workspace_files_protected_path: ["该路径受工作区策略保护，不能在 Files 中查看。", "This path is protected by the workspace policy and is unavailable in Files."],
+  workspace_files_symbolic_link: ["Files 不跟随符号链接。", "Files does not follow symbolic links."],
+  workspace_files_not_directory: ["所选路径不是目录。", "The selected path is not a directory."],
+  workspace_files_not_file: ["所选路径不是文件。", "The selected path is not a file."],
+  workspace_files_binary_file: ["这是二进制文件，当前只支持文本预览。", "This is a binary file; only text preview is currently supported."],
+  terminal_profile_requires_approval: ["“需要审批”不能创建持久终端；请改用只读或工作区可写。", "Approval-required cannot create a persistent terminal. Choose read-only or workspace-write."],
+  terminal_not_found: ["这个终端已不存在，请刷新列表。", "This terminal no longer exists. Refresh the list."],
+  terminal_not_active: ["这个终端已经退出。", "This terminal has already exited."],
+  terminal_invalid_input: ["终端输入或尺寸无效。", "Terminal input or dimensions are invalid."],
+  terminal_limit_reached: ["这个会话保留的用户终端已达到上限；请先关闭一个。", "This Session has reached its retained user-terminal limit. Close one first."],
   invalid_request: ["操作内容无效，请检查后重试。", "Invalid request. Check the details and try again."],
   "设置读取失败，连接恢复后会自动重试。": ["设置读取失败，连接恢复后会自动重试。", "Could not load settings. The page will retry when the connection returns."],
   "设置当前不可写": ["设置当前不可写", "Settings are currently read-only."],

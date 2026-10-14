@@ -22,9 +22,6 @@ import {
 import type {
   RuntimeReconciliationOutcome,
 } from "../../core/runtime/durability/types.js";
-import { ModelsConfigurationError } from "../../models/config.js";
-import { ModelReasoningSelectionError } from "../../models/session-reasoning.js";
-import { StorageConflictError } from "../../storage/errors.js";
 import type { ApprovalRuleStore } from "../../permissions/rules/types.js";
 import {
   SessionAlreadyExistsError,
@@ -41,12 +38,18 @@ import type {
   WishRunControl,
   WishRuntimeRecovery,
 } from "../types.js";
+import { WishApplicationRequestError } from "../errors.js";
 import type { WebToolApprovalBroker } from "./approval.js";
+import {
+  WebUiControlError,
+  type WebUiControlResolver,
+} from "./controls.js";
 import type {
   WishWebApprovalEvent,
   WishWebRunView,
 } from "./types.js";
 import { wishWebRunAccepted } from "./types.js";
+import type { WishWebUiAppearance } from "./appearance.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8790;
@@ -70,10 +73,14 @@ const WEB_ASSET_ROOT = new URL("./public/", import.meta.url);
 const WEB_CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self'",
-  "style-src 'self'",
-  "img-src 'self' data:",
+  // xterm's DOM renderer creates per-instance palette rules and inline
+  // contrast-adjusted glyph colors. Scripts remain strict self-only.
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
   "connect-src 'self'",
   "font-src 'self'",
+  "object-src 'self' blob:",
+  "frame-src 'self' blob:",
   "base-uri 'none'",
   "form-action 'self'",
   "frame-ancestors 'none'",
@@ -81,6 +88,8 @@ const WEB_CONTENT_SECURITY_POLICY = [
 
 export interface WishWebUiServerOptions {
   readonly application: WishApplication;
+  /** Optional domain controls; the HTTP adapter never interprets their payloads. */
+  readonly controls?: WebUiControlResolver;
   readonly approvals: WebToolApprovalBroker;
   /** Optional for standalone tests; product Cordis graphs always provide it. */
   readonly approvalRules?: ApprovalRuleStore;
@@ -114,12 +123,19 @@ export interface WishWebUiHandler {
 }
 
 /** Static resources belong to the process surface, not to an Application generation. */
-export async function serveWishWebUiAsset(request: IncomingMessage, response: ServerResponse): Promise<void> {
+export async function serveWishWebUiAsset(
+  request: IncomingMessage,
+  response: ServerResponse,
+  initialAppearance?: () => WishWebUiAppearance,
+): Promise<void> {
   const path = new URL(request.url ?? "/", "http://wish.local").pathname;
   const asset = WEB_ASSETS.get(path) ?? (/^\/assets\/(core|modules|chunks)\/[A-Za-z0-9_-]+-[A-Z0-9]{8}\.js$/.test(path)
     ? { file: path.slice("/assets/".length), contentType: "text/javascript; charset=utf-8" } : undefined);
   if ((request.method === "GET" || request.method === "HEAD") && asset) {
-    try { await sendWebAsset(response, asset, request.method === "HEAD"); }
+    try {
+      const appearance = asset.file === "index.html" ? initialAppearance?.() : undefined;
+      await sendWebAsset(response, asset, request.method === "HEAD", appearance);
+    }
     catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") sendJson(response, 404, { error: { code: "asset_not_found" } });
       else throw error;
@@ -129,6 +145,7 @@ export async function serveWishWebUiAsset(request: IncomingMessage, response: Se
 
 interface WebServerState {
   readonly application: WishApplication;
+  readonly controls?: WebUiControlResolver;
   readonly approvals: WebToolApprovalBroker;
   readonly approvalRules?: ApprovalRuleStore;
   readonly workspaceRoot: string;
@@ -167,6 +184,7 @@ export async function createWishWebUiHandler(
   const workspaceRoot = await requireDirectory(options.workspaceRoot);
   const state: WebServerState = {
     application: options.application,
+    ...(options.controls === undefined ? {} : { controls: options.controls }),
     approvals: options.approvals,
     ...(options.approvalRules === undefined
       ? {}
@@ -368,41 +386,51 @@ async function routeRequest(
       return;
     }
 
-    if (method === "GET" && url.pathname === "/api/model-reasoning/default") {
-      const selection = state.application.sessionReasoning;
-      if (selection === undefined) throw apiError(503, "model_reasoning_unavailable", "Session reasoning selection is unavailable");
-      sendJson(response, 200, { selection: selection.inspectDefault() });
+    const defaultControl = /^\/api\/controls\/([a-z][a-z0-9-]{0,79})\/default$/u.exec(url.pathname)?.[1];
+    if (method === "GET" && defaultControl !== undefined) {
+      const control = state.controls?.get(defaultControl);
+      if (!control?.inspectDefault) throw apiError(404, "control_not_found", "WebUI control is unavailable");
+      sendJson(response, 200, { value: await control.inspectDefault(state.application, operation.signal) });
       return;
     }
 
-    const sessionReasoning = matchRoute(url.pathname, /^\/api\/sessions\/([^/]+)\/model-reasoning$/u);
-    if (sessionReasoning !== undefined && (method === "GET" || method === "POST")) {
-      const session = await state.application.getSession({ sessionId: sessionReasoning, signal: operation.signal });
-      const selection = state.application.sessionReasoning;
-      if (selection === undefined) throw apiError(503, "model_reasoning_unavailable", "Session reasoning selection is unavailable");
-      const model = selection.defaultModel();
+    const sessionControl = /^\/api\/sessions\/([^/]+)\/controls\/([a-z][a-z0-9-]{0,79})$/u.exec(url.pathname);
+    if (sessionControl && (method === "GET" || method === "POST")) {
+      const sessionId = routeId(sessionControl[1]!);
+      const control = state.controls?.get(sessionControl[2]!);
+      const session = await state.application.getSession({ sessionId, signal: operation.signal });
       if (method === "GET") {
-        sendJson(response, 200, { selection: await selection.inspect(sessionReasoning, model, operation.signal) });
+        if (!control?.inspectSession) throw apiError(404, "control_not_found", "WebUI control is unavailable");
+        sendJson(response, 200, { value: await control.inspectSession(state.application, sessionId, operation.signal) });
         return;
       }
+      if (!control?.updateSession) throw apiError(404, "control_not_found", "WebUI control is unavailable");
       if (session.status !== "active") throw apiError(409, "session_archived", "Archived Session is read-only");
       const body = await readJsonObject(request, state.maxJsonBodyBytes);
-      requireOnlyKeys(body, ["model", "effort"]);
-      const submitted = optionalModelProperty(body, "model").model;
-      if (submitted === undefined || submitted.provider !== model.provider || submitted.model !== model.model) {
-        throw apiError(409, "model_selection_changed", "Default model changed; reload the reasoning choices");
-      }
-      const effort = body.effort;
-      if (effort !== null && effort !== "none" && effort !== "low" && effort !== "high" && effort !== "max") {
-        throw apiError(400, "invalid_reasoning_effort", "Reasoning effort must be none, low, high, max, or null");
-      }
-      try {
-        sendJson(response, 200, { selection: await selection.select(sessionReasoning, model, effort, operation.signal) });
-      } catch (error) {
-        if (error instanceof StorageConflictError) throw apiError(409, "model_selection_conflict", "Reasoning choice changed concurrently; reload and try again");
-        if (error instanceof ModelReasoningSelectionError) throw apiError(409, "model_reasoning_unsupported", "Selected model does not support this reasoning effort");
-        throw error;
-      }
+      sendJson(response, 200, { value: await control.updateSession(state.application, sessionId, body, operation.signal) });
+      return;
+    }
+
+    const sessionQuery = /^\/api\/sessions\/([^/]+)\/queries\/([a-z][a-z0-9-]{0,79})$/u.exec(url.pathname);
+    if (sessionQuery && method === "POST") {
+      const sessionId = routeId(sessionQuery[1]!);
+      const control = state.controls?.get(sessionQuery[2]!);
+      await state.application.getSession({ sessionId, signal: operation.signal });
+      if (!control?.querySession) throw apiError(404, "control_not_found", "WebUI query is unavailable");
+      const body = await readJsonObject(request, state.maxJsonBodyBytes);
+      sendJson(response, 200, { value: await control.querySession(state.application, sessionId, body, operation.signal) });
+      return;
+    }
+
+    const sessionStream = /^\/api\/sessions\/([^/]+)\/streams\/([a-z][a-z0-9-]{0,79})$/u.exec(url.pathname);
+    if (sessionStream && method === "GET") {
+      const sessionId = routeId(sessionStream[1]!);
+      const control = state.controls?.get(sessionStream[2]!);
+      const session = await state.application.getSession({ sessionId, signal: operation.signal });
+      if (!control?.streamSession) throw apiError(404, "control_stream_not_found", "WebUI control stream is unavailable");
+      if (session.status !== "active") throw apiError(409, "session_archived", "Archived Session is read-only");
+      const query = Object.freeze(Object.fromEntries(url.searchParams.entries()));
+      await streamControlEvents(state, request, response, signal => control.streamSession!(state.application, sessionId, query, signal), operation.signal);
       return;
     }
 
@@ -714,6 +742,48 @@ async function streamRunEvents(
   }
 }
 
+async function streamControlEvents(
+  state: WebServerState,
+  request: IncomingMessage,
+  response: ServerResponse,
+  create: (signal: AbortSignal) => AsyncIterable<{ readonly event: string; readonly data: unknown; readonly id?: string }>,
+  operation: AbortSignal,
+): Promise<void> {
+  const observer = new AbortController();
+  const stop = () => observer.abort("SSE control observer disconnected");
+  const abort = () => observer.abort(operation.reason);
+  request.once("aborted", stop); response.once("close", stop);
+  operation.addEventListener("abort", abort, { once: true });
+  if (operation.aborted) abort();
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-store",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+    "x-content-type-options": "nosniff",
+  });
+  request.socket.setKeepAlive(true);
+  const writer = new SseWriter(response);
+  await writer.write(sseEvent("stream.ready", {}));
+  const events = create(observer.signal);
+  const heartbeat = setInterval(() => { void writer.write(`: heartbeat ${Date.now()}\n\n`).catch(() => {}); }, state.heartbeatIntervalMs);
+  heartbeat.unref?.();
+  try {
+    for await (const frame of events) {
+      if (!/^[a-z][a-z0-9.-]{0,79}$/u.test(frame.event)) throw new Error("WebUI control stream emitted an invalid event name");
+      if (frame.id !== undefined && /[\r\n]/u.test(frame.id)) throw new Error("WebUI control stream emitted an invalid event id");
+      await writer.write(sseEvent(frame.event, frame.data, frame.id));
+    }
+  } catch (error) {
+    if (!observer.signal.aborted && !response.destroyed) await writer.write(streamErrorEvent(error));
+  } finally {
+    observer.abort("SSE control observer closed"); clearInterval(heartbeat);
+    request.off("aborted", stop); response.off("close", stop); operation.removeEventListener("abort", abort);
+    await writer.idle().catch(() => {});
+    if (!response.destroyed && !response.writableEnded) response.end();
+  }
+}
+
 class SseWriter {
   private tail = Promise.resolve();
 
@@ -967,6 +1037,10 @@ function booleanField(
 function matchRoute(path: string, pattern: RegExp): string | undefined {
   const value = pattern.exec(path)?.[1];
   if (value === undefined) return undefined;
+  return routeId(value);
+}
+
+function routeId(value: string): string {
   try {
     return requireText(decodeURIComponent(value), "Route id");
   } catch (error: unknown) {
@@ -990,8 +1064,12 @@ async function sendWebAsset(
   response: ServerResponse,
   asset: { readonly file: string; readonly contentType: string },
   headOnly: boolean,
+  appearance?: WishWebUiAppearance,
 ): Promise<void> {
-  const body = await readFile(new URL(asset.file, WEB_ASSET_ROOT));
+  const stored = await readFile(new URL(asset.file, WEB_ASSET_ROOT));
+  const body = appearance === undefined
+    ? stored
+    : Buffer.from(projectInitialAppearance(stored.toString("utf8"), appearance));
   response.writeHead(200, {
     "content-type": asset.contentType,
     "content-length": String(body.byteLength),
@@ -1002,6 +1080,13 @@ async function sendWebAsset(
     "x-content-type-options": "nosniff",
   });
   response.end(headOnly ? undefined : body);
+}
+
+function projectInitialAppearance(index: string, appearance: WishWebUiAppearance): string {
+  return index.replace(
+    '<html lang="zh-CN" data-theme="light" data-font-size="standard">',
+    `<html lang="${appearance.language}" data-theme="${appearance.theme}" data-font-size="${appearance.fontSize}">`,
+  );
 }
 
 function sendError(response: ServerResponse, error: unknown): void {
@@ -1021,6 +1106,8 @@ function sendError(response: ServerResponse, error: unknown): void {
 
 function mapError(error: unknown): WishWebApiError {
   if (error instanceof WishWebApiError) return error;
+  if (error instanceof WebUiControlError) return apiError(error.status, error.code, error.message);
+  if (error instanceof WishApplicationRequestError) return apiError(error.status, error.code, error.message);
   if (error instanceof Error && "code" in error && error.code === "session_busy") return apiError(409, "session_busy", error.message);
   if (error instanceof SessionNotFoundError) {
     return apiError(404, error.code, error.message);
@@ -1040,9 +1127,6 @@ function mapError(error: unknown): WishWebApiError {
     error instanceof SessionInvalidTranscriptError
   ) {
     return apiError(500, error.code, error.message);
-  }
-  if (error instanceof ModelsConfigurationError) {
-    return apiError(400, "invalid_model", error.message);
   }
   if (error instanceof RunGenerationRetiredError) {
     return apiError(503, error.code, error.message);

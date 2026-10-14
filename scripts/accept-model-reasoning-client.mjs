@@ -16,7 +16,7 @@ test("Models client selection follows Session and connection, without owning the
     const sessionId = path.split("/")[3];
     const selected = body ? body.effort ?? undefined : choices.get(sessionId);
     if (body) choices.set(sessionId, selected);
-    return { selection: {
+    return { value: {
       model: { provider: "deepseek", model: "deepseek-flash" },
       control: { format: "deepseek-chat", efforts: ["none", "low", "high", "max"], defaultEffort: "high" },
       ...(selected == null ? {} : { selected }),
@@ -48,7 +48,7 @@ test("Models client selection follows Session and connection, without owning the
     connection.publish({ online: true, businessAvailable: true, instanceId: "host-b", error: null });
     await reasoning.refresh();
     assert.equal(reasoning.getSnapshot().view.selected, "low");
-    assert.ok(requests.some(request => request.path.endsWith("/session-a/model-reasoning") && request.body?.effort === "low"));
+    assert.ok(requests.some(request => request.path.endsWith("/session-a/controls/model-reasoning") && request.body?.effort === "low"));
   } finally { reasoning.close(); }
 });
 
@@ -71,9 +71,9 @@ test("pre-Session reasoning is browser-local until the first message and resets 
   let modelName = "deepseek-flash";
   connection.request = async (path, body) => {
     requests.push({ path, body });
-    if (path === "/api/model-reasoning/default") return { selection: { model: { provider: "deepseek", model: modelName },
+    if (path === "/api/controls/model-reasoning/default") return { value: { model: { provider: "deepseek", model: modelName },
       control: { format: "deepseek-chat", efforts: ["none", "low", "high", "max"], defaultEffort: "high" } } };
-    if (path === "/api/sessions/new/model-reasoning") return { selection: { selected: body.effort } };
+    if (path === "/api/sessions/new/controls/model-reasoning") return { value: { selected: body.effort } };
     throw Error(`Unexpected ${path}`);
   };
   const reasoning = new NewSessionReasoningClientModel(connection, settings);
@@ -88,7 +88,7 @@ test("pre-Session reasoning is browser-local until the first message and resets 
     const prepare = reasoning.capture();
     assert.equal(typeof prepare, "function");
     await prepare("new");
-    assert.deepEqual(requests.at(-1), { path: "/api/sessions/new/model-reasoning", body: { model: { provider: "deepseek", model: "deepseek-flash" }, effort: "low" } });
+    assert.deepEqual(requests.at(-1), { path: "/api/sessions/new/controls/model-reasoning", body: { model: { provider: "deepseek", model: "deepseek-flash" }, effort: "low" } });
     reasoning.reset();
     assert.equal(reasoning.getSnapshot().selected, null, "a fresh new-Session intent starts from the model default");
     reasoning.select("low");

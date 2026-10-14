@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 
 import type { Agent } from "../core/agent/agent.js";
 import type { ModelRef } from "../core/model/model.js";
+import { ModelsConfigurationError } from "../models/config.js";
 import type { ModelDependencies } from "../models/runtime.js";
+import type { SessionPermissionProfilesPort } from "../permissions/index.js";
 import {
   SessionArchivedError,
   type SessionManager,
@@ -32,6 +34,7 @@ import type {
   WishRunPayload,
   WishRuntimeRecovery,
 } from "./types.js";
+import { WishApplicationRequestError } from "./errors.js";
 
 export type { ModelDependencies } from "../models/runtime.js";
 
@@ -48,6 +51,7 @@ export interface WishApplicationOptions {
   readonly sessions: SessionDependencies;
   readonly agent: Agent<WishAgentProtocol>;
   readonly models: ApplicationModelDependencies;
+  readonly sessionPermissions?: SessionPermissionProfilesPort;
   readonly runGeneration?: WishRunGeneration;
   /** Optional only for explicit standalone embedders without durable Runtime. */
   readonly recovery?: WishRuntimeRecovery;
@@ -56,7 +60,7 @@ export interface WishApplicationOptions {
 type WishRunPayloadWithSelectedModel = WishRunPayload & {
   readonly model: ModelRef;
 };
-type WishRunSelection = Pick<WishRunPayloadWithSelectedModel, "model" | "reasoningEffort">;
+type WishRunSelection = Pick<WishRunPayloadWithSelectedModel, "model" | "reasoningEffort" | "permissionProfile">;
 
 // Admission serialization, not canonical Run state. Shared facades over the same
 // Session manager must not delete between start validation and Run registration.
@@ -70,6 +74,7 @@ interface DefaultWishApplicationOptions {
   readonly agent: Agent<WishAgentProtocol>;
   readonly configuredModel: ApplicationModelDependencies["configuredModel"];
   readonly sessionReasoning?: NonNullable<ApplicationModelDependencies["sessionReasoning"]>;
+  readonly sessionPermissions?: SessionPermissionProfilesPort;
   readonly runGeneration?: WishRunGeneration;
   readonly recovery?: WishRuntimeRecovery;
 }
@@ -81,6 +86,7 @@ interface DefaultWishApplicationOptions {
 export class ApplicationFacade implements WishApplication {
   readonly sessionFeatures?: import("./session-features.js").SessionFeatures;
   readonly sessionReasoning?: NonNullable<ApplicationModelDependencies["sessionReasoning"]>;
+  readonly sessionPermissions?: SessionPermissionProfilesPort;
   readonly agentId: string;
   readonly runGeneration?: WishRunGeneration;
   readonly runtimeRecovery?: WishRuntimeRecovery;
@@ -91,6 +97,7 @@ export class ApplicationFacade implements WishApplication {
     requireApplicationOptions(options);
     if (options.sessionFeatures) this.sessionFeatures = options.sessionFeatures;
     if (options.models.sessionReasoning) this.sessionReasoning = options.models.sessionReasoning;
+    if (options.sessionPermissions) this.sessionPermissions = options.sessionPermissions;
     this.agentId = requireIdentifier(
       options.agent.definition.id,
       "Wish Agent id",
@@ -100,6 +107,7 @@ export class ApplicationFacade implements WishApplication {
       agent: options.agent,
       configuredModel: options.models.configuredModel,
       ...(options.models.sessionReasoning === undefined ? {} : { sessionReasoning: options.models.sessionReasoning }),
+      ...(options.sessionPermissions === undefined ? {} : { sessionPermissions: options.sessionPermissions }),
       ...(options.runGeneration === undefined
         ? {}
         : { runGeneration: options.runGeneration }),
@@ -117,13 +125,15 @@ export class ApplicationFacade implements WishApplication {
 
   async createSession(input: CreateWishSessionInput): Promise<Session> {
     throwIfAborted(input.signal);
-    return this.options.sessions.create({
+    const session = await this.options.sessions.create({
       sessionId: input.sessionId ?? randomUUID(),
       agentId: this.agentId,
       scope: normalizeDirectory(input.workspaceRoot, "Wish workspaceRoot"),
       ...(input.title === undefined ? {} : { title: input.title }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
+    await this.options.sessionPermissions?.initialize(session.sessionId, undefined, input.signal);
+    return session;
   }
 
   getSession(input: GetSessionInput): Promise<Session> {
@@ -215,15 +225,27 @@ export class ApplicationFacade implements WishApplication {
       input.signal,
     );
     throwIfAborted(input.signal);
-    const basePayload = normalizeRunPayload(
-      input.payload,
-      this.options.configuredModel,
-    );
-    const selectedEffort = input.payload.reasoningEffort ?? await this.options.sessionReasoning?.forRun(input.sessionId, basePayload.model, input.signal);
-    if (selectedEffort !== undefined && !this.options.configuredModel.getModelSpec(basePayload.model).reasoningControl?.efforts.includes(selectedEffort)) {
-      throw new Error("Selected model does not support this reasoning effort");
+    let basePayload: ReturnType<typeof normalizeRunPayload>;
+    let selectedEffort: WishRunPayload["reasoningEffort"];
+    let selectedPermission: WishRunPayload["permissionProfile"];
+    try {
+      basePayload = normalizeRunPayload(input.payload, this.options.configuredModel);
+      selectedEffort = input.payload.reasoningEffort ?? await this.options.sessionReasoning?.forRun(input.sessionId, basePayload.model, input.signal);
+      selectedPermission = await this.options.sessionPermissions?.forRun(input.sessionId, input.signal) ?? input.payload.permissionProfile;
+      if (selectedEffort !== undefined && !this.options.configuredModel.getModelSpec(basePayload.model).reasoningControl?.efforts.includes(selectedEffort)) {
+        throw new WishApplicationRequestError(400, "invalid_reasoning_effort", "Selected model does not support this reasoning effort");
+      }
+    } catch (error) {
+      if (error instanceof ModelsConfigurationError) {
+        throw new WishApplicationRequestError(400, "invalid_model", error.message);
+      }
+      throw error;
     }
-    const payload = Object.freeze({ ...basePayload, ...(selectedEffort === undefined ? {} : { reasoningEffort: selectedEffort }) });
+    const payload = Object.freeze({
+      ...basePayload,
+      ...(selectedEffort === undefined ? {} : { reasoningEffort: selectedEffort }),
+      ...(selectedPermission === undefined ? {} : { permissionProfile: selectedPermission }),
+    });
     await this.sessionFeatures?.beforeInput(input.sessionId, payload.text);
     const handle = this.options.agent.startRun({
       scope: session.sessionId,
@@ -232,7 +254,11 @@ export class ApplicationFacade implements WishApplication {
       ...(input.runId === undefined ? {} : { runId: input.runId }),
       ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
     });
-    this.selectionByRun.set(handle.runId, Object.freeze({ model: payload.model, ...(payload.reasoningEffort === undefined ? {} : { reasoningEffort: payload.reasoningEffort }) }));
+    this.selectionByRun.set(handle.runId, Object.freeze({
+      model: payload.model,
+      ...(payload.reasoningEffort === undefined ? {} : { reasoningEffort: payload.reasoningEffort }),
+      ...(payload.permissionProfile === undefined ? {} : { permissionProfile: payload.permissionProfile }),
+    }));
     const active = this.admissions().active;
     const pending = active.get(input.sessionId) ?? new Set<Promise<unknown>>();
     active.set(input.sessionId, pending); pending.add(handle.completion);
@@ -265,12 +291,16 @@ export class ApplicationFacade implements WishApplication {
     if (control.payload.reasoningEffort !== undefined && control.payload.reasoningEffort !== selected.reasoningEffort) {
       throw new Error("Wish follow-up cannot change the reasoning effort selected for its Run");
     }
+    if (control.payload.permissionProfile !== undefined && control.payload.permissionProfile !== selected.permissionProfile) {
+      throw new Error("Wish follow-up cannot change the permission profile selected for its Run");
+    }
     const normalized: WishRunControl = Object.freeze({
       ...control,
       payload: Object.freeze({
         text: requireUserText(control.payload.text, "Wish follow-up input"),
         model: selected.model,
         ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
+        ...(selected.permissionProfile === undefined ? {} : { permissionProfile: selected.permissionProfile }),
       }),
     });
     return this.options.agent.control(runId, normalized);

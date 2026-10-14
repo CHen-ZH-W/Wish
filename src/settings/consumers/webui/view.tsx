@@ -19,8 +19,20 @@ const appearanceEnglish: Record<string, { label: string; description?: string; o
 const composerEnglish: Record<string, { label: string; description?: string; options?: Record<string, string> }> = {
   "busy-delivery": { label: "Enter while running", description: "Queue adds another turn; Steer is delivered at the next Step without interrupting the current tool. Both actions remain available in the conversation.", options: { queue: "Queue", steer: "Steer" } },
 };
+const permissionsEnglish: Record<string, { label: string; description?: string; options?: Record<string, string> }> = {
+  "default-profile": {
+    label: "Default permission for new sessions",
+    description: "Only affects sessions created later. Full access disables workspace isolation and exposes Host files, network, and environment variables.",
+    options: {
+      "read-only": "Read only",
+      "approval-required": "Ask first",
+      "workspace-write": "Workspace write",
+      "full-access": "Full access (no isolation)",
+    },
+  },
+};
 
-export function SettingsPage({ model, connection, title = "通用设置", description = "选择后立即应用。", namespaces }: {
+export function SettingsPage({ model, connection, title = "通用设置", description = "各项设置按标注的生效范围应用。", namespaces }: {
   model: SettingsClientModel;
   connection: ReadableSnapshot<ConnectionSnapshot>;
   title?: string;
@@ -30,7 +42,7 @@ export function SettingsPage({ model, connection, title = "通用设置", descri
   const t = useText();
   const state = useSnapshot(model), online = useSnapshot(connection).online;
   const sections = namespaces === undefined ? state.sections : namespaces.flatMap(namespace => state.sections.filter(view => view.namespace === namespace));
-  return <section className="settings-page"><header className="page-heading"><div><h1>{title === "通用设置" ? t(title, "General settings") : title}</h1><p>{description === "选择后立即应用。" ? t(description, "Changes apply when selected.") : description}</p></div></header>
+  return <section className="settings-page"><header className="page-heading"><div><h1>{title === "通用设置" ? t(title, "General settings") : title}</h1><p>{description === "各项设置按标注的生效范围应用。" ? t(description, "Each setting follows the scope shown beside it.") : description}</p></div></header>
     <ErrorNotice text={state.error ? readableError(state.error) : null} />
     {!sections.length ? <p className="list-empty">{t("当前没有模块注册可编辑设置。", "No editable settings are registered.")}</p> : sections.map(view => <SectionEditor key={view.namespace} view={view} writable={state.writable && online && !state.pending} pending={state.pending} save={model.save} />)}
   </section>;
@@ -68,14 +80,14 @@ function SectionEditor({ view, writable, pending, save }: {
   const hasUnavailableChoice = fields.some(field => field.type === "enum" &&
     !field.options.some(option => settingOptionValue(option) === String(draft[field.key] ?? view.value[field.key])));
 
-  const sectionTitle = language === "en-US" ? view.namespace === "webui-appearance" ? "Appearance" : view.namespace === "webui-composer" ? "Message input" : view.title : view.title;
-  return <section className="settings-section"><header className="section-heading"><h2>{sectionTitle}</h2><span className="muted">{view.applies === "restart" ? t("重启后生效", "After restart") : view.applies === "next-request" ? t("下一次请求生效", "Next request") : t("立即生效", "Applies immediately")}</span></header>
+  const sectionTitle = language === "en-US" ? view.namespace === "webui-appearance" ? "Appearance" : view.namespace === "webui-composer" ? "Message input" : view.namespace === "permissions" ? "Permissions" : view.title : view.title;
+  return <section className="settings-section"><header className="section-heading"><h2>{sectionTitle}</h2><span className="muted">{view.applies === "restart" ? t("重启后生效", "After restart") : view.applies === "new-session" ? t("新会话生效", "New sessions") : view.applies === "next-request" ? t("下一次请求生效", "Next request") : t("立即生效", "Applies immediately")}</span></header>
     <ErrorNotice text={error} />
     {fields.map(field => {
       const value = draft[field.key] ?? view.value[field.key] ?? field.default;
       const unavailableChoice = field.type === "enum" && !field.options.some(option => settingOptionValue(option) === String(value));
       const id = `${view.namespace}-${field.key}`;
-      const english = language === "en-US" ? view.namespace === "webui-appearance" ? appearanceEnglish[field.key] : view.namespace === "webui-composer" ? composerEnglish[field.key] : undefined : undefined;
+      const english = language === "en-US" ? view.namespace === "webui-appearance" ? appearanceEnglish[field.key] : view.namespace === "webui-composer" ? composerEnglish[field.key] : view.namespace === "permissions" ? permissionsEnglish[field.key] : undefined : undefined;
       const update = (next: SettingValue) => { setDraft(current => ({ ...current, [field.key]: next })); setStatus(null); };
       const apply = (next: SettingValue) => { void commit({ ...draft, [field.key]: next }); };
       return <div className="setting-row" key={field.key}><div><label htmlFor={id}>{english?.label ?? field.label}</label>{field.description ? <p className="muted">{english?.description ?? field.description}</p> : null}</div><div className="setting-input">
@@ -94,6 +106,6 @@ function SectionEditor({ view, writable, pending, save }: {
       </div></div>;
     })}
     {hasUnavailableChoice ? <p className="setting-warning" role="status">{t("此前选择已不在当前配置中，请重新选择一个可用项。", "The previous choice is no longer available. Select another option.")}</p> : null}
-    <p className="setting-commit-status" role="status" aria-live="polite">{pending || status === "applying" ? t("正在应用…", "Applying…") : status === "restart" ? t("已记录，重启后生效", "Saved; takes effect after restart") : status === "applied" ? t("已应用", "Applied") : ""}</p>
+    <p className="setting-commit-status" role="status" aria-live="polite">{pending || status === "applying" ? t("正在应用…", "Applying…") : status === "restart" ? t("已记录，重启后生效", "Saved; takes effect after restart") : status === "applied" && view.applies === "new-session" ? t("已保存，将用于新会话", "Saved for new sessions") : status === "applied" ? t("已应用", "Applied") : ""}</p>
   </section>;
 }

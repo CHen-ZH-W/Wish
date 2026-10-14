@@ -30,6 +30,7 @@ import type {
   ContextInstruction,
 } from "../context/types.js";
 import type { AgentPermissionConfiguration } from "../permissions/index.js";
+import type { PermissionProfile, SessionPermissionProfilesPort } from "../permissions/index.js";
 import type {
   ArchiveSessionInput,
   RestoreSessionInput,
@@ -57,6 +58,8 @@ export interface WishRunPayload {
   readonly model?: ModelRef;
   /** Fixed at new-Run admission; follow-up and steering cannot change it. */
   readonly reasoningEffort?: ModelReasoningEffort;
+  /** Fixed at new-Run admission; later Session changes cannot alter this Run. */
+  readonly permissionProfile?: PermissionProfile;
   /** Runtime-produced continuation identity; never trusted without UserTurn provenance. */
   readonly continuation?: {
     readonly kind: "goal_round";
@@ -119,6 +122,7 @@ export interface WishRuntimeRecovery {
 export interface WishApplication {
   readonly sessionFeatures?: import("./session-features.js").SessionFeatures;
   readonly sessionReasoning?: SessionReasoningPort;
+  readonly sessionPermissions?: SessionPermissionProfilesPort;
   readonly agentId: AgentId;
   /** Lifecycle owner of Runs admitted by a Loader-managed graph generation. */
   readonly runGeneration?: WishRunGeneration;

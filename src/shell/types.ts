@@ -23,7 +23,8 @@ export interface ShellPolicy {
   readonly backend: ShellBackendKind;
   readonly filesystem: "none" | "path-scoped";
   readonly network: "none" | "per-call";
-  readonly environment: "clean" | "inherit";
+  /** Native profiles use a clean environment; full-access inherits the Host environment. */
+  readonly environment: "clean" | "inherit" | "profile-scoped";
   /** Profiles that may automatically dispatch process calls on this backend. */
   readonly automaticPermissionProfiles: readonly PermissionProfile[];
   readonly resourceLimits: ShellResourceLimits;
@@ -84,6 +85,25 @@ export interface RunShellCommandRequest {
   readonly signal?: AbortSignal;
 }
 
+/**
+ * Exact argv that may be handed to a trusted persistent-terminal Provider.
+ * The originating Shell Provider has already consumed and validated the
+ * one-shot command Spec; Consumers must not rewrite this launch description.
+ */
+export interface PreparedShellCommand {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly environment?: Readonly<Record<string, string>>;
+  /** Private scratch directory retained until the terminal is explicitly removed. */
+  readonly runtimeDirectory?: string;
+}
+
+export interface PrepareShellCommandRequest {
+  readonly spec: ShellCommandSpec;
+  readonly signal?: AbortSignal;
+}
+
 export interface ShellExecutionResult {
   readonly exitCode: number | null;
   readonly termination?: "timeout" | "aborted";
@@ -98,6 +118,10 @@ export interface Shell {
   ): Promise<ShellCommandPreflight>;
 
   resolve(request: ResolveShellCommandRequest): Promise<ShellCommandSpec>;
+
+  prepare(
+    request: PrepareShellCommandRequest,
+  ): Promise<PreparedShellCommand>;
 
   run(request: RunShellCommandRequest): Promise<ShellExecutionResult>;
 }

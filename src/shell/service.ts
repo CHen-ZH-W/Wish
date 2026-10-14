@@ -2,6 +2,8 @@ import { Service, type Context } from "@deepseek-ai/cordis";
 
 import type {
   ResolveShellCommandRequest,
+  PrepareShellCommandRequest,
+  PreparedShellCommand,
   RunShellCommandRequest,
   Shell,
   ShellCommandPreflight,
@@ -26,6 +28,10 @@ export abstract class ShellService extends Service implements Shell {
   abstract resolve(
     request: ResolveShellCommandRequest,
   ): Promise<ShellCommandSpec>;
+
+  abstract prepare(
+    request: PrepareShellCommandRequest,
+  ): Promise<PreparedShellCommand>;
 
   abstract run(request: RunShellCommandRequest): Promise<ShellExecutionResult>;
 }

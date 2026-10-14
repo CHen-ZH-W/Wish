@@ -18,7 +18,7 @@ Host API / events -> connection -> React-free Client Models
 - `projection/ledger.ts` 将规范 transcript 与 live 输出连接，规范记录优先，Tool 用 callId
   连接输入/输出，保留真实 runId/stepId 供步骤分组与模块关联。全部/工具/模块类别筛选只改变
   展示，不生成第二份可写任务状态；执行轨迹是同一事件源的另一种视图。
-- `slots.ts` 只管注册身份与 disposer：工作区/设置面板、导航、交互区域、状态提示、按 Tool name keyed
+- `slots.ts` 只管注册身份与 disposer：工作区/设置面板、导航、交互区域、通知、会话底部状态位、通用会话 ledger 贡献、按 Tool name keyed
   renderer、模块贡献的筛选类别及面板导航请求。未知或已卸载的 renderer 回退通用文本，保留
   历史。Host Tool Entry 可用状态独立绑定，未注册 renderer 不等于能力停用；断线时状态未知。
   面板可声明 `navigation: "rail"`，将入口贡献到最左侧全局导航而非当前区域的业务视图列表；
@@ -55,11 +55,17 @@ Host API / events -> connection -> React-free Client Models
   Workspace 注册表，Workspace 的规范身份与文件边界仍由 Host Workspace 能力所有。
 
 Settings 描述与 Client Model 位于 `src/settings`；审批 Client Model 和 UI 位于
-`src/approval`；Plan、Todo、Goal、Skills、Memory、Tasks、Workflow、Context、tmux、Subagents、Models
-各自贡献模块页面。Skills 声明全局左栏入口，并用自己的 React-free Client Model、目录侧栏
+`src/approval`；Plan、Todo、Goal、Skills、Memory、Tasks、Workflow、Context、Subagents、Models
+各自贡献模块页面。tmux 不占用独立工作区页面，而是作为模块功能贡献到当前会话的通用右侧栏。Skills 声明全局左栏入口，并用自己的 React-free Client Model、目录侧栏
 与正文视图替换默认会话导航；目录仍由当前 Session 的 Host Workspace 决定。Models 声明设置区入口并拥有自己的 React-free
 Client Model，连接公开 Settings 描述、按模型上下文覆盖与脱敏 Credentials 状态。密钥输入只写
 后立即从浏览器模型丢弃，快照永不持有原值。通用设置依次展示 WebUI 外观和 composer 命名空间；
+Models/Pricing 另以独立 Host gate 向会话右下角贡献累计缓存命中率；Conversation 只渲染
+通用 `sessionStatus` seat，不导入或解释 Models DTO。没有已完成 attempt 时该 seat 不占空间；
+详情中的“部分”表示 Provider 字段覆盖不完整，而不是把未知缓存量计为零。
+System Prompt 历史同样使用独立 Host gate，并通过通用 ledger contribution 把请求时只读快照
+放到会话时间线；Conversation 不导入提示词 DTO。首次有效快照和内容变化分别显示折叠行，
+正文只在展开时挂载；禁用 UI Consumer 只撤销展示，不删除后端历史。
 `theme.ts` 只把 Host Settings 快照投影为根元素的主题、语言和字号，不另存一份偏好事实。
 各模块 UI Consumer 提供自己的英文文案，Shell 不按模块 ID 翻译；会话正文和工作区文件保持原文。通用 SessionFeature UI
 只转发显示过的 token/action/feedback；过期确认必须重查。
@@ -69,9 +75,13 @@ Todo 模块只显示当前 UserTurn 的整表进度；Goal 模块显示持久 ph
 
 SessionFeature 的可选 `data` 是模块拥有的只读展示投影；Apps 只传递，不解释字段。
 Subagents UI 用真实子记录身份及 parentRunId 关联 `spawn_agent` 调用，行内展开任务、持久
-状态与终端快照；持久记录明确不代表实时进程状态。tmux UI 只列当前 Workspace 所属会话。
-两者都可显式刷新快照、查看采集时间和复制真实 attach 命令；不提供网页终端输入、启动或
-终止操作。历史 Tool 在 Host 入口确认不可用时标注并可前往插件管理，不删除历史正文。
+状态与终端快照；持久记录明确不代表实时进程状态。tmux UI 位于当前会话右侧栏，只列当前 Workspace 所属任务会话；侧栏仍由 Apps 提供通用功能容器，tmux 模块只拥有自己的 seat 与只读内容。
+任务观察可显式刷新快照、查看采集时间和复制真实 attach 命令，不提供网页输入、启动或终止。
+独立的 Workspace Files 模块通过只读 query control 浏览 Session workspace；独立的 User Terminal
+模块才提供懒加载 xterm 的逐键输入、启动、resize 与关闭，并在创建时由 Host 固化 Session 权限和 Shell sandbox；
+Files 使用单列可展开树；Terminal 通过有界 SSE attachment 接收原始 PTY 输出，输入和 resize 携带当前 attachment identity，
+后台 roster 核对不传画面、不切换 loading，也不重建 emulator，
+不把 tmux 观察入口升级成隐式执行 authority。历史 Tool 在 Host 入口确认不可用时标注并可前往插件管理，不删除历史正文。
 
 CSS/HTML 无内联执行；浏览器 bundle 不携带 Node Provider 或密钥。当前正文以安全纯文本显示，
 不加载远程内容。`client.js` 仅导入带版本的 core 入口；esbuild 的单一 ESM splitting 图共享

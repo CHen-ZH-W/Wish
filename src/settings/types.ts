@@ -39,7 +39,7 @@ export interface SettingsDefinition {
   readonly title: string;
   readonly fields: readonly SettingField[];
   readonly base?: SettingsSection;
-  readonly applies: "live" | "next-request" | "restart";
+  readonly applies: "live" | "next-request" | "new-session" | "restart";
   /** Owner-only cross-field validation, never serialized. Must be pure. */
   readonly validate?: (value: SettingsSection) => void;
 }

@@ -1,7 +1,12 @@
 import { SnapshotStore, freezeWire } from "./model/store.js";
 
 export interface ConnectionSnapshot { readonly online: boolean; readonly businessAvailable: boolean; readonly instanceId: string | null; readonly error: string | null }
-export class ClientApiError extends Error { constructor(readonly code: string, readonly status: number) { super(code); } }
+export class ClientApiError extends Error {
+  constructor(readonly code: string, readonly status: number, message = code) {
+    super(message);
+    this.name = "ClientApiError";
+  }
+}
 
 /** Owns transport, token and reconnect; not a Session, plugin or UI state store. */
 export class ClientConnection extends SnapshotStore<ConnectionSnapshot> {
@@ -87,7 +92,11 @@ export class ClientConnection extends SnapshotStore<ConnectionSnapshot> {
           ...(this.token ? { "X-Wish-Management-Token": this.token } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       const value = await response.json();
       if (this.closed) throw new ClientApiError("connection_closed", 503);
-      if (!response.ok) throw new ClientApiError(typeof value?.error?.code === "string" ? value.error.code : "request_failed", response.status);
+      if (!response.ok) {
+        const code = typeof value?.error?.code === "string" ? value.error.code : "request_failed";
+        const message = typeof value?.error?.message === "string" && value.error.message.trim() ? value.error.message : code;
+        throw new ClientApiError(code, response.status, message);
+      }
       return freezeWire(value) as T;
     } finally { clearTimeout(deadline); this.requests.delete(abort); }
   }

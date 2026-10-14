@@ -14,7 +14,7 @@ import WebToolGuidance from "../dist/web/guidance.js";
 import SubagentToolGuidance from
   "../dist/subagents/consumers/model-tools/guidance.js";
 
-test("base instructions stay stable and Agent additions follow them", async () => {
+test("base sections stay independently owned and assemble into one stable system instruction", async () => {
   const root = new Context();
   await root.plugin(SystemPrompt);
   await root.plugin(BaseSystemPrompt);
@@ -32,12 +32,12 @@ test("base instructions stay stable and Agent additions follow them", async () =
       "wish.output",
     ],
   );
-  assert.deepEqual(
-    instructions.map(({ role }) => role),
-    ["system", "system", "developer", "developer", "developer"],
-  );
+  assert.deepEqual(instructions.map(({ role }) => role), ["system"]);
   assert.match(instructions[0].content, /You are Wish/u);
-  assert.match(instructions[1].content, /Tool visibility, permissions/u);
+  assert.match(instructions[0].content, /Tool visibility, permissions/u);
+  assert.match(instructions[0].content, /Coding Agent behavior/u);
+  assert.match(instructions[0].content, /General Tool use/u);
+  assert.match(instructions[0].content, /Output style/u);
 
   await root.fiber.dispose();
 });
@@ -156,6 +156,24 @@ test("System Prompt assembles sections deterministically from final Tool names",
 
   await owner.dispose();
   assert.deepEqual(root.systemPrompt.assemble({ availableTools: ["read"] }), []);
+  await root.fiber.dispose();
+});
+
+test("stable assembly coalesces only adjacent sections with the same authority", async () => {
+  const root = new Context();
+  await root.plugin(SystemPrompt);
+  for (const section of [
+    { id: "system-a", content: "System A", authority: "system", order: 10 },
+    { id: "system-b", content: "System B", authority: "system", order: 20 },
+    { id: "developer", content: "Developer", authority: "developer", order: 30 },
+    { id: "system-c", content: "System C", authority: "system", order: 40 },
+  ]) root.systemPrompt.register(section);
+
+  assert.deepEqual(root.systemPrompt.assembleInstructions({ availableTools: [] }), [
+    { role: "system", content: "System A\n\nSystem B" },
+    { role: "developer", content: "Developer" },
+    { role: "system", content: "System C" },
+  ]);
   await root.fiber.dispose();
 });
 

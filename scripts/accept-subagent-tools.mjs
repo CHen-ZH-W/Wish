@@ -242,9 +242,9 @@ test("the stable dispatch port switches committed scheduler strategies without r
   } finally { await root.fiber.dispose(); }
 });
 
-test("Subagent result relay holds the parent and injects one structured follow-up", async () => {
+test("Subagent result relay holds the parent and resumes it with one internal result", async () => {
   let released = 0;
-  const followUps = [];
+  const resumptions = [];
   let listener;
   const relay = new SubagentResultRelay({
     subagents: {
@@ -262,8 +262,8 @@ test("Subagent result relay holds the parent and injects one structured follow-u
         assert.match(reason, /reviewer result/u);
         return { reason, release() { released += 1; } };
       },
-      followUp(input) {
-        followUps.push(input);
+      resume(input) {
+        resumptions.push(input);
         return { accepted: true };
       },
     },
@@ -290,17 +290,17 @@ test("Subagent result relay holds the parent and injects one structured follow-u
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   assert.equal(released, 1);
-  assert.equal(followUps.length, 1);
-  assert.equal(followUps[0].source, "wish-subagent-result");
-  assert.equal(followUps[0].reserveCapacity, true);
-  assert.match(followUps[0].text, /review found no issues/u);
-  assert.match(followUps[0].text, /wish-child-1:reviewer\.0/u);
+  assert.equal(resumptions.length, 1);
+  assert.equal(resumptions[0].source, "wish-subagent-result");
+  assert.equal(resumptions[0].reserveCapacity, true);
+  assert.match(resumptions[0].text, /review found no issues/u);
+  assert.match(resumptions[0].text, /wish-child-1:reviewer\.0/u);
   await relay.close();
 });
 
 test("Subagent result relay reports subscription failure before releasing its hold", async () => {
   let released = 0;
-  const followUps = [];
+  const resumptions = [];
   const relay = new SubagentResultRelay({
     subagents: {
       subscribe() { throw new Error("event source unavailable"); },
@@ -313,8 +313,8 @@ test("Subagent result relay reports subscription failure before releasing its ho
       deferCompletion(reason) {
         return { reason, release() { released += 1; } };
       },
-      followUp(input) {
-        followUps.push(input);
+      resume(input) {
+        resumptions.push(input);
         return { accepted: true };
       },
     },
@@ -324,9 +324,9 @@ test("Subagent result relay reports subscription failure before releasing its ho
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   assert.equal(released, 1);
-  assert.equal(followUps.length, 1);
-  assert.equal(followUps[0].source, "wish-subagent-result");
-  assert.match(followUps[0].text, /event source unavailable/u);
-  assert.match(followUps[0].text, /wish-child-1:reviewer\.0/u);
+  assert.equal(resumptions.length, 1);
+  assert.equal(resumptions[0].source, "wish-subagent-result");
+  assert.match(resumptions[0].text, /event source unavailable/u);
+  assert.match(resumptions[0].text, /wish-child-1:reviewer\.0/u);
   await relay.close();
 });

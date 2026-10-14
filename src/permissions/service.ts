@@ -14,12 +14,14 @@ import type {
   PermissionPolicyRegistration,
   PermissionPolicySnapshot,
   PermissionSnapshot,
+  PermissionProfile,
   ResolvePermissionRequest,
 } from "./types.js";
 
 /** Service Definition implemented by replaceable permission-policy providers. */
 export abstract class PermissionsService extends Service
   implements PermissionAuthority {
+  declare readonly defaultProfile?: PermissionProfile;
   private readonly policyContributions = new Map<
     string,
     PermissionPolicyContribution

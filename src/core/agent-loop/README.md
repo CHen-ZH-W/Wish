@@ -59,9 +59,10 @@ AgentLoop 单 Step：
 的 assistant 输出和新 steer。
 
 `AgentLoopMemory.currentInputSource` 随当前输入跨 Step 保留；steer 更新当前索引和来源。
-初始来源来自 Runtime 的 `UserTurn.inputSource`，自动 follow-up 由 Runtime 标记为
-`follow_up`。缺失来源的旧 memory 仍为 `unknown`，不会根据 payload、user role 或历史
-文本补认人类身份。该信息仅用于只读请求视图，不是工具执行授权。
+初始来源来自 Runtime 的 `UserTurn.inputSource`；排队输入由 Runtime 标记为 `follow_up`，
+异步 Host 结果标记为 `continuation`。缺失来源的旧 memory 仍为 `unknown`，不会根据
+payload、user role 或历史文本补认人类身份。该信息仅用于只读请求视图和展示归类，
+不是工具执行授权。
 
 ## 明确的外部缺口
 

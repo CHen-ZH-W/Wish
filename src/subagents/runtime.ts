@@ -195,6 +195,7 @@ export class SubagentRuntime implements Subagents {
           ...(session.exitCode === undefined ? {} : { exitCode: session.exitCode }),
         });
         await this.store.replace(record, input.signal);
+        if (!session.active) await this.cleanupLaunchSecrets(record);
         this.publish(record);
         if (isLive(record)) this.monitor(record.id);
         return record;
@@ -294,6 +295,7 @@ export class SubagentRuntime implements Subagents {
       if (record.target !== undefined) {
         await this.execution.stop(record.target, request.signal);
       }
+      await this.cleanupLaunchSecrets(record);
       const stopped = Object.freeze({
         ...record,
         status: "stopped" as const,
@@ -409,6 +411,9 @@ export class SubagentRuntime implements Subagents {
       ) throw new Error(`Subagent result identity does not match ${record.id}`);
       next = Object.freeze({ ...next, result, updatedAt: this.timestamp() });
     }
+    if (!isLive(next) || next.result !== undefined) {
+      await this.cleanupLaunchSecrets(next);
+    }
     if (next === record) return record;
     await this.store.replace(next, signal);
     this.publish(next);
@@ -463,6 +468,14 @@ export class SubagentRuntime implements Subagents {
         // Diagnostic observers never change lifecycle decisions.
       }
     }
+  }
+
+  private cleanupLaunchSecrets(record: SubagentRecord): Promise<void> {
+    return Promise.resolve(this.launcher.cleanupLaunchSecrets?.({
+      id: record.id,
+      childSessionId: record.childSessionId,
+      childRunId: record.childRunId,
+    }));
   }
 
   private serial<Value>(operation: () => Promise<Value>): Promise<Value> {
@@ -695,6 +708,13 @@ export class SubagentsRuntimeService extends SubagentsService {
             const launcher = ctx.get("subagentLauncher");
             if (!launcher) throw new Error("Subagent launch capability is unavailable");
             return launcher.resolve(request, identity);
+          },
+          cleanupLaunchSecrets: (identity) => {
+            const launcher = ctx.get("subagentLauncher");
+            const cleanup = launcher?.cleanupLaunchSecrets;
+            return typeof cleanup === "function"
+              ? cleanup.call(launcher, identity)
+              : undefined;
           },
         },
         results: {

@@ -594,7 +594,7 @@ function freezeMemory(memory: AgentLoopMemory): AgentLoopMemory {
 function validateInputSource(source: AgentLoopInputSource): AgentLoopInputSource {
   if (
     source !== "user" && source !== "steering" &&
-    source !== "follow_up" && source !== "unknown"
+    source !== "follow_up" && source !== "continuation" && source !== "unknown"
   ) throw new Error("Unknown AgentLoop input source");
   return source;
 }

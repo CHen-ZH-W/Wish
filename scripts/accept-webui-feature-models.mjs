@@ -11,13 +11,18 @@ class Sessions extends SnapshotStore {
 test("feature actions carry the displayed token, reject changed session, and close their admission", async () => {
   const sessions = new Sessions({ selectedId: "one", available: true });
   const view = { key: "custom-feature", title: "Custom", text: "v1", token: { version: 1 }, actions: [{ name: "keep", label: "Keep" }] };
-  const requests = [], connection = { async request(path, body) { if (body) requests.push({ path, body }); return { features: [view] }; } };
+  const updated = { ...view, text: "v2", token: { version: 2 } };
+  const requests = [], connection = { async request(path, body) { requests.push({ path, body }); return { features: [body ? updated : view] }; } };
   const model = new FeaturesClientModel(connection, sessions);
-  await model.refresh(); await model.act("one", view, "keep", "feedback");
-  assert.deepEqual(requests[0].body, { token: { version: 1 }, action: "keep", feedback: "feedback" });
+  await model.refresh(); const beforeAction = requests.length;
+  await model.act("one", view, "keep", "feedback");
+  assert.equal(requests.length, beforeAction + 1, "a successful action adopts its response without a duplicate GET");
+  assert.deepEqual(requests.at(-1).body, { token: { version: 1 }, action: "keep", feedback: "feedback" });
+  assert.equal(model.getSnapshot().views[0].text, "v2");
   sessions.update({ selectedId: "two", available: true }); await model.refresh();
-  await assert.rejects(model.act("one", view, "keep", "")); assert.equal(requests.length, 1);
-  model.close(); await assert.rejects(model.act("two", view, "keep", "")); assert.equal(requests.length, 1);
+  const afterSelection = requests.length;
+  await assert.rejects(model.act("one", view, "keep", "")); assert.equal(requests.length, afterSelection);
+  model.close(); await assert.rejects(model.act("two", view, "keep", "")); assert.equal(requests.length, afterSelection);
 });
 test("approval model cannot approve another selected Run or submit after owner removal", async () => {
   const sessions = new Sessions({ selectedId: "one", available: true, runs: [{ runId: "r", status: "running" }] });

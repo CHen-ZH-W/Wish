@@ -19,15 +19,15 @@ test("product graph persists a Session reasoning choice across Host restart", { 
     booted = await start();
     const sessions = booted.surfaceContext.get("sessions").manager;
     let url = booted.context.get("webManagementHost").url;
-    let response = await fetch(url + "/api/model-reasoning/default");
+    let response = await fetch(url + "/api/controls/model-reasoning/default");
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).selection.model.model, "deepseek-flash");
+    assert.equal((await response.json()).value.model.model, "deepseek-flash");
     assert.equal((await sessions.list()).length, 0, "pre-Session capability discovery does not create a Session");
     await sessions.create({ sessionId: "reasoning-session", agentId: booted.surfaceContext.get("agents").agentId, scope: directory });
-    const path = "/api/sessions/reasoning-session/model-reasoning";
+    const path = "/api/sessions/reasoning-session/controls/model-reasoning";
     response = await fetch(url + path);
     assert.equal(response.status, 200);
-    const first = (await response.json()).selection;
+    const first = (await response.json()).value;
     assert.equal(first.model.model, "deepseek-flash");
     assert.deepEqual(first.control.efforts, ["none", "low", "high", "max"]);
     const bootstrapResponse = await fetch(url + "/api/management/bootstrap");
@@ -35,13 +35,13 @@ test("product graph persists a Session reasoning choice across Host restart", { 
     response = await fetch(url + path, { method: "POST", headers: { "content-type": "application/json", "x-wish-management-token": token },
       body: JSON.stringify({ model: first.model, effort: "low" }) });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).selection.selected, "low");
+    assert.equal((await response.json()).value.selected, "low");
     await booted.dispose(); booted = undefined;
     booted = await start();
     url = booted.context.get("webManagementHost").url;
     response = await fetch(url + path);
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).selection.selected, "low");
+    assert.equal((await response.json()).value.selected, "low");
   } finally {
     await booted?.dispose();
     await rm(directory, { recursive: true, force: true });

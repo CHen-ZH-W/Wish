@@ -28,6 +28,10 @@
       "types": "./dist/system-prompt/consumers/base.d.ts",
       "import": "./dist/system-prompt/consumers/base.js"
     },
+    "./system-prompt/history": {
+      "types": "./dist/system-prompt/history/types.d.ts",
+      "import": "./dist/system-prompt/history/types.js"
+    },
     "./skills": {
       "types": "./dist/skills/index.d.ts",
       "import": "./dist/skills/index.js"
@@ -380,6 +384,10 @@
       "types": "./dist/models/providers/openai-compatible.d.ts",
       "import": "./dist/models/providers/openai-compatible.js"
     },
+    "./models/providers/deepseek-responses": {
+      "types": "./dist/models/providers/deepseek-responses.d.ts",
+      "import": "./dist/models/providers/deepseek-responses.js"
+    },
     "./models/providers/openai-responses": {
       "types": "./dist/models/providers/openai-responses.d.ts",
       "import": "./dist/models/providers/openai-responses.js"
@@ -693,7 +701,7 @@
     "test:context-request-view": "npm run build && node scripts/accept-context-request-view.mjs",
     "test:workspace": "npm run build && node scripts/accept-workspace-contract.mjs && node scripts/accept-workspace-directory-picker.mjs",
     "test:permissions": "npm run build && npm run test:permissions:built",
-    "test:permissions:built": "node scripts/accept-approval-hub.mjs && node scripts/accept-permissions.mjs",
+    "test:permissions:built": "node scripts/accept-approval-hub.mjs && node scripts/accept-permissions.mjs && node scripts/accept-session-permissions.mjs && node scripts/accept-permission-profile-client.mjs",
     "test:permission-policies": "npm run build && node scripts/accept-permission-policies.mjs",
     "test:plan": "npm run build && node scripts/accept-plan.mjs && node scripts/accept-plan-review.mjs",
     "test:todo": "npm run build && node scripts/accept-todo.mjs",
@@ -708,8 +716,12 @@
     "test:shell": "npm run build && node scripts/accept-shell.mjs && node scripts/accept-basic-tool-bash.mjs",
     "test:module-boundaries": "npm run build && node scripts/accept-module-boundaries.mjs",
     "test:shell:tmux-real": "npm run build && node scripts/accept-shell-tmux-real.mjs",
-    "test:tmux": "npm run build && node scripts/accept-tmux.mjs",
+    "test:tmux": "npm run build && node scripts/accept-tmux.mjs && node scripts/accept-tmux-tools.mjs",
     "test:tmux:real": "npm run build && node scripts/accept-tmux-real.mjs",
+    "test:tmux:tools-real": "npm run build && node scripts/accept-tmux-tools-real.mjs",
+    "test:user-terminal": "npm run build && node scripts/accept-user-terminal-client-model.mjs && node scripts/accept-workspace-sidebar-capabilities.mjs && node scripts/accept-user-terminal-real.mjs && node scripts/accept-user-terminal-browser.mjs",
+    "test:user-terminal:http": "npm run build && node scripts/accept-workspace-sidebar-http.mjs",
+    "test:user-terminal:browser": "npm run build && node scripts/accept-user-terminal-browser.mjs",
     "test:subagents": "npm run build && node scripts/accept-subagents.mjs",
     "test:state-handoff": "npm run build && node scripts/accept-state-handoff.mjs",
     "test:state-handoff:real": "npm run build && node scripts/accept-state-handoff-real.mjs",
@@ -745,9 +757,10 @@
     "test:webui-code-modules": "npm run build && node scripts/accept-webui-code-modules.mjs",
     "test:webui-code-reload:browser": "npm run build && node scripts/accept-webui-code-reload-browser.mjs",
     "test:webui-next": "npm run build && npm run test:webui-next:built",
-    "test:webui-next:built": "node scripts/accept-settings.mjs && node scripts/accept-credentials.mjs && node scripts/accept-plugin-managed-store.mjs && node scripts/accept-plugin-managed-control.mjs && node scripts/accept-managed-config.mjs && node scripts/accept-managed-config-webui.mjs && node scripts/accept-managed-code-reload.mjs && node scripts/accept-webui-management.mjs && node scripts/accept-managed-boot.mjs && node scripts/accept-managed-skills.mjs && node scripts/accept-webui-client-models.mjs && node scripts/accept-webui-code-modules.mjs && node scripts/accept-webui-session-models.mjs && node scripts/accept-webui-new-session.mjs && node scripts/accept-webui-directory-browser.mjs && node scripts/accept-webui-feature-models.mjs && node scripts/accept-webui-observation.mjs && node scripts/accept-plan-review.mjs",
+    "test:webui-next:built": "node scripts/accept-settings.mjs && node scripts/accept-credentials.mjs && node scripts/accept-plugin-managed-store.mjs && node scripts/accept-plugin-managed-control.mjs && node scripts/accept-managed-config.mjs && node scripts/accept-managed-config-webui.mjs && node scripts/accept-managed-code-reload.mjs && node scripts/accept-webui-management.mjs && node scripts/accept-managed-boot.mjs && node scripts/accept-managed-skills.mjs && node scripts/accept-webui-client-models.mjs && node scripts/accept-user-terminal-client-model.mjs && node scripts/accept-webui-code-modules.mjs && node scripts/accept-webui-session-models.mjs && node scripts/accept-webui-markdown.mjs && node scripts/accept-webui-new-session.mjs && node scripts/accept-webui-directory-browser.mjs && node scripts/accept-webui-feature-models.mjs && node scripts/accept-webui-observation.mjs && node scripts/accept-plan-review.mjs",
+    "test:webui-markdown": "npm run build && node scripts/accept-webui-markdown.mjs",
     "test:webui-next:browser": "npm run build && node scripts/accept-webui-next-browser.mjs",
-    "posttest": "node scripts/accept-model-pricing-ledger.mjs && npm run test:webui-next:built && node scripts/accept-model-session-reasoning.mjs && node scripts/accept-model-reasoning-client.mjs && node scripts/accept-model-reasoning-product.mjs && npm run test:plugin-adaptation:built",
+    "posttest": "node scripts/accept-model-pricing-ledger.mjs && node scripts/accept-model-usage-webui.mjs && node scripts/accept-system-prompt-history.mjs && npm run test:webui-next:built && node scripts/accept-model-session-reasoning.mjs && node scripts/accept-model-reasoning-client.mjs && node scripts/accept-model-reasoning-product.mjs && npm run test:plugin-adaptation:built",
     "test:app-plugin-config": "npm run build && node scripts/accept-app-plugin-config.mjs",
     "test:cordis-lifecycle": "npm run build && node scripts/accept-cordis-lifecycle.mjs && node scripts/accept-app-plugin-config.mjs && node scripts/accept-apps-webui.mjs",
     "test:cordis-tools": "npm run build && node scripts/accept-cordis-tools.mjs && node scripts/accept-apps-composition.mjs",
@@ -777,7 +790,7 @@
     "test:model-composition": "npm run build && node scripts/accept-model-composition.mjs",
     "test:model-catalog": "npm run build && node scripts/accept-model-catalog.mjs",
     "test:context": "npm run build && node scripts/accept-context.mjs && node scripts/accept-context-request-view.mjs && node scripts/accept-context-dynamic-providers.mjs && node scripts/accept-system-prompt.mjs",
-    "test:system-prompt": "npm run build && node scripts/accept-system-prompt.mjs",
+    "test:system-prompt": "npm run build && node scripts/accept-system-prompt.mjs && node scripts/accept-system-prompt-history.mjs",
     "test:context-history": "npm run build && node scripts/accept-context-history.mjs",
     "test:context-providers": "npm run build && node scripts/accept-context-providers.mjs",
     "test:context-tool-results": "npm run build && node scripts/accept-context-tool-results.mjs",
@@ -828,9 +841,15 @@
     "@deepseek-ai/cordis-plugin-logger-console": "1.0.2",
     "@deepseek-ai/cordis-plugin-timer": "1.1.4",
     "@deepseek-ai/schemastery": "3.18.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^6.0.0",
     "diff": "^8.0.3",
+    "fflate": "^0.8.3",
     "js-yaml": "4.3.2",
     "node-addon-require-builtin": "0.1.4",
+    "node-pty": "^1.2.0-beta.15",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   }

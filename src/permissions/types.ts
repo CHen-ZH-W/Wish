@@ -147,6 +147,8 @@ export interface PermissionResolver {
 /** Complete policy capability consumed by the AgentLoop composition. */
 export interface PermissionAuthority extends PermissionResolver,
   ToolAuthorizationService<PermissionExecutionContext> {
+  /** Deployment fallback used when an Agent does not select a profile. */
+  readonly defaultProfile?: PermissionProfile;
   registerPolicy(
     contribution: PermissionPolicyContribution,
   ): PermissionPolicyRegistration;

@@ -9,7 +9,10 @@ export interface ContextObservation {
   readonly messages: readonly { readonly index: number; readonly role: string; readonly chars: number; readonly toolNames: readonly string[] }[];
   readonly tools: readonly string[]; readonly budget: ContextProjection["budget"];
 }
-export type ContextObservationListener = (input: ContextInput, projection: ContextProjection) => void;
+export type ContextObservationListener = (
+  input: ContextInput,
+  projection: ContextProjection,
+) => void | Promise<void>;
 
 /** Decorates the existing algorithm through its public method; Core remains unaware of WebUI. */
 export class ObservedContextProjector extends ContextProjector {
@@ -18,7 +21,7 @@ export class ObservedContextProjector extends ContextProjector {
     const projection = await super.projectFromProviders(input);
     const facts = input.providerInput as Partial<ContextInput> | null;
     if (facts && typeof facts.sessionId === "string" && typeof facts.runId === "string" && typeof facts.stepId === "string" && typeof facts.userTurnId === "string") {
-      try { this.observe?.(facts as ContextInput, projection); } catch { /* Observability cannot change request admission. */ }
+      try { await this.observe?.(facts as ContextInput, projection); } catch { /* Observability cannot change request admission. */ }
     }
     return projection;
   }

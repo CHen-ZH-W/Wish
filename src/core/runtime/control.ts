@@ -1,4 +1,4 @@
-import type { AgentRunId, UserTurnId } from "../agent/types.js";
+import type { AgentRunId, RunInputSource, UserTurnId } from "../agent/types.js";
 import type {
   AgentStepId,
   RuntimeCancellation,
@@ -283,6 +283,7 @@ interface QueuedTurn<Payload> {
   readonly bytes: number;
   readonly record: MutableControlRecord<"follow_up">;
   readonly preemptible: boolean;
+  readonly inputSource: Extract<RunInputSource, "follow_up" | "continuation">;
 }
 
 /** Ordered next-UserTurn queue with bounded entries and UTF-8 bytes. */
@@ -308,6 +309,7 @@ export class NextTurnQueue<Payload> {
       readonly reserveCapacity?: boolean;
       readonly preemptible?: boolean;
       readonly front?: boolean;
+      readonly inputSource?: Extract<RunInputSource, "follow_up" | "continuation">;
     } = {},
   ): QueueReceipt<"follow_up"> {
     const duplicate = this.records.find(
@@ -343,6 +345,7 @@ export class NextTurnQueue<Payload> {
       bytes,
       record,
       preemptible: options.preemptible === true,
+      inputSource: options.inputSource ?? "follow_up",
     };
     if (options.front === true) this.entries.unshift(entry);
     else this.entries.push(entry);
@@ -371,12 +374,17 @@ export class NextTurnQueue<Payload> {
     | {
         readonly payload: Payload;
         readonly message: RuntimeControlMessage<"follow_up">;
+        readonly inputSource: Extract<RunInputSource, "follow_up" | "continuation">;
       }
     | undefined {
     const next = this.entries.shift();
     if (next === undefined) return undefined;
     next.record.status = "delivered";
-    return { payload: next.payload, message: next.record.message };
+    return {
+      payload: next.payload,
+      message: next.record.message,
+      inputSource: next.inputSource,
+    };
   }
 
   close(

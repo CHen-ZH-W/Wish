@@ -6,6 +6,7 @@ import type { RunGenerationRetireOptions } from "../../core/runtime/generation.j
 import type { ToolApprovalPort } from "../../tools/index.js";
 import type { WishToolExecutionContext } from "../../composition/tool-context.js";
 import type { ApplicationOpenInput } from "../service.js";
+import type { ModelCredentialResolver } from "../../models/types.js";
 import type {
   WishApplication,
   WishRunCompletion,
@@ -52,6 +53,7 @@ export interface WishCliDependencies {
   ) => void;
   readonly forceExit?: (code: number) => void;
   readonly interruptTimeoutMs?: number;
+  readonly environment?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface WishCli {
@@ -81,6 +83,7 @@ class DefaultWishCli implements WishCli {
   private terminationCode = 0;
   private forceTimer: ReturnType<typeof setTimeout> | undefined;
   private running = false;
+  private readonly environment: Readonly<Record<string, string | undefined>>;
 
   constructor(dependencies: WishCliDependencies) {
     this.terminal = dependencies.terminal;
@@ -91,6 +94,7 @@ class DefaultWishCli implements WishCli {
       dependencies.interruptTimeoutMs ?? WISH_CLI_INTERRUPT_TIMEOUT_MS,
       "CLI interrupt timeout",
     );
+    this.environment = dependencies.environment ?? process.env;
     this.input = new CliInputCoordinator(
       this.terminal,
       new CliToolApprovalPort({ terminal: this.terminal }),
@@ -119,32 +123,68 @@ class DefaultWishCli implements WishCli {
     }
 
     const launchDirectory = resolve(this.cwd());
-    this.application = await this.openApplication({
-      ...(args.dataDirectory === undefined
-        ? {}
-        : { dataDirectory: resolve(launchDirectory, args.dataDirectory) }),
-      ...(args.modelsConfigurationPath === undefined
-        ? {}
-        : {
-            modelsConfigurationPath: resolve(
-              launchDirectory,
-              args.modelsConfigurationPath,
-            ),
-          }),
-      ...(this.approvalRegistered ? {} : { approval: this.input.approval }),
-    });
-    if (
-      args.command === "recovery-list" ||
-      args.command === "recovery-resolve"
-    ) {
-      return this.manageRuntimeRecovery(this.application, args);
-    }
-    await this.describeRuntimeRecovery(this.application);
-    if (this.terminateRequested) return this.terminationCode;
+    const childCredential = args.command === "child"
+      ? await this.consumeChildCredentials(args)
+      : undefined;
+    try {
+      this.application = await this.openApplication({
+        ...(args.dataDirectory === undefined
+          ? {}
+          : { dataDirectory: resolve(launchDirectory, args.dataDirectory) }),
+        ...(args.modelsConfigurationPath === undefined
+          ? {}
+          : {
+              modelsConfigurationPath: resolve(
+                launchDirectory,
+                args.modelsConfigurationPath,
+              ),
+            }),
+        ...(childCredential === undefined
+          ? {}
+          : { modelCredential: childCredential.resolve }),
+        ...(this.approvalRegistered ? {} : { approval: this.input.approval }),
+      });
+      if (
+        args.command === "recovery-list" ||
+        args.command === "recovery-resolve"
+      ) {
+        return await this.manageRuntimeRecovery(this.application, args);
+      }
+      await this.describeRuntimeRecovery(this.application);
+      if (this.terminateRequested) return this.terminationCode;
 
-    if (args.command === "run") return this.runOnce(args, launchDirectory);
-    if (args.command === "child") return this.runChild(args, launchDirectory);
-    return this.runInteractive(args, launchDirectory);
+      if (args.command === "run") return await this.runOnce(args, launchDirectory);
+      if (args.command === "child") return await this.runChild(args, launchDirectory);
+      return await this.runInteractive(args, launchDirectory);
+    } finally {
+      childCredential?.close();
+    }
+  }
+
+  private async consumeChildCredentials(args: WishCliArguments): Promise<{
+    readonly resolve: ModelCredentialResolver;
+    close(): void;
+  } | undefined> {
+    const path = this.environment.WISH_CHILD_CREDENTIALS_FILE;
+    if (path === undefined || path.length === 0) return undefined;
+    const exchange = new FileSubagentExchange(requireDefined(
+      args.exchangeDataDirectory,
+      "Subagent exchange data directory",
+    ));
+    const values = { ...await exchange.consumeCredentials({
+      id: requireDefined(args.childId, "Subagent child id"),
+      childSessionId: requireDefined(args.childSessionId, "Subagent Session id"),
+      childRunId: requireDefined(args.childRunId, "Subagent Run id"),
+    }, path) };
+    let open = true;
+    return Object.freeze({
+      resolve: (reference: string) => open ? values[reference] : undefined,
+      close() {
+        if (!open) return;
+        open = false;
+        for (const reference of Object.keys(values)) delete values[reference];
+      },
+    });
   }
 
   interrupt(signal: WishCliInterruptSignal): void {

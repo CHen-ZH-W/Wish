@@ -59,6 +59,7 @@ function fixture(options = {}) {
   const tmux = options.tmux ?? new FakeTmux();
   const store = options.store ?? new MemorySubagentRecordStore();
   const launches = [];
+  const cleanedLaunchSecrets = [];
   const backend = new SubagentRuntime({
     execution: new TmuxSubagentExecutionBackend(tmux),
     store,
@@ -74,6 +75,9 @@ function fixture(options = {}) {
           },
         };
       },
+      cleanupLaunchSecrets(identity) {
+        cleanedLaunchSecrets.push(identity);
+      },
     },
     id: options.id ?? (() => "child-1"),
     now: () => new Date("2026-09-12T12:00:00.000Z"),
@@ -81,7 +85,7 @@ function fixture(options = {}) {
     maxConcurrentPerRun: options.maxConcurrentPerRun,
     monitorIntervalMs: options.monitorIntervalMs,
   });
-  return { backend, tmux, store, launches };
+  return { backend, tmux, store, launches, cleanedLaunchSecrets };
 }
 
 const spawnRequest = Object.freeze({
@@ -129,7 +133,7 @@ test("Subagent spawn fixes semantic ownership and returns a transparent tmux tar
 });
 
 test("Subagent capture, send, collect, and stop address the same tmux pane", async () => {
-  const { backend, tmux } = fixture();
+  const { backend, tmux, cleanedLaunchSecrets } = fixture();
   const record = await backend.spawn(spawnRequest);
   assert.equal(await backend.capture(access(record.id)), "output:child-1");
   await backend.send({ ...access(record.id), text: "continue" });
@@ -142,6 +146,11 @@ test("Subagent capture, send, collect, and stop address the same tmux pane", asy
   const stopped = await backend.stop(access(record.id));
   assert.equal(stopped.status, "stopped");
   assert.deepEqual(tmux.stopped, ["child-1"]);
+  assert.deepEqual(cleanedLaunchSecrets, [{
+    id: record.id,
+    childSessionId: record.childSessionId,
+    childRunId: record.childRunId,
+  }]);
   await assert.rejects(
     backend.send({ ...access(record.id), text: "late" }),
     (error) => error.code === "subagent_not_running",

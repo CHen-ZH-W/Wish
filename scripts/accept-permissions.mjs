@@ -374,15 +374,21 @@ test("read-only denies mutation and native workspace-write allows local writes",
     assert.equal(elevated.ok, true);
     assert.equal(approvalRequests.length, 2);
 
-    assert.throws(
-      () => root.permissions.resolve({
-        agent: { profile: "full-access" },
-        subject,
-        workspace,
-        registeredTools: [],
-      }),
-      PermissionProfileUnavailableError,
+    const fullAccess = root.permissions.resolve({
+      agent: { profile: "full-access" },
+      subject,
+      workspace,
+      registeredTools: ["exec"],
+    });
+    const unconfined = await execute(
+      root.permissions,
+      fullAccess,
+      "exec",
+      "process.exec",
     );
+    assert.equal(unconfined.ok, true);
+    assert.equal(unconfined.output.grant.metadata.authorizationSource, "profile");
+    assert.equal(approvalRequests.length, 2);
   } finally {
     await root.fiber.dispose();
   }
@@ -587,7 +593,7 @@ test("once, run, session, and workspace approval scopes retain exact authority",
   }
 });
 
-test("full-access is available only through the explicit enabled Host Shell", async () => {
+test("the explicit Host Shell accepts only full-access", async () => {
   const root = new Context();
   await root.plugin(ApprovalHub);
   await root.plugin(MemoryApprovalRules);

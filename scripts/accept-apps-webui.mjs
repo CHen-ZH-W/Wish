@@ -305,11 +305,18 @@ test("WebUI static assets build a CSP-compatible responsive application shell", 
     readFile(new URL("client.js", assetRoot), "utf8"),
   ]);
   const manifest = JSON.parse(await readFile(new URL("ui-modules.json", assetRoot), "utf8"));
-  assert.deepEqual(manifest.modules.find(module => module.id === "ModelsClientUi").entryIds, ["include:models"]);
+  assert.deepEqual(manifest.modules.find(module => module.id === "ModelsClientUi").entryIds, ["include:models", "include:models-webui-control"]);
+  assert.deepEqual(manifest.modules.find(module => module.id === "ModelUsageClientUi").entryIds, ["include:model-usage-webui-control"]);
+  assert.deepEqual(manifest.modules.find(module => module.id === "SystemPromptHistoryClientUi").entryIds, ["include:system-prompt-history-webui-control"]);
   assert.equal(entry.trim(), `import ${JSON.stringify(manifest.core)};`);
   const script = await readFile(new URL(manifest.core.slice("/assets/".length), assetRoot), "utf8");
+  const coreUrl = new URL(manifest.core.slice("/assets/".length), assetRoot);
+  const sharedScripts = await Promise.all([...script.matchAll(/from"(\.\.\/chunks\/[^"]+)"/gu)]
+    .map(match => readFile(new URL(match[1], coreUrl), "utf8")));
+  const runtimeScripts = [script, ...sharedScripts].join("\n");
 
   assert.match(html, /id="wish-root"/u);
+  assert.match(html, /<html lang="zh-CN" data-theme="light" data-font-size="standard">/u);
   assert.match(html, /type="module" src="\/assets\/client\.js"/u);
   assert.match(html, /href="\/assets\/app\.css"/u);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)/u);
@@ -317,9 +324,9 @@ test("WebUI static assets build a CSP-compatible responsive application shell", 
   assert.match(css, /\.wish-shell/u);
   assert.match(css, /@media\s*\(max-width:\s*720px\)/u);
   assert.match(css, /prefers-reduced-motion:\s*reduce/u);
-  assert.match(script, /EventSource/u);
-  assert.match(script, /\/api\/management\/bootstrap/u);
-  assert.doesNotMatch(script, /legacy-link|\/legacy/u);
+  assert.match(runtimeScripts, /EventSource/u);
+  assert.match(runtimeScripts, /\/api\/management\/bootstrap/u);
+  assert.doesNotMatch(runtimeScripts, /legacy-link|\/legacy/u);
   for (const removed of ["app.js", "next.html", "next.css"]) {
     await assert.rejects(readFile(new URL(removed, assetRoot)), { code: "ENOENT" });
   }
@@ -766,7 +773,9 @@ test("Session actions enforce ownership, active completion and module vetoes thr
     assert.equal((await remove("one")).response.status, 409);
     pendingReconciliations = [];
     const unregister = features.register("fixture", { async inspect() {}, async act() {}, async beforeRemoval() { throw new Error("正在运行的子任务"); } });
-    assert.equal((await remove("one")).response.status, 409);
+    const vetoed = await remove("one");
+    assert.equal(vetoed.response.status, 409);
+    assert.deepEqual(vetoed.value.error, { code: "session_busy", message: "正在运行的子任务" });
     unregister();
     assert.equal((await remove("one")).response.status, 409, "missing owner cannot be treated as idle");
     features.register("fixture", { async inspect() {}, async act() {}, async beforeRemoval() {} });

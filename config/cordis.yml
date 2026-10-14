@@ -34,6 +34,7 @@
     runtimeLifecycle: true
     modelCatalogPersistence: true
     modelAttemptLedger: true
+    systemPromptHistory: true
     toolResultArchive: true
     toolOutputArtifacts: true
     workspace: true
@@ -51,6 +52,7 @@
     approvalRules: true
     sandboxPolicy: true
     permissions: true
+    sessionPermissions: true
     todo: true
     goal: true
     goalRoundDriver: true
@@ -119,6 +121,11 @@
           launch.environment.WISH_MODEL_PRICING_CURRENCY === undefined || launch.environment.WISH_MODEL_PRICING_CURRENCY === ''
             ? 'USD'
             : launch.environment.WISH_MODEL_PRICING_CURRENCY
+
+    - id: system-prompt-history-storage
+      name: 'cordis:system-prompt-history-storage'
+      config:
+        backendId: file
 
     - id: session-persistence
       name: 'cordis:session-file'
@@ -366,6 +373,32 @@
             : launch.environment.WISH_TMUX_SOCKET
         sessionPrefix: wish-agent
 
+    - id: workspace-files-local
+      name: 'cordis:workspace-files-local'
+      disabled: !!js launch.surface !== 'webui'
+      config:
+        maxEntries: !!js >-
+          launch.environment.WISH_WORKSPACE_FILES_MAX_ENTRIES === undefined || launch.environment.WISH_WORKSPACE_FILES_MAX_ENTRIES === ''
+            ? undefined
+            : Number(launch.environment.WISH_WORKSPACE_FILES_MAX_ENTRIES)
+        maxPreviewBytes: !!js >-
+          launch.environment.WISH_WORKSPACE_FILES_MAX_PREVIEW_BYTES === undefined || launch.environment.WISH_WORKSPACE_FILES_MAX_PREVIEW_BYTES === ''
+            ? undefined
+            : Number(launch.environment.WISH_WORKSPACE_FILES_MAX_PREVIEW_BYTES)
+        maxBinaryBytes: !!js >-
+          launch.environment.WISH_WORKSPACE_FILES_MAX_BINARY_BYTES === undefined || launch.environment.WISH_WORKSPACE_FILES_MAX_BINARY_BYTES === ''
+            ? undefined
+            : Number(launch.environment.WISH_WORKSPACE_FILES_MAX_BINARY_BYTES)
+
+    - id: user-terminal-local
+      name: 'cordis:user-terminal-local'
+      disabled: !!js launch.surface !== 'webui'
+      config:
+        maxTerminalsPerSession: !!js >-
+          launch.environment.WISH_USER_TERMINAL_MAX_PER_SESSION === undefined || launch.environment.WISH_USER_TERMINAL_MAX_PER_SESSION === ''
+            ? undefined
+            : Number(launch.environment.WISH_USER_TERMINAL_MAX_PER_SESSION)
+
     - id: subagent-execution-tmux
       name: 'cordis:subagent-execution-tmux'
       disabled: !!js launch.environment.WISH_SUBAGENTS_ENABLED === '0'
@@ -476,6 +509,9 @@
             ? undefined
             : Number(launch.environment.WISH_MODEL_MAX_RETRIES)
 
+    - id: model-deepseek-responses
+      name: 'cordis:model-deepseek-responses'
+
     - id: model-openai-chat-completions
       name: 'cordis:model-openai-chat-completions'
 
@@ -501,6 +537,9 @@
 
     - id: system-prompt-context
       name: 'cordis:system-prompt-context'
+
+    - id: system-prompt-history-consumer
+      name: 'cordis:system-prompt-history-consumer'
 
     - id: plan-storage
       name: 'cordis:plan-storage'
@@ -625,6 +664,14 @@
 
     - id: bash-tool-guidance
       name: 'cordis:bash-tool-guidance'
+
+    - id: tool-tmux
+      name: 'cordis:tmux-tools'
+      disabled: !!js launch.environment.WISH_TMUX_ENABLED === '0'
+
+    - id: tmux-tool-guidance
+      name: 'cordis:tmux-tool-guidance'
+      disabled: !!js launch.environment.WISH_TMUX_ENABLED === '0'
 
     - id: subagent-tool-guidance
       name: 'cordis:subagent-tool-guidance'
@@ -773,6 +820,9 @@
             ? undefined
             : launch.environment.WISH_ALLOWED_CAPABILITIES.split(',').map(value => value.trim())
 
+    - id: session-permissions
+      name: 'cordis:session-permissions'
+
     - id: application
       name: 'cordis:application'
 
@@ -814,6 +864,11 @@
       disabled: !!js launch.surface !== 'webui'
     - id: tmux-session-feature
       name: 'cordis:tmux-session-feature'
+      disabled: !!js >-
+        launch.surface !== 'webui' ||
+        launch.environment.WISH_TMUX_ENABLED === '0'
+    - id: user-terminal-session-feature
+      name: 'cordis:user-terminal-session-feature'
       disabled: !!js launch.surface !== 'webui'
 
     - id: webui
@@ -826,3 +881,22 @@
             ? undefined
             : Number(launch.environment.WISH_WEBUI_PORT)
         workspaceRoot: !!js launch.environment.WISH_WEBUI_WORKSPACE_ROOT
+
+    - id: models-webui-control
+      name: 'cordis:models-webui-control'
+      disabled: !!js launch.surface !== 'webui'
+    - id: permissions-webui-control
+      name: 'cordis:permissions-webui-control'
+      disabled: !!js launch.surface !== 'webui'
+    - id: model-usage-webui-control
+      name: 'cordis:model-usage-webui-control'
+      disabled: !!js launch.surface !== 'webui'
+    - id: system-prompt-history-webui-control
+      name: 'cordis:system-prompt-history-webui-control'
+      disabled: !!js launch.surface !== 'webui'
+    - id: workspace-files-webui-control
+      name: 'cordis:workspace-files-webui-control'
+      disabled: !!js launch.surface !== 'webui'
+    - id: user-terminal-webui-control
+      name: 'cordis:user-terminal-webui-control'
+      disabled: !!js launch.surface !== 'webui'

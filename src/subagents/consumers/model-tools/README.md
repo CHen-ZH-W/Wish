@@ -33,10 +33,10 @@ reports a foreign id as not found instead of leaking its existence.
 before launch. The domain Runtime monitors its execution Provider and publishes
 structured lifecycle events; the `subagents/adapters` result bridge subscribes to them. On
 completion, failure, retained exit without a result, or timeout it submits one
-bounded parent follow-up and releases the hold. This gives the parent model a
-normal next UserTurn containing the child result without screen scraping. A
-relay shutdown releases its hold but does not kill the independently
-observable terminal execution.
+bounded internal continuation and releases the hold. The parent model receives
+the child result without screen scraping, while Session provenance and WebUI
+keep that Host-owned data distinct from visible user input. A relay shutdown
+releases its hold but does not kill the independently observable terminal execution.
 
 ## Verification
 

@@ -31,6 +31,13 @@ const subagentNames = [
   "stop_agent",
   "collect_agent",
 ];
+const tmuxNames = [
+  "tmux_start",
+  "tmux_list",
+  "tmux_capture",
+  "tmux_send",
+  "tmux_stop",
+];
 const planNames = [
   "enter_plan_mode",
   "read_plan",
@@ -50,6 +57,7 @@ const skillNames = ["list_skills", "read_skill"];
 const memoryNames = ["memory_search", "memory_read", "memory_write"];
 const productNames = [
   ...basicNames,
+  ...tmuxNames,
   ...planNames,
   ...subagentNames,
   ...coordinatorNames,
@@ -214,7 +222,7 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
     assert.equal(await defaultBoot.completion, 0);
     assertBootTools(
       defaultBoot,
-      [...basicNames, ...planNames, ...coordinatorNames, ...taskNames, ...todoNames, ...goalNames, ...workflowNames, ...skillNames, ...memoryNames],
+      [...basicNames, ...tmuxNames, ...planNames, ...coordinatorNames, ...taskNames, ...todoNames, ...goalNames, ...workflowNames, ...skillNames, ...memoryNames],
       "Subagent model Tools must be independently disableable",
     );
     assert.notEqual(defaultBoot.surfaceContext.get("tmux"), undefined);
@@ -258,6 +266,13 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
     assert.notEqual(booted.surfaceContext.get("subagents"), undefined);
     assert.notEqual(booted.surfaceContext.get("tmux"), undefined);
     await booted.context.loader.update(subagentsId, { disabled: false });
+    assertBootTools(booted, productNames);
+
+    const tmuxToolsId = "include:tool-tmux";
+    await booted.context.loader.update(tmuxToolsId, { disabled: true });
+    assertBootTools(booted, productNames.filter((name) => !tmuxNames.includes(name)));
+    assert.notEqual(booted.surfaceContext.get("tmux"), undefined);
+    await booted.context.loader.update(tmuxToolsId, { disabled: false });
     assertBootTools(booted, productNames);
 
     const memoryProvider = booted.context.loader.resolve("include:memory-storage").fiber;

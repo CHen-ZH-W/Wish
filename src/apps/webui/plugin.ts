@@ -4,6 +4,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { createWishWebUiHandler } from "./server.js";
+import { WebUiControls } from "./controls.js";
 import type {} from "./host/management.js";
 import { localDirectoryBrowser } from "../../workspace/directory-picker/local.js";
 
@@ -62,6 +63,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       ? {}
       : { workspaceRoot: resolve(ctx.launch.cwd, config.workspaceRoot) }),
   });
+  await ctx.plugin(WebUiControls);
+  const controls = ctx.get("webUiControls");
+  if (controls === undefined) throw new Error("WebUI control registry did not activate");
   const approvals = new WebToolApprovalBroker();
   ctx.approval.register(approvals, {
     id: "webui-surface",
@@ -72,7 +76,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const managementHost = ctx.get("webManagementHost");
   if (managementHost) {
     await ctx.effect(async () => {
-      const handler = await createWishWebUiHandler({ application, approvals, approvalRules: ctx.approvalRules,
+      const handler = await createWishWebUiHandler({ application, controls, approvals, approvalRules: ctx.approvalRules,
         workspaceRoot: configuration.workspaceRoot, directoryBrowser: localDirectoryBrowser, onRunGenerationDrainTimeout: error => ctx.launch.fail(error) });
       let registration;
       try { registration = managementHost.register((request, response) => work.run(() => handler.handle(request, response))); }
@@ -105,6 +109,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       try {
         const server = await startWishWebUiServer({
           application,
+          controls,
           approvals,
           approvalRules: ctx.approvalRules,
           workspaceRoot: configuration.workspaceRoot,

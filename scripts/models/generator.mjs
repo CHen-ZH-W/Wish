@@ -96,8 +96,9 @@ async function fetchJson(fetchImpl, url, label) {
  * DeepSeek's official contract takes precedence over lagging third-party indexes.
  * The current API has time-dependent peak/off-peak prices. Runtime Pricing owns
  * that schedule; omitting a static ModelPrice avoids reporting one period as universal.
- * Reviewed against https://api-docs.deepseek.com/quick_start/pricing/ and
- * https://api-docs.deepseek.com/guides/vision/ on 2026-09-16.
+ * Reviewed against https://api-docs.deepseek.com/quick_start/pricing/,
+ * https://api-docs.deepseek.com/guides/vision/, and the Responses API contract
+ * on 2026-10-10.
  */
 function officialDeepSeekModels() {
   const current = {
@@ -105,7 +106,8 @@ function officialDeepSeekModels() {
     maxOutputTokens: 393_216,
     image: true,
     reasoning: true,
-    reasoningControl: { format: "deepseek-chat", efforts: ["none", "low", "high", "max"], defaultEffort: "high" },
+    reasoningControl: { format: "deepseek-responses", efforts: ["none", "low", "high", "max"], defaultEffort: "high" },
+    developerRole: true,
   };
   return [
     baseModel({ id: "deepseek-flash", name: "DeepSeek V4.1 Flash", status: "active", ...current }),
@@ -113,7 +115,7 @@ function officialDeepSeekModels() {
     baseModel({ id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp (legacy alias)", status: "deprecated", ...current }),
     baseModel({ id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", status: "active",
       contextWindowTokens: 1_000_000, maxOutputTokens: 393_216, image: false, reasoning: true,
-      reasoningControl: current.reasoningControl }),
+      reasoningControl: current.reasoningControl, developerRole: true }),
   ];
 }
 

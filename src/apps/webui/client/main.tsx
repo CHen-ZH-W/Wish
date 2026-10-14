@@ -72,7 +72,7 @@ export async function mountWishBrowser(element: HTMLElement): Promise<() => Prom
   await root.plugin({ name: "ui-management", inject: ["wishManagement", "wishSettings", "wishConnection", "wishUiSlots"], apply(ctx: Context) {
     const plugins = ctx.wishManagement, settings = ctx.wishSettings, status = ctx.wishConnection;
     const PluginsView = () => <PluginPage model={plugins} connection={status} />;
-    const SettingsView = () => <SettingsPage model={settings} connection={status} namespaces={["webui-appearance", "webui-composer"]} />;
+    const SettingsView = () => <SettingsPage model={settings} connection={status} namespaces={["webui-appearance", "webui-composer", "permissions"]} />;
     ctx.effect(() => ctx.wishUiSlots.panel({ id: "preferences", label: "通用设置", labelEn: "General", area: "settings", Icon: () => <Icon name="gear" />, View: SettingsView }));
     ctx.effect(() => ctx.wishUiSlots.panel({ id: "plugins", label: "插件管理", labelEn: "Plugins", area: "settings", Icon: () => <Icon name="plug" />, View: PluginsView }));
   } });

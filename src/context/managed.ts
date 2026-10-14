@@ -2,6 +2,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 import type { ContextProvider } from "../core/context/projector.js";
 import type { ContextInput } from "./types.js";
+import type { ContextObservationListener } from "./observation.js";
 
 /** A contributed source owns its admitted reads, independently of the registry. */
 export function registerManagedContextProvider(ctx: Context, provider: ContextProvider<ContextInput>): void {
@@ -11,4 +12,17 @@ export function registerManagedContextProvider(ctx: Context, provider: ContextPr
   registration = ctx.contextEngine.registerProvider({ id: provider.id,
     provide: (input, signal) => work.run(() => provider.provide(input, signal)),
   });
+}
+
+/** An observer is removed with its consumer Fiber and drains admitted writes before teardown. */
+export function registerManagedContextObserver(
+  ctx: Context,
+  id: string,
+  observer: ContextObservationListener,
+): void {
+  let registration: ReturnType<Context["contextEngine"]["registerObserver"]> | undefined;
+  const work = new PluginWorkOwner(ctx, { code: "context_observer", codeReload: true,
+    close: () => { registration?.unregister(); } });
+  registration = ctx.contextEngine.registerObserver(id, (input, projection) =>
+    work.run(() => observer(input, projection)));
 }

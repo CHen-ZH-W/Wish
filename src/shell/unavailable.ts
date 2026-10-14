@@ -1,6 +1,8 @@
 import { ShellUnavailableError } from "./errors.js";
 import type {
   ResolveShellCommandRequest,
+  PrepareShellCommandRequest,
+  PreparedShellCommand,
   RunShellCommandRequest,
   Shell,
   ShellCommandPreflight,
@@ -39,6 +41,9 @@ export function createUnavailableShell(
       return Promise.reject(unavailable());
     },
     resolve(_request: ResolveShellCommandRequest): Promise<ShellCommandSpec> {
+      return Promise.reject(unavailable());
+    },
+    prepare(_request: PrepareShellCommandRequest): Promise<PreparedShellCommand> {
       return Promise.reject(unavailable());
     },
     run(_request: RunShellCommandRequest): Promise<ShellExecutionResult> {

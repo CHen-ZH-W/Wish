@@ -91,7 +91,7 @@ function fixtureConfiguration() {
   };
 }
 
-test("generated defaults expose current Providers and DeepSeek compatibility", () => {
+test("generated defaults expose current Providers and authoritative DeepSeek Responses", () => {
   const configuration = loadModelsConfiguration({ environment: {} });
 
   assert.deepEqual(configuration.defaultModel, {
@@ -144,17 +144,17 @@ test("generated defaults expose current Providers and DeepSeek compatibility", (
     type: "bearer",
     apiKeyEnv: "DEEPSEEK_API_KEY",
   });
+  assert.equal(flash.protocol, "deepseek-responses");
   assert.equal(flash.developerRoleMode, "system-fallback");
-  assert.equal(flash.request.supportsTemperature, false);
-  assert.equal(flash.request.maxTokensField, "max_tokens");
-  assert.deepEqual(flash.request.extraBody, {
-    thinking: { type: "enabled" },
-    reasoning_effort: "high",
-  });
+  assert.equal(flash.request.supportsTemperature, true);
+  assert.equal(flash.request.maxTokensField, "max_output_tokens");
+  assert.deepEqual(flash.request.extraBody, {});
   assert.equal(flash.spec.contextWindowTokens, 1_000_000);
   assert.equal(flash.spec.maxOutputTokens, 393_216);
   assert.equal(flash.spec.input.image, true);
   assert.equal(flash.spec.toolCalling, true);
+  assert.equal(flash.spec.developerRole, true);
+  assert.equal(flash.spec.reasoningControl?.format, "deepseek-responses");
   assert.equal(flash.spec.price, undefined, "tiered current pricing must not be flattened");
 
   const configured = new ConfiguredModel({
@@ -269,11 +269,7 @@ test("schemaVersion 2 overlays generated Providers and upserts Models", () => {
   assert.equal(flash.spec.input.text, true);
   assert.equal(flash.spec.input.image, true);
   assert.equal(flash.headers["x-tenant"].fromEnv, "TENANT_ID");
-  assert.deepEqual(flash.request.extraBody, {
-    thinking: { type: "enabled" },
-    reasoning_effort: "high",
-    trace: true,
-  });
+  assert.deepEqual(flash.request.extraBody, { trace: true });
   assert.equal(
     configuration.providers.find((provider) => provider.id === "deepseek")
       .models.length,
@@ -281,7 +277,7 @@ test("schemaVersion 2 overlays generated Providers and upserts Models", () => {
   );
 });
 
-test("generated DeepSeek profile maps an authenticated thinking Tool request", async () => {
+test("generated DeepSeek profile maps an authenticated Responses request", async () => {
   const requests = [];
   const configuration = loadModelsConfiguration({ environment: {} });
   const model = new ConfiguredModel({
@@ -290,27 +286,25 @@ test("generated DeepSeek profile maps an authenticated thinking Tool request", a
     environment: { DEEPSEEK_API_KEY: "deepseek-test-key" },
     async fetch(url, init) {
       requests.push({ url: String(url), init });
-      const completion = {
-        choices: [{
-          delta: { content: "done" },
-          finish_reason: "stop",
-          index: 0,
-        }],
-        usage: {
-          prompt_tokens: 12,
-          completion_tokens: 4,
-          total_tokens: 16,
-        },
-      };
-      return new Response(
-        `data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`,
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+      const records = [
+        { type: "response.created", response: { id: "resp-runtime", model: "deepseek-flash", status: "in_progress", created_at: 1789963200 } },
+        { type: "response.output_text.delta", item_id: "msg-runtime", delta: "done" },
+        { type: "response.completed", response: {
+          id: "resp-runtime", model: "deepseek-flash", status: "completed", created_at: 1789963200,
+          output: [],
+          usage: { input_tokens: 12, output_tokens: 4, total_tokens: 16 },
+        } },
+      ];
+      return new Response(records.map((record) => `event: ${record.type}\ndata: ${JSON.stringify(record)}\n\n`).join(""), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
     },
   });
 
   const events = await collect(model.stream({
     model: configuration.defaultModel,
+    instructions: [{ role: "system", content: "Stable policy" }],
     messages: [
       { role: "developer", content: "Work carefully" },
       { role: "user", content: "Inspect the project" },
@@ -328,22 +322,24 @@ test("generated DeepSeek profile maps an authenticated thinking Tool request", a
     "text_delta",
     "done",
   ]);
+  assert.equal(events[0].developerRoleMode, "system-fallback");
+  assert.equal("authorityDegraded" in events[0], false);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "https://api.deepseek.com/chat/completions");
+  assert.equal(requests[0].url, "https://api.deepseek.com/responses");
   assert.equal(
     requests[0].init.headers.authorization,
     "Bearer deepseek-test-key",
   );
   const body = JSON.parse(requests[0].init.body);
   assert.equal(body.model, "deepseek-flash");
-  assert.equal(body.messages[0].role, "system");
-  assert.equal(body.messages[0].content, "Work carefully");
-  assert.deepEqual(body.thinking, { type: "enabled" });
-  assert.equal(body.reasoning_effort, "high");
-  assert.equal("max_tokens" in body, false, "model capability must not become a request default");
-  assert.equal(body.stream_options.include_usage, true);
-  assert.equal(body.tools[0].function.name, "read");
-  assert.equal("temperature" in body, false);
+  assert.equal(body.instructions, "Stable policy");
+  assert.equal(body.input[0].role, "system");
+  assert.equal(body.input[0].content[0].text, "Work carefully");
+  assert.deepEqual(body.reasoning, { effort: "high" });
+  assert.equal("max_output_tokens" in body, false, "model capability must not become a request default");
+  assert.equal("stream_options" in body, false);
+  assert.equal(body.tools[0].name, "read");
+  assert.equal(body.temperature, 0.2);
 });
 
 test("model request defaults, user preferences and explicit limits have distinct precedence", async () => {

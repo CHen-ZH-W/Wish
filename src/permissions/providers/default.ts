@@ -74,7 +74,7 @@ export class DefaultPermissions extends PermissionsService {
   ];
   static readonly Config = Config;
 
-  readonly defaultProfile: PermissionProfile;
+  override readonly defaultProfile: PermissionProfile;
   readonly policyVersion: string;
   private readonly maxPendingAuthorizations: number;
   private readonly pending = new Map<string, PendingAuthorization>();

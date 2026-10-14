@@ -83,6 +83,22 @@ test("ledger projection prefers canonical transcript, joins tool input/result an
   assert.equal(blocks[1].toolName, "future_tool"); assert.equal(blocks[1].text, "Stored result"); assert.equal(blocks[1].input, "{}");
 });
 
+test("ledger keeps internal continuations out of the visible conversation", () => {
+  const base = { kind: "message", runId: "r", userTurnId: "continued", stepId: "step", createdAt: "2026-09-14T00:00:00Z" };
+  const history = { records: [
+    { ...base, recordId: "internal", origin: "user_input", inputSource: "continuation", message: { role: "user", content: "Subagent result received" } },
+    { ...base, recordId: "answer", origin: "assistant", message: { role: "assistant", content: "Parent synthesis" } },
+  ] };
+  const live = [{
+    type: "runtime.transition", runId: "r", userTurnId: "live-continuation", stepId: "live-step",
+    occurredAt: "2026-09-14T00:00:01Z", payload: { type: "user_turn.started", userTurnId: "live-continuation", inputSource: "continuation", input: { text: "Child failed" } },
+  }];
+  const turns = projectLedger(history, live);
+  const blocks = turns.flatMap(turn => turn.blocks);
+  assert.deepEqual(blocks.map(block => block.text), ["Parent synthesis"]);
+  assert.equal(turns[0].title, "执行记录", "a continuation turn is not titled from hidden machine data");
+});
+
 class Stream {
   listeners = new Map(); closed = false;
   addEventListener(name, fn) { this.listeners.set(name, fn); }

@@ -28,6 +28,7 @@ export function apply(ctx: Context): void {
       });
     },
     forceExit: (code) => ctx.launch.complete(code),
+    environment: ctx.launch.environment,
   });
   let finished = false;
   let running: Promise<void> = Promise.resolve();

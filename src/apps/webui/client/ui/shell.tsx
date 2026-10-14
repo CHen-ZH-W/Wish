@@ -1,9 +1,10 @@
 import { IsolatedView } from "./isolated-view.js";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { UiSlots } from "../slots.js";
 import type { ConnectionSnapshot } from "../connection.js";
 import { Icon, useSnapshot, type ReadableSnapshot } from "./primitives.js";
 import { useLanguage, useText } from "../i18n.js";
+import { LEFT_SIDEBAR_DEFAULT_WIDTH, LEFT_SIDEBAR_MAX_WIDTH, LEFT_SIDEBAR_MIN_WIDTH, SidebarResizeHandle } from "./sidebar-resize.js";
 
 /** Only presentation state lives here; no Context, transport or module-name dispatch. */
 export function Shell({ slots, connection }: { slots: UiSlots; connection: ReadableSnapshot<ConnectionSnapshot> }) {
@@ -13,6 +14,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
   const [selected, select] = useState<string | null>(null);
   const [collapsed, collapse] = useState(false), [drawerOpen, showDrawer] = useState(false);
   const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 720px)").matches);
+  const [sidebarWidth, setSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT_WIDTH);
   const sidebarOpen = narrow ? drawerOpen : !collapsed, overlay = narrow && sidebarOpen;
   const navigation = useRef<HTMLElement>(null), expandButton = useRef<HTMLButtonElement>(null);
   const opening = useRef(false), wasOpen = useRef(sidebarOpen);
@@ -47,7 +49,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
   const panelLabel = (item: typeof panel) => item && language === "en-US" ? item.labelEn ?? item.label : item?.label;
   const sidebarTitle = globalPanel ? panelLabel(panel) : area === "workspace" ? t("执行工作区", "Workspace") : t("设置", "Settings");
   const connectionLabel = status.online ? t("Host 已连接", "Host connected") : t("Host 连接中断", "Host disconnected");
-  return <div className={`wish-shell${sidebarOpen ? " sidebar-open" : " sidebar-collapsed"}`}>
+  return <div className={`wish-shell${sidebarOpen ? " sidebar-open" : " sidebar-collapsed"}`} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
     <a className="skip-link" href="#workspace-main">{t("跳到工作区", "Skip to workspace")}</a>
     <nav className="utility-rail" aria-label={t("主要导航", "Main navigation")}>
       <div className="brand-control">
@@ -68,6 +70,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
         <nav className="panel-navigation" aria-label={t("可用视图", "Available views")}>{panels.filter(item => item.navigation === undefined).map(item => <button key={item.id} className={panel?.id === item.id ? "navigation-item selected" : "navigation-item"} onClick={() => slots.openPanel(item.id)} aria-current={panel?.id === item.id ? "page" : undefined}>{item.Icon ? <IsolatedView View={item.Icon} /> : <Icon name={area === "settings" ? "settings" : "trace"} />}{panelLabel(item)}</button>)}</nav>
       </>}</div>
     </aside>
+    {sidebarOpen && !narrow ? <SidebarResizeHandle side="left" width={sidebarWidth} min={LEFT_SIDEBAR_MIN_WIDTH} max={LEFT_SIDEBAR_MAX_WIDTH} label={t("调整左侧栏宽度", "Resize left sidebar")} controls="wish-sidebar" onChange={setSidebarWidth} /> : null}
     <main id="workspace-main" className="workspace-main" tabIndex={-1} inert={overlay}>
       {!status.online && status.error ? <p className="connection-notice" role="status">{status.error}</p> : null}
       {status.online && !status.businessAvailable ? <p className="connection-notice" role="status">{t("业务服务暂不可用。设置和插件管理仍可操作。", "Agent service is temporarily unavailable. Settings and plugins remain available.")}</p> : null}

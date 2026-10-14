@@ -24,7 +24,7 @@ export class NewSessionReasoningClientModel extends SnapshotStore<NewSessionReas
     this.queue = new RefreshQueue(async current => {
       if (!this.available()) return;
       try {
-        const { selection } = await this.connection.request<{ selection: SessionReasoningView }>("/api/model-reasoning/default");
+        const { value: selection } = await this.connection.request<{ value: SessionReasoningView }>("/api/controls/model-reasoning/default");
         if (!current() || !this.available()) return;
         const before = this.getSnapshot();
         const sameModel = before.view?.model.provider === selection.model.provider && before.view.model.model === selection.model.model;
@@ -62,7 +62,7 @@ export class NewSessionReasoningClientModel extends SnapshotStore<NewSessionReas
     if (!this.available() || !state.view?.control?.efforts.includes(state.selected)) throw new Error("思考选项暂不可用，请稍后重试");
     const { model } = state.view, effort = state.selected;
     return async sessionId => {
-      await this.connection.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-reasoning`, { model, effort });
+      await this.connection.request(`/api/sessions/${encodeURIComponent(sessionId)}/controls/model-reasoning`, { model, effort });
     };
   }
 

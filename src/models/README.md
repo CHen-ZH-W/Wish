@@ -8,6 +8,7 @@ AgentLoop 与 Run/UserTurn/Step 生命周期。
 
 ```text
 Cordis Models service
+  ← DeepSeek Responses Adapter plugin
   ← OpenAI Chat Completions Adapter plugin
   ← OpenAI Responses Adapter plugin
   ← Anthropic Messages Adapter plugin
@@ -33,14 +34,17 @@ core/agent-loop.AgentLoop
 - `service.ts`：Cordis wrapper，拥有配置来源、Registry、usage estimator 和每个
   AgentLoop 与 Application 使用的请求资源组合，并在 WebUI surface 向 Settings 注册默认
   模型选择、逐模型上下文窗口和单次请求最大输出覆盖。
+- `consumers/webui-control.ts`：Models 自己拥有的有界 WebUI 控制适配器，负责思考强度请求校验、领域错误映射与 Session 状态读写；通用 WebUI Server 不解释 Models 协议。
 - `consumers/webui/index.tsx`：Models 自己拥有的模型配置面板；Host Models 条目失效时，
   Browser Cordis 同步撤销该入口；同一 Browser 插件向已有会话和新建会话输入框分别贡献可卸载的思考强度控件。
-- `plugins.ts`：三个协议 Adapter 的独立 Loader 插件；每项注册都绑定调用插件 fiber。
-- `providers/`：OpenAI Responses、OpenAI Chat Completions-compatible 与
-  Anthropic Messages 转换。
+- `plugins.ts`：四个协议 Adapter 的独立 Loader 插件；每项注册都绑定调用插件 fiber。
+- `providers/`：DeepSeek Responses、OpenAI Responses、OpenAI Chat Completions-compatible
+  与 Anthropic Messages 转换。
 - `usage.ts`：按完整模型身份注册 tokenizer、补齐缺失 usage、计算费用。
 - `pricing.ts`：解析 Provider/model/时点/币种对应的不可变 quote。
 - `pricing/`：记录每个 Provider attempt，并通过独立 Port 把领域事件接到 Storage Journal。
+  `pricing/consumers/webui-control.ts` 把已完成 attempt 投影为 Session 累计用量；独立的
+  Browser Consumer 把缓存命中摘要贡献到会话右下角，不与模型设置或思考强度入口绑定。
 - `input-tokens.ts`：按完整模型身份注册 request-only tokenizer，为 Context 提供调用
   前的输入 Token 计数。
 - `providers/anthropic-messages-tokens.ts`：调用 Anthropic Messages 官方计数端点，
@@ -57,16 +61,22 @@ Provider 不发布 Runtime event、不执行 Tool、不聚合 `ModelOutput`，�
 固定顺序组合现有装饰器。
 
 Core 的 `ModelRequest` 把输入分成三个独立通道：稳定的 `instructions`、按顺序排列的
-`messages`、以及确定的 `tools` 快照。Adapter 负责按目标协议映射：OpenAI-compatible
+`messages`、以及确定的 `tools` 快照。Adapter 负责按目标协议映射：DeepSeek Responses
+把稳定 instructions 放到顶层 `instructions`，只把有序历史放进 `input`；OpenAI-compatible
 把 instructions 前置成 system/developer message，OpenAI Responses 前置成 input item，
-Anthropic 则映射到顶层 `system`。三种协议的 Tool Schema 都保持顶层独立字段。
+Anthropic 则映射到顶层 `system`。四种协议的 Tool Schema 都保持顶层独立字段。
+
+DeepSeek Responses 虽接受 `developer` input item，但 Provider 将它视为 user。内置
+DeepSeek profile 因此使用 `system-fallback`：稳定 Wish 规则仍进入顶层 `instructions`，
+动态 `developer` 控制消息映射为历史内 `system` item；真正的 user、reference、assistant
+与 Tool 内容不改写。该转换保持控制规则的权威，同时让高频状态留在稳定前缀之后。
 
 ## 配置
 
 没有提供 JSON 时，Wish 使用提交在仓库中的 generated defaults。当前快照从
 models.dev、OpenRouter 和 Vercel AI Gateway 生成；DeepSeek 直连 Provider 使用经官方文档
 核对的定义覆盖第三方目录的滞后数据。其余模型只收录声明支持 Tool Call、且能由
-Wish 当前 `openai-responses`、`openai-chat-completions` 或
+Wish 当前 `deepseek-responses`、`openai-responses`、`openai-chat-completions` 或
 `anthropic-messages` Adapter 表达的模型。固定
 Provider 定义决定协议、endpoint 和鉴权；远端模型源只能提供模型名、能力、窗口和价格
 元数据，不能覆盖凭据或传输行为。
@@ -203,21 +213,24 @@ WebUI 的“模型配置”从这份已验证配置生成完整 `provider/model`
 继续继承模型配置。选择按 Session 和模型引用持久保存，切换默认模型后
 旧选择不会误应用到新模型。新 Run 启动时把强度固定进输入；运行中的 Step、steer 与
 同一 Run 的后续 UserTurn 不受选择变化影响。WebUI 的
-`GET/POST /api/sessions/:id/model-reasoning` 只读写这一 Models 能力；并发写入以
+`GET/POST /api/sessions/:id/controls/model-reasoning` 通过 Models 控制适配器只读写这一能力；并发写入以
 Storage revision 冲突拒绝。停用 Models Browser 插件会撤销输入区控件，不影响已保存的选择。
-新建会话界面通过 `GET /api/model-reasoning/default` 读取默认模型能力，不因此创建 Session。
+新建会话界面通过 `GET /api/controls/model-reasoning/default` 读取默认模型能力，不因此创建 Session。
 用户选择先留在 Browser；首次发送创建 Session 后，通过同一 Models 接口持久化所选强度，
 成功后才启动首个 Run。默认选项不写入覆盖；选项冲突或写入失败时不以错误强度发送首条消息。
 
 Provider 默认配置先应用，Model 的 endpoint/auth/headers/developer role/request
-配置随后覆盖。`extraBody` 不能设置 `model`、`messages`、`tools`、`system`、
-`stream`、token limit 等关键字段。重复 Provider/Model、未知协议、无效 URL、
+配置随后覆盖。`extraBody` 不能设置 `model`、`input`、`instructions`、`messages`、
+`tools`、`system`、`stream`、token limit 等关键字段；`deepseek-responses` 还不允许覆盖
+由 Adapter 管理的 `reasoning`。重复 Provider/Model、未知协议、无效 URL、
 auth、developer authority、价格和引用都会在加载阶段失败。
 
 ## 协议
 
-生产 profile 把以下三种协议作为三个独立插件注册到 `ctx.models`：
+生产 profile 把以下四种协议作为四个独立插件注册到 `ctx.models`：
 
+- `deepseek-responses`：DeepSeek 官方 `/responses`；顶层 `instructions`、有序 input items、
+  图片、reasoning text、函数调用、Responses SSE 和 usage。请求映射不复用 OpenAI Adapter。
 - `openai-responses`：OpenAI 原生 input items、developer authority、图片、reasoning
   summary、增量函数调用、Responses SSE 和 usage；默认请求不由 Provider 保存。
 - `openai-chat-completions`：system/developer/user/assistant/tool、图片、reasoning、
@@ -277,8 +290,11 @@ Tool 后续 Step 和压缩摘要请求都会生成独立 attempt。AgentLoop 只
 `models/pricing/attempts/v1`，要求 atomic batch + fsync，并由 Cordis lease 约束 Backend
 代次。启动恢复会把只有 started、没有终态的旧 attempt 标记为 `interrupted`；Journal 中
 已经固化的 `priceVersion`、period、pricedAt、单价和 cost 不会随以后 Policy 更新而重算。
-Session transcript 仍只保存会话事实，账单通过稳定 ID 关联而不写入消息。当前没有
-Run/UserTurn 聚合报表或 UI 展示。默认记账币种是 USD；部署可用
+Session transcript 仍只保存会话事实，账单通过稳定 ID 关联而不写入消息。WebUI 通过
+`GET /api/sessions/:id/controls/model-usage` 读取当前 Session 的累计投影：命中率只使用已完成且
+报告 `cachedInputTokens` 的 Provider attempt，缺失字段显示为未知或“部分”，绝不按零处理。
+停用 `model-usage-webui-control` 会同时撤销该 Control 与独立 Browser 状态位，历史账本不受影响；
+模型设置、思考强度和 Models Provider 也不依赖这一展示 Consumer。默认记账币种是 USD；部署可用
 `WISH_MODEL_PRICING_CURRENCY=CNY` 选择 DeepSeek 的官方人民币价表，不做汇率换算。
 
 ## 请求前输入 Token
@@ -297,7 +313,7 @@ Run/UserTurn 聚合报表或 UI 展示。默认记账币种是 USD；部署可�
 都按 Provider 输入统计；凭据和动态 header 每次计数时重新解析。HTTP/响应不可用时不
 猜测，仍返回 `undefined`。
 
-OpenAI Responses 与 Chat Completions 当前没有注册“精确”本地计数器。其消息与 Tool
+DeepSeek Responses、OpenAI Responses 与 Chat Completions 当前没有注册“精确”本地计数器。其消息与 Tool
 开销会随模型和协议实现变化；在没有经过版本固定和校准的算法前，Context 保持
 `unknown`，不能把字符数或通用 tokenizer 估算标记为预算事实。只有按精确
 `provider/model` 注册并经过验证的 `ModelRequestTokenizer` 才能提供该预算事实。
@@ -338,6 +354,6 @@ npm test
 ```
 
 Provider 测试使用本地 fixture 和注入的 `fetch`。`test:model-composition` 还覆盖
-DeepSeek 思考模式下 Tool 调用、完整 `reasoning_content` 回传、下一次请求和流式 usage；
-严格模拟服务端在遗漏回传时返回 400。只有另行加载真实凭据并执行在线检查后，才能
+DeepSeek Responses 的 Tool 调用、完整 reasoning item 回传、function-call output、
+下一次请求和流式 usage；严格模拟服务端在遗漏回传时返回 400。只有另行加载真实凭据并执行在线检查后，才能
 声称某个账号或模型实际可调用。

@@ -5,6 +5,7 @@ import type {
   ObserveOptions,
   RunHandle,
   RunInput,
+  RunInputSource,
   UserTurnId,
 } from "../agent/types.js";
 import {
@@ -296,6 +297,16 @@ export interface RunCompletionHold {
   release(): void;
 }
 
+/** Host-owned data that resumes an active Run without claiming human authorship. */
+export interface RuntimeContinuationInput<Payload> {
+  readonly payload: Payload;
+  readonly source: string;
+  readonly text: string;
+  readonly id?: string;
+  readonly receivedAt?: string;
+  readonly reserveCapacity?: boolean;
+}
+
 type TurnOutcome<Result> =
   | { readonly status: "completed"; readonly result: Result }
   | { readonly status: "failed"; readonly error: RuntimeFailure }
@@ -530,35 +541,53 @@ export class Runtime<
       return queueReceipt(runId, "steer", receipt);
     }
 
-    const message = createRuntimeControlMessage({
-      id: controlId,
-      kind: "follow_up",
-      runId,
-      userTurnId: record.controlUserTurnId,
+    return this.enqueueNextTurn(record, controlId, {
+      payload: control.payload,
       text: control.text ?? describePayload(control.payload),
       source,
       receivedAt,
-    });
-    const receipt = record.followUps.enqueue(control.payload, message, {
+      inputSource: "follow_up",
       reserveCapacity: control.reserveCapacity === true,
       preemptible: control.preemptible === true,
-      front: isTrustedHumanSource(source),
+      trustedHuman: isTrustedHumanSource(source),
     });
-    this.recordControlReceipt(record, "follow_up", receipt);
-    if (receipt.accepted) {
-      if (isTrustedHumanSource(source)) {
-        const controlIds = record.followUps.cancelPreemptible();
-        if (controlIds.length > 0) {
-          this.recordTransition(record, {
-            type: "control.follow_ups_preempted",
-            controlIds,
-            at: this.timestamp(),
-          });
-        }
-      }
-      this.wakeRun(record);
+  }
+
+  /** Queue Host-owned continuation data without exposing it as human input. */
+  resume(
+    agentId: string,
+    runId: AgentRunId,
+    input: RuntimeContinuationInput<Payload>,
+  ): RuntimeControlReceipt {
+    const controlId = requireIdentifier(
+      input.id ?? this.ids.controlId(),
+      "Continuation id",
+    );
+    const record = this.runs.get(runId);
+    if (record === undefined) {
+      return rejectedReceipt(runId, "follow_up", controlId, "unknown_run");
     }
-    return queueReceipt(runId, "follow_up", receipt);
+    if (record.definition.id !== agentId) {
+      return rejectedReceipt(runId, "follow_up", controlId, "agent_mismatch");
+    }
+    if (!record.active || isRunTerminal(record.state.status)) {
+      return rejectedReceipt(
+        runId,
+        "follow_up",
+        controlId,
+        "run_already_terminal",
+      );
+    }
+    return this.enqueueNextTurn(record, controlId, {
+      payload: input.payload,
+      text: input.text,
+      source: normalizeSource(input.source),
+      receivedAt: input.receivedAt ?? this.timestamp(),
+      inputSource: "continuation",
+      reserveCapacity: input.reserveCapacity === true,
+      preemptible: false,
+      trustedHuman: false,
+    });
   }
 
   observe(
@@ -702,8 +731,11 @@ export class Runtime<
             userTurnId,
             ordinal: record.state.userTurns.length + 1,
             input: next.payload,
-            inputSource: "follow_up",
-            provenance: followUpUserTurnProvenance(next.message),
+            inputSource: next.inputSource,
+            provenance: continuedUserTurnProvenance(
+              next.message,
+              next.inputSource,
+            ),
             at: this.timestamp(),
           });
           await this.openCurrentUserTurn(record);
@@ -1310,6 +1342,52 @@ export class Runtime<
     });
   }
 
+  private enqueueNextTurn(
+    record: ManagedRun<Configuration, Payload, StepMemory, Result>,
+    controlId: string,
+    input: {
+      readonly payload: Payload;
+      readonly text: string;
+      readonly source: string;
+      readonly receivedAt: string;
+      readonly inputSource: Extract<RunInputSource, "follow_up" | "continuation">;
+      readonly reserveCapacity: boolean;
+      readonly preemptible: boolean;
+      readonly trustedHuman: boolean;
+    },
+  ): RuntimeControlReceipt {
+    const message = createRuntimeControlMessage({
+      id: controlId,
+      kind: "follow_up",
+      runId: record.state.id,
+      userTurnId: record.controlUserTurnId,
+      text: input.text,
+      source: input.source,
+      receivedAt: input.receivedAt,
+    });
+    const receipt = record.followUps.enqueue(input.payload, message, {
+      reserveCapacity: input.reserveCapacity,
+      preemptible: input.preemptible,
+      front: input.trustedHuman,
+      inputSource: input.inputSource,
+    });
+    this.recordControlReceipt(record, "follow_up", receipt);
+    if (receipt.accepted) {
+      if (input.trustedHuman) {
+        const controlIds = record.followUps.cancelPreemptible();
+        if (controlIds.length > 0) {
+          this.recordTransition(record, {
+            type: "control.follow_ups_preempted",
+            controlIds,
+            at: this.timestamp(),
+          });
+        }
+      }
+      this.wakeRun(record);
+    }
+    return queueReceipt(record.state.id, "follow_up", receipt);
+  }
+
   private async completeRun(
     record: ManagedRun<Configuration, Payload, StepMemory, Result>,
     result: Result,
@@ -1780,13 +1858,13 @@ function initialUserTurnProvenance(
   });
 }
 
-function followUpUserTurnProvenance(message: {
+function continuedUserTurnProvenance(message: {
   readonly id: string;
   readonly source: string;
   readonly receivedAt: string;
-}): UserTurnProvenance {
+}, origin: Extract<RunInputSource, "follow_up" | "continuation">): UserTurnProvenance {
   return Object.freeze({
-    origin: "follow_up",
+    origin,
     source: message.source,
     controlId: message.id,
     receivedAt: message.receivedAt,

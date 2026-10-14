@@ -21,6 +21,8 @@ import {
 import { ShellService } from "../service.js";
 import type {
   PreflightShellCommandRequest,
+  PrepareShellCommandRequest,
+  PreparedShellCommand,
   ResolveShellCommandRequest,
   RunShellCommandRequest,
   Shell,
@@ -187,6 +189,24 @@ export class HostShellBackend implements Shell {
   }
 
   async run(request: RunShellCommandRequest): Promise<ShellExecutionResult> {
+    const prepared = await this.prepare({
+      spec: request.spec,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    return await spawnShellProcess({
+      executable: prepared.executable,
+      args: prepared.args,
+      cwd: prepared.cwd,
+      env: prepared.environment ?? process.env,
+      timeoutSeconds: request.spec.timeoutSeconds,
+      onData: request.onData,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+  }
+
+  async prepare(
+    request: PrepareShellCommandRequest,
+  ): Promise<PreparedShellCommand> {
     if (!this.resolved.delete(request.spec)) {
       throw new ShellPermissionDeniedError(
         "Host Shell command Spec was not resolved here or was already consumed",
@@ -198,16 +218,18 @@ export class HostShellBackend implements Shell {
         "Host Shell command Spec belongs to another policy generation",
       );
     }
-    return await spawnShellProcess({
+    return Object.freeze({
       executable: this.shellPath,
-      args: ["-c", request.spec.command],
+      args: Object.freeze(["-c", request.spec.command]),
       cwd: request.spec.cwd,
-      env: this.env,
-      timeoutSeconds: request.spec.timeoutSeconds,
-      onData: request.onData,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      environment: Object.freeze(Object.fromEntries(
+        Object.entries(this.env).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined,
+        ),
+      )),
     });
   }
+
 }
 
 export class HostShell extends ShellService {
@@ -233,6 +255,10 @@ export class HostShell extends ShellService {
 
   resolve(request: ResolveShellCommandRequest): Promise<ShellCommandSpec> {
     return this.work.run(() => this.backend.resolve(request));
+  }
+
+  prepare(request: PrepareShellCommandRequest): Promise<PreparedShellCommand> {
+    return this.work.run(() => this.backend.prepare(request));
   }
 
   run(request: RunShellCommandRequest): Promise<ShellExecutionResult> {

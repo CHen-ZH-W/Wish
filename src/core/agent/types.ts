@@ -8,7 +8,7 @@ export type AgentRunId = string;
 export type UserTurnId = string;
 
 /** Host-declared provenance, separate from message role and untrusted payload. */
-export type RunInputSource = "user" | "follow_up" | "unknown";
+export type RunInputSource = "user" | "follow_up" | "continuation" | "unknown";
 
 /** Input delivery provenance; this is not an authorization grant. */
 export type AgentInputSource = RunInputSource | "steering";

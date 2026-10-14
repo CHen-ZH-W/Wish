@@ -34,7 +34,8 @@ import type {
 } from "../context/types.js";
 import type { ModelDependencies } from "../models/runtime.js";
 import type { ModelInstruction } from "../core/model/model.js";
-import type { ModelsConfiguration } from "../models/types.js";
+import { coalesceModelInstructions } from "../system-prompt/service.js";
+import type { ModelCredentialResolver, ModelsConfiguration } from "../models/types.js";
 import type {} from "../models/pricing/service.js";
 import {
   SessionArchivedError,
@@ -276,9 +277,16 @@ export function createAgentLoopPipeline(
             )
           : Object.freeze([]);
         const permissions = await resolvePermissions(snapshot, {
-          ...(definition.configuration?.permissions === undefined
+          ...(definition.configuration?.permissions === undefined && snapshot.userTurn.input.permissionProfile === undefined
             ? {}
-            : { agent: definition.configuration.permissions }),
+            : {
+                agent: Object.freeze({
+                  ...definition.configuration?.permissions,
+                  ...(snapshot.userTurn.input.permissionProfile === undefined
+                    ? {}
+                    : { profile: snapshot.userTurn.input.permissionProfile }),
+                }),
+              }),
           subject: {
             agentId: snapshot.run.agentId,
             sessionId,
@@ -411,6 +419,8 @@ export interface OpenAgentLoopInput {
   readonly maxParallelCalls?: number;
   readonly request?: AgentLoopRequestOptions;
   readonly runContinuations?: RunContinuationFactory;
+  /** Secret resolver is kept out of cloned/persisted Runtime configuration. */
+  readonly modelCredential?: ModelCredentialResolver;
 }
 
 export interface AgentLoopResources extends AgentLoopDependencies {
@@ -455,6 +465,9 @@ export class AgentLoop extends Service {
     let context: ContextBundleHandle | undefined;
     try {
       const models = this.ctx.models.open(input.modelsConfiguration, {
+        ...(input.modelCredential === undefined
+          ? {}
+          : { credential: input.modelCredential }),
         attemptLedger: {
           ledger: this.ctx.modelAttemptLedger,
           currency: this.ctx.modelAttemptLedger.currency,
@@ -484,7 +497,7 @@ export class AgentLoop extends Service {
         permissions: this.ctx.permissions,
         toolLifecycle: this.ctx.runtimeLifecycle,
         context: ownedContext,
-        resolveInstructions: ({ availableTools }) => Object.freeze([
+        resolveInstructions: ({ availableTools }) => coalesceModelInstructions([
           ...this.ctx.systemPrompt.assembleInstructions({ availableTools }),
           ...input.agentInstructions.map((instruction) => Object.freeze({
             role: instruction.authority,

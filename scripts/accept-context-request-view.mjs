@@ -194,15 +194,23 @@ test("Session provenance survives persistence and normalized history without ent
     const snapshot = step({ source: "follow_up" });
     await renderer.renderUserInput({ payload: snapshot.userTurn.input, snapshot });
     await renderer.renderUserInput({ payload: snapshot.userTurn.input, snapshot });
+    const continued = {
+      ...step({ source: "continuation" }),
+      userTurn: { ...step({ source: "continuation" }).userTurn, userTurnId: "turn-2", ordinal: 2 },
+      step: { stepId: "step-continuation", ordinal: 1 },
+    };
+    await renderer.renderUserInput({ payload: continued.userTurn.input, snapshot: continued });
     sessions = new SessionManager(new FileSessionStore({ rootDirectory: directory }));
     const history = await sessions.readHistory({ sessionId: "session-1" });
-    assert.equal(history.records.length, 1);
+    assert.equal(history.records.length, 2);
     assert.equal(history.records[0].inputSource, "follow_up");
     assert.equal(history.records[0].message.inputSource, undefined);
+    assert.equal(history.records[1].inputSource, "continuation");
     const adapter = new SessionHistoryAdapter({ sessions });
     const normalized = await adapter.context.read({ sessionId: "session-1" });
     assert.equal(normalized[0].inputSource, "follow_up");
     assert.equal(normalized[0].message.inputSource, undefined);
+    assert.equal(normalized[1].inputSource, "continuation");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

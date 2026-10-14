@@ -4,6 +4,7 @@ import test from "node:test";
 import { loadModelsConfiguration, resolveConfiguredModel } from "../dist/models/config.js";
 import { createDefaultModelAdapterRegistry } from "../dist/models/registry.js";
 import { ConfiguredModel } from "../dist/models/runtime.js";
+import { mapDeepSeekResponsesRequest } from "../dist/models/providers/deepseek-responses-request.js";
 import { mapAnthropicRequest } from "../dist/models/providers/anthropic-messages-request.js";
 import { mapOpenAIRequest } from "../dist/models/providers/openai-compatible-request.js";
 import { mapOpenAIResponsesRequest } from "../dist/models/providers/openai-responses-request.js";
@@ -32,7 +33,8 @@ function sse(records) {
 }
 
 function configuration(protocol, options = {}) {
-  const provider = protocol === "anthropic-messages" ? "anthropic" : "openai";
+  const provider = protocol === "anthropic-messages" ? "anthropic" :
+    protocol === "deepseek-responses" ? "deepseek" : "openai";
   return loadModelsConfiguration({
     json: {
       schemaVersion: 1,
@@ -56,6 +58,7 @@ function configuration(protocol, options = {}) {
           maxOutputTokens: 2048,
           input: { text: true, image: true },
           reasoning: true,
+          ...(options.reasoningControl === undefined ? {} : { reasoningControl: options.reasoningControl }),
           toolCalling: true,
           developerRole: options.developerRole ?? protocol !== "anthropic-messages",
         }],
@@ -91,11 +94,13 @@ function request(provider, messages, overrides = {}) {
 test("request adapters use model defaults, not capability ceilings", () => {
   const user = [{ role: "user", content: "hello" }];
   for (const [protocol, map, field] of [
+    ["deepseek-responses", mapDeepSeekResponsesRequest, "max_output_tokens"],
     ["openai-chat-completions", mapOpenAIRequest, "max_tokens"],
     ["openai-responses", mapOpenAIResponsesRequest, "max_output_tokens"],
     ["anthropic-messages", mapAnthropicRequest, "max_tokens"],
   ]) {
-    const provider = protocol === "anthropic-messages" ? "anthropic" : "openai";
+    const provider = protocol === "anthropic-messages" ? "anthropic" :
+      protocol === "deepseek-responses" ? "deepseek" : "openai";
     const configured = configuration(protocol, { maxTokensField: field });
     const model = resolveConfiguredModel(configured, `${provider}/model-a`);
     const input = { model, headers: {}, fetch: async () => new Response() };
@@ -115,13 +120,94 @@ test("advertised DeepSeek reasoning efforts override only one request", () => {
   const input = { model, headers: {}, fetch: async () => new Response() };
   const base = { model: model.ref, instructions: [], messages: [{ role: "user", content: "hello" }], tools: [] };
   assert.deepEqual(model.spec.reasoningControl?.efforts, ["none", "low", "high", "max"]);
-  assert.equal(mapOpenAIRequest(base, input).body.reasoning_effort, "high");
-  assert.equal(mapOpenAIRequest({ ...base, reasoningEffort: "low" }, input).body.reasoning_effort, "low");
-  assert.equal(mapOpenAIRequest({ ...base, reasoningEffort: "max" }, input).body.reasoning_effort, "max");
-  const disabled = mapOpenAIRequest({ ...base, reasoningEffort: "none" }, input).body;
-  assert.deepEqual(disabled.thinking, { type: "disabled" });
-  assert.equal("reasoning_effort" in disabled, false);
-  assert.throws(() => mapOpenAIRequest({ ...base, reasoningEffort: "ultra" }, input), /not supported/u);
+  assert.equal(model.protocol, "deepseek-responses");
+  assert.equal(model.spec.developerRole, true);
+  assert.deepEqual(mapDeepSeekResponsesRequest(base, input).body.reasoning, { effort: "high" });
+  assert.deepEqual(mapDeepSeekResponsesRequest({ ...base, reasoningEffort: "low" }, input).body.reasoning, { effort: "low" });
+  assert.deepEqual(mapDeepSeekResponsesRequest({ ...base, reasoningEffort: "max" }, input).body.reasoning, { effort: "max" });
+  assert.deepEqual(mapDeepSeekResponsesRequest({ ...base, reasoningEffort: "none" }, input).body.reasoning, { effort: "none" });
+  assert.throws(() => mapDeepSeekResponsesRequest({ ...base, reasoningEffort: "ultra" }, input), /not supported/u);
+});
+
+test("DeepSeek Responses sends stable instructions and maps dynamic developer control to system", async () => {
+  let captured;
+  const controller = new AbortController();
+  const model = createModel("deepseek-responses", async (url, init) => {
+    captured = { url, init, body: JSON.parse(init.body) };
+    return sse([
+      { event: "response.created", data: {
+        type: "response.created",
+        response: { id: "resp-ds", model: "model-a", status: "in_progress", created_at: 1789963200 },
+      } },
+      { event: "response.output_item.added", data: {
+        type: "response.output_item.added",
+        item: { id: "rs-ds", type: "reasoning", content: [] },
+      } },
+      { event: "response.reasoning_text.delta", data: {
+        type: "response.reasoning_text.delta", item_id: "rs-ds", delta: "think",
+      } },
+      { event: "response.output_text.delta", data: {
+        type: "response.output_text.delta", item_id: "msg-ds", delta: "answer",
+      } },
+      { event: "response.output_item.done", data: {
+        type: "response.output_item.done",
+        item: { id: "fc-ds", type: "function_call", call_id: "call-ds", name: "lookup", arguments: '{"q":"a"}' },
+      } },
+      { event: "response.completed", data: {
+        type: "response.completed",
+        response: {
+          id: "resp-ds", model: "model-a", status: "completed", created_at: 1789963200,
+          output: [{ id: "fc-ds", type: "function_call", call_id: "call-ds", name: "lookup", arguments: '{"q":"a"}' }],
+          usage: { input_tokens: 30, input_tokens_details: { cached_tokens: 10 }, output_tokens: 8, output_tokens_details: { reasoning_tokens: 5 }, total_tokens: 38 },
+        },
+      } },
+    ]);
+  }, {
+    developerRoleMode: "system-fallback",
+    maxTokensField: "max_output_tokens",
+    reasoningControl: { format: "deepseek-responses", efforts: ["none", "low", "high", "max"], defaultEffort: "high" },
+  });
+
+  const events = await collect(model.stream(request("deepseek", [
+    {
+      role: "developer",
+      content: "dynamic guidance",
+    },
+    { role: "user", content: "question" },
+    {
+      role: "assistant",
+      content: "prior answer",
+      reasoningContent: "prior reasoning",
+      toolCalls: [{ id: "prior-ds", name: "lookup", argumentsJson: '{"q":"old"}' }],
+    },
+    { role: "tool", content: '{"value":1}', toolCallId: "prior-ds" },
+  ], {
+    instructions: [
+      { role: "system", content: "system policy" },
+      { role: "developer", content: "developer policy" },
+    ],
+    reasoningEffort: "low",
+    invocationScope: { sessionId: "private-session", runId: "private-run", userTurnId: "private-turn", stepId: "private-step" },
+  }), controller.signal));
+
+  assert.deepEqual(events.map(event => event.type), ["start", "reasoning_delta", "text_delta", "tool_call", "done"]);
+  assert.equal(events[0].developerRoleMode, "system-fallback");
+  assert.equal("authorityDegraded" in events[0], false);
+  assert.deepEqual(events[3].call, { id: "call-ds", name: "lookup", argumentsJson: '{"q":"a"}' });
+  assert.deepEqual(events.at(-1).usage, { inputTokens: 30, cachedInputTokens: 10, outputTokens: 8, totalTokens: 38, source: "provider" });
+  assert.equal(captured.url, "https://deepseek.example.test/v1/responses");
+  assert.equal(captured.init.signal, controller.signal);
+  assert.equal(captured.body.instructions, "system policy\n\ndeveloper policy");
+  assert.equal(captured.body.input[0].role, "system");
+  assert.equal(captured.body.input[2].type, "reasoning");
+  assert.equal(captured.body.input[2].content[0].text, "prior reasoning");
+  assert.equal(captured.body.input[3].role, "assistant");
+  assert.equal(captured.body.input[4].type, "function_call");
+  assert.equal(captured.body.input[5].type, "function_call_output");
+  assert.deepEqual(captured.body.reasoning, { effort: "low" });
+  assert.equal(captured.body.tools[0].name, "lookup");
+  assert.equal("strict" in captured.body.tools[0], false);
+  assert.doesNotMatch(JSON.stringify(captured.body), /private-(session|run|turn|step)/u);
 });
 
 test("OpenAI-compatible maps authority, images, Tools, reasoning, and usage", async () => {
@@ -711,6 +797,7 @@ test("Anthropic maps Provider context overflow without exposing a response objec
 });
 
 for (const [protocol, provider] of [
+  ["deepseek-responses", "deepseek"],
   ["openai-chat-completions", "openai"],
   ["openai-responses", "openai"],
   ["anthropic-messages", "anthropic"],

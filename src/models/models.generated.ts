@@ -388,7 +388,7 @@ export const GENERATED_MODELS = {
       },
       "reasoning": true,
       "reasoningControl": {
-        "format": "deepseek-chat",
+        "format": "deepseek-responses",
         "efforts": [
           "none",
           "low",
@@ -398,7 +398,7 @@ export const GENERATED_MODELS = {
         "defaultEffort": "high"
       },
       "toolCalling": true,
-      "developerRole": false
+      "developerRole": true
     },
     {
       "id": "deepseek-v4-flash",
@@ -412,7 +412,7 @@ export const GENERATED_MODELS = {
       },
       "reasoning": true,
       "reasoningControl": {
-        "format": "deepseek-chat",
+        "format": "deepseek-responses",
         "efforts": [
           "none",
           "low",
@@ -422,7 +422,7 @@ export const GENERATED_MODELS = {
         "defaultEffort": "high"
       },
       "toolCalling": true,
-      "developerRole": false
+      "developerRole": true
     },
     {
       "id": "deepseek-v4-flash-vision-exp",
@@ -436,7 +436,7 @@ export const GENERATED_MODELS = {
       },
       "reasoning": true,
       "reasoningControl": {
-        "format": "deepseek-chat",
+        "format": "deepseek-responses",
         "efforts": [
           "none",
           "low",
@@ -446,7 +446,7 @@ export const GENERATED_MODELS = {
         "defaultEffort": "high"
       },
       "toolCalling": true,
-      "developerRole": false
+      "developerRole": true
     },
     {
       "id": "deepseek-v4-pro",
@@ -460,7 +460,7 @@ export const GENERATED_MODELS = {
       },
       "reasoning": true,
       "reasoningControl": {
-        "format": "deepseek-chat",
+        "format": "deepseek-responses",
         "efforts": [
           "none",
           "low",
@@ -470,7 +470,7 @@ export const GENERATED_MODELS = {
         "defaultEffort": "high"
       },
       "toolCalling": true,
-      "developerRole": false
+      "developerRole": true
     }
   ],
   "fireworks": [

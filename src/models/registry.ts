@@ -3,6 +3,10 @@ import {
   createAnthropicMessagesAdapter,
 } from "./providers/anthropic-messages.js";
 import {
+  createDeepSeekResponsesAdapter,
+  DEEPSEEK_RESPONSES_PROTOCOL,
+} from "./providers/deepseek-responses.js";
+import {
   createOpenAICompatibleAdapter,
   OPENAI_CHAT_COMPLETIONS_PROTOCOL,
 } from "./providers/openai-compatible.js";
@@ -16,6 +20,7 @@ export { ModelAdapterRegistry, type ModelAdapterRegistration } from "./adapter-r
 
 export function createDefaultModelAdapterRegistry(): ModelAdapterRegistry {
   const registry = new ModelAdapterRegistry();
+  registry.register(DEEPSEEK_RESPONSES_PROTOCOL, createDeepSeekResponsesAdapter);
   registry.register(
     OPENAI_CHAT_COMPLETIONS_PROTOCOL,
     createOpenAICompatibleAdapter,

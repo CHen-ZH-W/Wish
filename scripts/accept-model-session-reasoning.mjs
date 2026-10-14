@@ -6,11 +6,13 @@ import test from "node:test";
 
 import { ApplicationFacade } from "../dist/apps/application.js";
 import { startWishWebUiServer, WebToolApprovalBroker } from "../dist/apps/webui/index.js";
+import { WebUiControlRegistry } from "../dist/apps/webui/controls.js";
 import { ContextProjector } from "../dist/core/context/projector.js";
 import { loadModelsConfiguration } from "../dist/models/config.js";
 import { createDefaultModelAdapterRegistry } from "../dist/models/registry.js";
 import { ConfiguredModel } from "../dist/models/runtime.js";
 import { DomainSessionReasoningStore, ModelReasoningSelectionError, SessionReasoningSelections } from "../dist/models/session-reasoning.js";
+import { createModelReasoningWebUiControl } from "../dist/models/consumers/webui-control.js";
 import { FileStorageBackend } from "../dist/storage/providers/file/backend.js";
 
 test("Context projection preserves a Run's selected reasoning effort for the Provider", async () => {
@@ -101,22 +103,24 @@ test("WebUI selection endpoint validates Session, model, and effort", async () =
       selected = effort ?? undefined; return this.inspect();
     },
   };
+  const controls = new WebUiControlRegistry();
+  controls.register("model-reasoning", createModelReasoningWebUiControl());
   const server = await startWishWebUiServer({
     application: { agentId: "wish", sessionReasoning: port, async getSession() { return { sessionId: "session-a", status }; } },
-    approvals: new WebToolApprovalBroker(), workspaceRoot: directory, port: 0,
+    controls, approvals: new WebToolApprovalBroker(), workspaceRoot: directory, port: 0,
   });
-  const endpoint = `${server.url}/api/sessions/session-a/model-reasoning`;
+  const endpoint = `${server.url}/api/sessions/session-a/controls/model-reasoning`;
   const post = (body) => fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   try {
-    let response = await fetch(`${server.url}/api/model-reasoning/default`);
+    let response = await fetch(`${server.url}/api/controls/model-reasoning/default`);
     assert.equal(response.status, 200);
-    assert.deepEqual((await response.json()).selection, { model: reference, control });
+    assert.deepEqual((await response.json()).value, { model: reference, control });
     response = await fetch(endpoint);
     assert.equal(response.status, 200);
-    assert.deepEqual((await response.json()).selection.control.efforts, control.efforts);
+    assert.deepEqual((await response.json()).value.control.efforts, control.efforts);
     response = await post({ model: reference, effort: "low" });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).selection.selected, "low");
+    assert.equal((await response.json()).value.selected, "low");
     response = await post({ model: reference, effort: "ultra" });
     assert.equal(response.status, 400);
     response = await post({ model: { provider: "deepseek", model: "stale" }, effort: "max" });

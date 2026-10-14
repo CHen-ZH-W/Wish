@@ -22,6 +22,10 @@ export abstract class SubagentLauncherService extends Service implements
     identity: SubagentLaunchIdentity,
   ): Promise<SubagentLaunch> | SubagentLaunch;
 
+  cleanupLaunchSecrets(
+    _identity: SubagentLaunchIdentity,
+  ): Promise<void> | void {}
+
   registerResourceProvider(provider: SubagentResourceProvider): void {
     if (!provider || typeof provider.id !== "string" || !/^[a-z][a-z0-9_.-]{0,95}$/u.test(provider.id) || typeof provider.prepare !== "function" || this.resourceProviders.has(provider.id)) throw new Error("Invalid or duplicate Subagent resource provider");
     this.ctx.effect(() => {

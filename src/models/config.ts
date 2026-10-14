@@ -22,6 +22,7 @@ import type {
 import { createDefaultModelsConfigurationSource } from "./defaults.js";
 
 const BUILTIN_PROTOCOLS = Object.freeze([
+  "deepseek-responses",
   "openai-chat-completions",
   "openai-responses",
   "anthropic-messages",
@@ -29,6 +30,7 @@ const BUILTIN_PROTOCOLS = Object.freeze([
 const PROTECTED_EXTRA_BODY_FIELDS = new Set([
   "model",
   "input",
+  "instructions",
   "messages",
   "tools",
   "stream",
@@ -468,9 +470,28 @@ function parseProvider(value: unknown, path: string): ProviderProfile {
     );
   }
   validateDeveloperRoleConfiguration(protocol, developerRoleMode, models, path);
+  if (protocol === "deepseek-responses") {
+    rejectDeepSeekManagedReasoning(request.extraBody, `${path}.request.extraBody`);
+    models.forEach((model, index) => {
+      const extraBody = model.request?.extraBody;
+      if (extraBody !== undefined) {
+        rejectDeepSeekManagedReasoning(
+          extraBody,
+          `${path}.models[${index}].request.extraBody`,
+        );
+      }
+    });
+  }
   for (const model of models) {
     const format = model.reasoningControl?.format;
-    if (format !== undefined && (format === "deepseek-chat" ? protocol !== "openai-chat-completions" : protocol !== "openai-responses")) {
+    const expectedProtocol = format === "deepseek-chat"
+      ? "openai-chat-completions"
+      : format === "deepseek-responses"
+        ? "deepseek-responses"
+        : format === "openai-responses"
+          ? "openai-responses"
+          : undefined;
+    if (expectedProtocol !== undefined && protocol !== expectedProtocol) {
       throw configurationError(`${path} Model "${model.id}" has reasoningControl incompatible with protocol "${protocol}"`);
     }
   }
@@ -486,6 +507,15 @@ function parseProvider(value: unknown, path: string): ProviderProfile {
     catalog,
     models: Object.freeze(models),
   });
+}
+
+function rejectDeepSeekManagedReasoning(
+  extraBody: Readonly<Record<string, unknown>>,
+  path: string,
+): void {
+  if (Object.hasOwn(extraBody, "reasoning")) {
+    throw configurationError(`${path} cannot override protected field "reasoning"`);
+  }
 }
 
 function validateDeveloperRoleConfiguration(
@@ -784,7 +814,10 @@ function parseReasoningControl(value: unknown, path: string): ModelReasoningCont
   const input = record(value, path);
   knownKeys(input, ["format", "efforts", "defaultEffort"], path);
   const format = requiredString(input.format, `${path}.format`);
-  if (format !== "deepseek-chat" && format !== "openai-responses") {
+  if (
+    format !== "deepseek-chat" && format !== "deepseek-responses" &&
+    format !== "openai-responses"
+  ) {
     throw configurationError(`${path}.format is unsupported`);
   }
   const efforts = array(input.efforts, `${path}.efforts`).map((value, index): ModelReasoningEffort => {

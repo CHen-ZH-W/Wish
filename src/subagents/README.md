@@ -95,6 +95,16 @@ permission profile and available Tool ceiling are inherited or narrowed explicit
 An explicit host capability ceiling is also passed to the child environment. Empty
 explicit Tool/capability scopes fail closed rather than becoming unrestricted defaults.
 
+Model credentials use a separate one-use handoff. The launcher resolves only the API-key
+references required by the selected child model and configured fallbacks, writes those values
+to a child-identity-bound `0600` envelope, and passes only its path. The child consumes and
+unlinks the envelope before opening its Application, then exposes the values only through a
+generation-scoped Models resolver. Credential values never enter spawn requests, argv, tmux
+metadata, durable Subagent records, task text, or output. Matching environment variables are
+explicitly emptied in the child launch environment; a missing reference fails before execution.
+This narrows application-level disclosure but is not an OS security boundary against another
+process running as the same account.
+
 The domain Runtime has no static dependency on the CLI launcher. If Sessions or the launcher
 adapter is unavailable, new `spawn` requests fail closed while durable record reads and
 execution-backed list/capture/send/stop/collect remain available. Reattaching the launcher

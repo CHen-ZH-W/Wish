@@ -38,10 +38,15 @@ test("product Browser selects and restores Session reasoning without refreshing 
       const root = document.documentElement, original = root.getAttribute("data-theme");
       const read = () => {
         const color = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
+        const effort = document.querySelector("#wish-reasoning-effort");
+        const option = effort?.querySelector('option[value="low"]');
         return {
           page: color(".workspace-main"), dock: color(".composer"), card: color(".composer-card"),
           input: color("#wish-composer"), actions: color(".composer-card .composer-actions"),
           effort: color("#wish-reasoning-effort"),
+          effortColorScheme: effort ? getComputedStyle(effort).colorScheme : "",
+          optionSurface: option ? getComputedStyle(option).backgroundColor : "",
+          optionColor: option ? getComputedStyle(option).color : "",
         };
       };
       root.setAttribute("data-theme", "light"); const light = read();
@@ -55,20 +60,25 @@ test("product Browser selects and restores Session reasoning without refreshing 
       assert.equal(surface.actions, "rgba(0, 0, 0, 0)", `${theme} action row must share the card surface`);
       assert.equal(surface.effort, "rgba(0, 0, 0, 0)", `${theme} reasoning selector must not introduce a second surface`);
       assert.notEqual(surface.card, "rgba(0, 0, 0, 0)", `${theme} composer card owns the only surface`);
+      assert.equal(surface.effortColorScheme, theme, `${theme} reasoning selector must theme its native popup`);
+      assert.notEqual(surface.optionSurface, "rgba(0, 0, 0, 0)", `${theme} reasoning options need an explicit surface`);
+      assert.notEqual(surface.optionColor, "rgba(0, 0, 0, 0)", `${theme} reasoning options need an explicit text color`);
     }
+    assert.notEqual(composerSurfaces.light.optionSurface, composerSurfaces.dark.optionSurface,
+      "reasoning option surfaces must follow the active theme");
     assert.equal(composerSurfaces.light.card, composerSurfaces.light.page, "light card separates from the page by elevation");
     assert.notEqual(composerSurfaces.dark.card, composerSurfaces.dark.page, "dark card uses an elevated surface");
     await page.locator("#wish-composer").fill("草稿不会因为切换思考强度而消失");
     await selector.selectOption("low");
     await page.waitForFunction(() => document.querySelector("#wish-reasoning-effort")?.value === "low" && !document.querySelector("#wish-reasoning-effort")?.disabled);
     assert.equal(await page.locator("#wish-composer").inputValue(), "草稿不会因为切换思考强度而消失");
-    const selected = await page.evaluate(async () => (await (await fetch("/api/sessions/reasoning-session/model-reasoning")).json()).selection);
+    const selected = await page.evaluate(async () => (await (await fetch("/api/sessions/reasoning-session/controls/model-reasoning")).json()).value);
     assert.equal(selected.selected, "low");
     await selector.selectOption("high");
-    await page.waitForFunction(async () => (await (await fetch("/api/sessions/reasoning-session/model-reasoning")).json()).selection.selected === undefined);
+    await page.waitForFunction(async () => (await (await fetch("/api/sessions/reasoning-session/controls/model-reasoning")).json()).value.selected === undefined);
     assert.equal(await selector.inputValue(), "high", "returning to the model default removes the override without an extra option");
     await selector.selectOption("low");
-    await page.waitForFunction(async () => (await (await fetch("/api/sessions/reasoning-session/model-reasoning")).json()).selection.selected === "low");
+    await page.waitForFunction(async () => (await (await fetch("/api/sessions/reasoning-session/controls/model-reasoning")).json()).value.selected === "low");
     await page.reload();
     await selector.waitFor();
     await page.waitForFunction(() => document.querySelector("#wish-reasoning-effort")?.value === "low");

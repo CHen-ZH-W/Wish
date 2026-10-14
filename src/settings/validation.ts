@@ -50,7 +50,7 @@ export function resolveSettings(
 }
 export function validateDefinition(input: SettingsDefinition): SettingsDefinition {
   if (!settingsKey(input.namespace) || !input.title || input.title.length > 160 || !Array.isArray(input.fields) ||
-    !input.fields.length || input.fields.length > 64 || !["live", "next-request", "restart"].includes(input.applies)) throw new SettingsError("settings_invalid_definition");
+    !input.fields.length || input.fields.length > 64 || !["live", "next-request", "new-session", "restart"].includes(input.applies)) throw new SettingsError("settings_invalid_definition");
   const keys = new Set<string>();
   const fields = input.fields.map((field: SettingField) => {
     if (!settingsKey(field.key) || keys.has(field.key) || !field.label || field.label.length > 160 ||

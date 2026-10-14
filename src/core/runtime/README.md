@@ -85,10 +85,11 @@ Core 不认识插件名称、Cordis、HMR 或 Registry。
 - `preemptible` 明确标记可以被可信人工输入替换的待执行 follow-up；当前默认产品只让
   Runtime policy 生成这种控制。可信 CLI/WebUI 人工 follow-up 会取消这些待执行项，
   回执原因记录为 `human_input_preempted`。其他 follow-up 保持原有顺序且不会被隐式删除。
-- `deferRunCompletion()` 返回显式 completion hold。当前 UserTurn 完成且 follow-up 队列
-  暂空时，只要仍有 hold，Run 就保持活动；释放最后一个 hold 后才重新判断终态。
-  异步能力可通过通用 `RunContinuation` Port 等待外部结果，再通过正常 follow-up 控制
-  创建下一 UserTurn。hold 不修改 Step 或 UserTurn 层级，也不拥有外部任务生命周期。
+- `deferRunCompletion()` 返回显式 completion hold。当前 UserTurn 完成且后续队列暂空时，
+  只要仍有 hold，Run 就保持活动；释放最后一个 hold 后才重新判断终态。异步能力可通过
+  通用 `RunContinuation` Port 等待外部结果，再以 `inputSource=continuation` 恢复父 Run；
+  该输入可进入模型上下文和持久证据，但不是人工 follow-up，展示层不得把它标成用户请求。
+  hold 不修改 Step 或 UserTurn 层级，也不拥有外部任务生命周期。
 - `reserveCapacity` 只绕过 follow-up 条目数限制，不绕过字节限制。
 - abort 是 Run 级、幂等且保留第一次接受的 reason/source/time。
 - UserTurn 终态后到达的 steer 和 Run 终态后的全部控制都会得到拒绝回执。

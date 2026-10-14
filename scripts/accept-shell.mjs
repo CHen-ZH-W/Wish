@@ -84,8 +84,8 @@ test("Linux Native Shell policy is deterministic, immutable, and path-scoped", (
   assert.equal(first.policy.backend, "linux-native");
   assert.equal(first.policy.filesystem, "path-scoped");
   assert.equal(first.policy.network, "per-call");
-  assert.equal(first.policy.environment, "clean");
-  assert.deepEqual(first.policy.automaticPermissionProfiles, ["workspace-write"]);
+  assert.equal(first.policy.environment, "profile-scoped");
+  assert.deepEqual(first.policy.automaticPermissionProfiles, ["workspace-write", "full-access"]);
   assert.equal(Object.isFrozen(first.policy), true);
   assert.equal(Object.isFrozen(first.policy.resourceLimits), true);
 });
@@ -125,13 +125,32 @@ test("Landlock confines reads, writes, protected files, and symlinks", async () 
     await writeFile(join(root, ".env"), "secret", "utf8");
     await writeFile(join(outside, "secret.txt"), "outside", "utf8");
     await symlink(join(outside, "secret.txt"), join(root, "link.txt"));
+    const outsideWrite = join(outside, "blocked.txt");
     const result = await executeBash(root, {
       command:
-        "cat input.txt && ! cat .env && ! cat link.txt && ! cat /etc/passwd && printf written > src/output.txt",
+        `cat input.txt && ! cat .env && ! cat link.txt && ! cat /etc/passwd && ! printf escaped > ${outsideWrite} && printf written > src/output.txt`,
     }, shell, { filesystem });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.match(result.output.content[0].text, /visible/u);
     assert.equal(await readFile(join(root, "src", "output.txt"), "utf8"), "written");
+    await assert.rejects(readFile(outsideWrite, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("Native full-access explicitly bypasses workspace isolation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wish-shell-full-access-"));
+  const outside = await mkdtemp(join(tmpdir(), "wish-shell-full-access-outside-"));
+  const { filesystem, shell } = nativeShell();
+  const target = join(outside, "allowed.txt");
+  try {
+    const result = await executeBash(root, {
+      command: `printf unconfined > ${target}`,
+    }, shell, { filesystem, profile: "full-access" });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(await readFile(target, "utf8"), "unconfined");
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });

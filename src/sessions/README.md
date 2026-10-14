@@ -113,12 +113,13 @@ Compaction CAS 冲突。
 - `recordId`、Session 分配的连续 `sequence` 和调用方提供的 `idempotencyKey`；
 - `runId`、`userTurnId`、`stepId`；
 - `user_input | steering | assistant | tool | imported` 来源；
-- 可选的 `inputSource` 宿主投递来源（user／steering／follow_up／unknown）；
+- 可选的 `inputSource` 宿主投递来源（user／steering／follow_up／continuation／unknown）；
 - 完整的 provider-neutral `ModelMessage`；
 - 可选的 Tool Result archive receipt。
 
 `inputSource` 只允许附在 user-role 消息记录旁，不能进入 `ModelMessage`；旧记录缺失时
-含义是 unknown。`origin=user_input` 或 `role=user` 本身不证明输入来自人类。
+含义是 unknown。`origin=user_input` 或 `role=user` 本身不证明输入来自人类；
+`continuation` 是 Host 恢复父 Run 的内部数据，WebUI 不把它投影成用户会话消息。
 该字段参与幂等一致性检查，文件恢复和 Context／Compaction 的规范历史视图都会保留它。
 
 `contentParts`、`reasoningContent`、`toolCalls` 和 `toolCallId` 都会无损保留。Tool

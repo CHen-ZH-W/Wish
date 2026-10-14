@@ -52,13 +52,18 @@ Provider 通过 `preflight(request)` 固定并验证命令、cwd、timeout、文
 
 Bash 没有 `run_in_background`、job id、后台输出缓冲或跨调用 stdin handle。Tool 调用同步等待
 当前 shell 命令；需要持续存在、可查询和可交互的 dev server、watcher、调试器或 REPL 时，
-使用 tmux。`tmux new-session -d` 的客户端同步退出，后续调用通过稳定 socket 执行
-`list-sessions`、`capture-pane`、`send-keys` 和 `kill-session`，用户也可 attach 到同一会话。
+模型使用 `tmux_start`。后续调用通过 `tmux_list`、`tmux_capture`、`tmux_send` 和
+`tmux_stop` 重新发现并控制真实 tmux 会话，用户也可使用返回的命令 attach 到同一会话。
 
-Linux Native Provider 每次调用的 HOME/TMPDIR 都是临时目录，因此透明会话必须显式使用
-Workspace 内已授权的持久目录与 socket，例如先创建普通目录，再使用
-`tmux -S "$PWD/runtime/tmux.sock"`。创建 tmux server 时的 Sandbox 权限会被长生命周期进程
-继承；不同权限 ceiling 不得共享同一个 server。
+`tmux_start` 不是绕过 Shell 的 Host spawn。Shell 先消费同一个一次性 Grant，并把命令物化为
+不可变的沙箱 launcher argv；Tmux 只持有该 launcher。Linux Native 的 Landlock、seccomp、
+clean environment、资源上限及调用级网络权限因此继续适用于长期进程。返回值公开真实 tmux
+地址以便用户 attach，但 workspace-write pane 无权访问控制 socket，也不能借它创建未沙箱化窗口。
+
+Linux Native Provider 为托管终端保留独立的私有 HOME/TMPDIR，直到终端被显式删除；Tmux
+Provider 把该目录地址写入 tmux 元数据，因此 Provider reload 后仍能在删除终端时完成清理。
+直接通过 Bash 创建 raw tmux 仍是运维逃生口，但不会自动获得 Wish 发现元数据，也不是模型的
+标准长期执行路径。
 
 Landlock 是 allow-list。为了在开放上层目录时仍保护 `.git`、`.wish` 和 `.env*`，native
 launcher 会拆分普通子树；如果一个目录含有受保护的直属项，它不会获得“创建任意新直属
@@ -71,10 +76,10 @@ launcher 会拆分普通子树；如果一个目录含有受保护的直属项�
 - `workspace-write`：只有 path-scoped Linux Native Provider 能启用；工作区读写与无开放
   世界效应的命令自动放行，高风险 capability 仍进入审批。
 - `approval-required`：只读自动放行，其他调用进入审批；进程执行必须使用 Native Provider。
-- `full-access`：只有 `shell-host` 且 `enabled=true` 时可用。它继承宿主环境，且不能强制
-  文件/网络 scope，因此默认配置不会启用。
+- `full-access`：显式退出 Landlock/seccomp 和审批，继承宿主环境，允许访问工作区外文件及
+  网络。默认 Native Provider 只为这一 profile 走无隔离分支；其他 profile 不受影响。
 
-选择 Host 需要双重显式配置：
+整张图固定使用 Host Shell 仍需要双重显式配置：
 
 ```bash
 WISH_SHELL_PROVIDER=host WISH_SHELL_HOST_ENABLED=1 WISH_PERMISSION_PROFILE=full-access

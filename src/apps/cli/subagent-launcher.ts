@@ -7,6 +7,7 @@ import s from "@deepseek-ai/schemastery";
 
 import { FileSubagentExchange } from "../../subagents/files.js";
 import { SubagentLauncherService } from "../../subagents/launcher.js";
+import { resolveConfiguredModel } from "../../models/config.js";
 import type { SubagentResource } from "../../subagents/resources.js";
 import type {
   SpawnSubagentRequest,
@@ -23,6 +24,8 @@ export interface WishCliSubagentLauncherOptions {
   readonly modelsConfigurationPath?: string;
   readonly exchange?: FileSubagentExchange;
   readonly prepareResources?: (request: SpawnSubagentRequest, identity: SubagentLaunchIdentity) => Promise<readonly SubagentResource[]>;
+  /** Host-only resolver; credential values are never part of a spawn request. */
+  readonly resolveCredential?: (reference: string) => string | undefined;
 }
 
 /** Standalone App adapter used by the Cordis Provider and focused acceptance. */
@@ -32,6 +35,7 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
   private readonly executable: string;
   private readonly modelsConfigurationPath: string | undefined;
   private readonly prepareResources: WishCliSubagentLauncherOptions["prepareResources"];
+  private readonly resolveCredential: WishCliSubagentLauncherOptions["resolveCredential"];
 
   constructor(options: WishCliSubagentLauncherOptions) {
     this.exchange = options.exchange ?? new FileSubagentExchange(options.dataDirectory);
@@ -41,6 +45,7 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
     this.executable = options.executable ?? process.execPath;
     this.modelsConfigurationPath = options.modelsConfigurationPath;
     this.prepareResources = options.prepareResources;
+    this.resolveCredential = options.resolveCredential;
   }
 
   async resolve(
@@ -51,6 +56,8 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
     const taskFile = await this.exchange.createTask(identity.id, request.task, request.signal);
     let modelsConfigurationPath = this.modelsConfigurationPath;
     let resourceDigest: string | undefined;
+    let credentialReferences: readonly string[] = Object.freeze([]);
+    let credentialsWritten = false;
     try {
       if (request.modelsConfiguration !== undefined) {
         modelsConfigurationPath = await this.exchange.writeModelsConfiguration(
@@ -58,6 +65,22 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
           request.modelsConfiguration,
           request.signal,
         );
+      }
+      credentialReferences = requiredCredentialReferences(request);
+      if (credentialReferences.length > 0) {
+        if (this.resolveCredential === undefined) {
+          throw new Error("Subagent Model credentials cannot be resolved by this Host");
+        }
+        const values: Record<string, string> = {};
+        for (const reference of credentialReferences) {
+          const value = this.resolveCredential(reference);
+          if (typeof value !== "string" || value.length === 0) {
+            throw new Error(`Missing required Subagent Model credential ${reference}`);
+          }
+          values[reference] = value;
+        }
+        await this.exchange.writeCredentials(identity, Object.freeze(values), request.signal);
+        credentialsWritten = true;
       }
       const resources = await this.prepareResources?.(request, identity) ?? [];
       if (resources.length) {
@@ -71,6 +94,7 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
         ...(request.modelsConfiguration === undefined
           ? []
           : [this.exchange.removeModelsConfiguration(identity.id)]),
+        ...(credentialsWritten ? [this.exchange.removeCredentials(identity.id)] : []),
       ]);
       throw error;
     }
@@ -110,7 +134,13 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
       WISH_CHILD_SESSION_ID: identity.childSessionId,
       WISH_CHILD_RUN_ID: identity.childRunId,
       WISH_CHILD_EXCHANGE_DATA_DIR: this.exchange.dataDirectory,
+      // Empty explicitly prevents inheriting an ancestor's credential envelope.
+      WISH_CHILD_CREDENTIALS_FILE: credentialsWritten
+        ? this.exchange.credentialsPath(identity.id)
+        : "",
     };
+    // The one-use file, not the child process environment, carries these values.
+    for (const reference of credentialReferences) environment[reference] = "";
     if (request.permissionProfile !== undefined) {
       environment.WISH_PERMISSION_PROFILE = request.permissionProfile;
     }
@@ -138,9 +168,14 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
           ...(request.modelsConfiguration === undefined
             ? []
             : [this.exchange.removeModelsConfiguration(identity.id)]),
+          ...(credentialsWritten ? [this.exchange.removeCredentials(identity.id)] : []),
         ]);
       },
     });
+  }
+
+  cleanupLaunchSecrets(identity: SubagentLaunchIdentity): Promise<void> {
+    return this.exchange.removeCredentials(identity.id);
   }
 }
 
@@ -156,7 +191,7 @@ export const Config: s<Config> = s.object({
 
 /** Cordis adapter for launching Wish's CLI child surface. */
 export class WishCliSubagentLauncher extends SubagentLauncherService {
-  static readonly inject = ["launch", "sessions"];
+  static readonly inject = ["launch", "sessions", "models"];
   static readonly Config = Config;
   private readonly backend: WishCliSubagentLauncherBackend;
   private readonly work: PluginWorkOwner;
@@ -174,11 +209,28 @@ export class WishCliSubagentLauncher extends SubagentLauncherService {
       ...(ctx.launch.environment.WISH_MODELS_CONFIG === undefined
         ? {}
         : { modelsConfigurationPath: ctx.launch.environment.WISH_MODELS_CONFIG }),
+      resolveCredential: (reference) => {
+        const resolved = ctx.get("credentials")?.resolve(reference);
+        if (resolved !== undefined) return resolved;
+        const inherited = ctx.launch.environment[reference];
+        return typeof inherited === "string" && inherited.length > 0
+          ? inherited
+          : undefined;
+      },
     });
   }
 
   resolve(request: SpawnSubagentRequest, identity: SubagentLaunchIdentity) {
-    return this.work.run(() => this.backend.resolve(request, identity));
+    return this.work.run(async () => {
+      const modelsConfiguration = request.modelsConfiguration ?? await this.ctx.models.load({
+        dataDirectory: this.ctx.sessions.dataDirectory,
+      });
+      return this.backend.resolve({ ...request, modelsConfiguration }, identity);
+    });
+  }
+
+  override cleanupLaunchSecrets(identity: SubagentLaunchIdentity): Promise<void> {
+    return this.work.runDuringActivation(this.ctx, () => this.backend.cleanupLaunchSecrets(identity));
   }
 
   override readResult(id: string, signal?: AbortSignal): Promise<SubagentResult | undefined> {
@@ -187,3 +239,23 @@ export class WishCliSubagentLauncher extends SubagentLauncherService {
 }
 
 export default WishCliSubagentLauncher;
+
+function requiredCredentialReferences(
+  request: SpawnSubagentRequest,
+): readonly string[] {
+  const configuration = request.modelsConfiguration;
+  if (configuration === undefined) return Object.freeze([]);
+  const models = [
+    request.model ?? configuration.defaultModel,
+    ...configuration.fallbackModels,
+  ];
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const model of models) {
+    const auth = resolveConfiguredModel(configuration, model).auth;
+    if (auth.type === "none" || seen.has(auth.apiKeyEnv)) continue;
+    seen.add(auth.apiKeyEnv);
+    result.push(auth.apiKeyEnv);
+  }
+  return Object.freeze(result);
+}

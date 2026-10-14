@@ -8,7 +8,7 @@ Cordis owner。停用贡献者会移除设置入口，但不删除已保存值�
 设置页只能查看、修改已注册命名空间，支持有限的 boolean、number、string、enum
 字段，不支持密钥、任意 JSON、部署表达式或可执行代码；API key 由独立 Credentials seam
 只写保存，Settings 描述和文档都不会携带其值。
-每个模块声明字段和 `applies: live / next-request / restart`，必要时提供纯校验函数。
+每个模块声明字段和 `applies: live / next-request / new-session / restart`，必要时提供纯校验函数。
 Settings 不执行模块重启，也不把“已保存”伪装成“已经在当前 Run 生效”。
 
 大枚举用于 Host 已验证的模型清单，最多 2048 项。声明 `allowStale` 的枚举在模块更新后可

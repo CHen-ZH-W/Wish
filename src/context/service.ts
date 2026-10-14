@@ -42,6 +42,11 @@ export interface ContextProviderRegistration {
   unregister(): boolean;
 }
 
+export interface ContextObserverRegistration {
+  readonly id: string;
+  unregister(): boolean;
+}
+
 export interface ContextResourcesOptions extends OpenContextInput {
   readonly sessions: SessionResources;
   readonly archive: ToolResultArchivePort;
@@ -85,6 +90,7 @@ export class ContextEngine extends Service {
     string,
     ContextProvider<ContextInput>
   >();
+  private readonly observers = new Map<string, ContextObservationListener>();
 
   constructor(ctx: CordisContext, config: Config = {}) {
     super(ctx, "contextEngine");
@@ -155,6 +161,36 @@ export class ContextEngine extends Service {
     return registration;
   }
 
+  /** Observe final projections without teaching Context about a consuming domain. */
+  registerObserver(
+    idValue: string,
+    observer: ContextObservationListener,
+  ): ContextObserverRegistration {
+    this.work.assertAttached();
+    const id = requireIdentifier(idValue, "Context observer id");
+    if (typeof observer !== "function") throw new TypeError("Context observer must be a function");
+    if (this.observers.has(id)) throw new Error(`Context observer ${JSON.stringify(id)} is already registered`);
+    this.observers.set(id, observer);
+    let active = true;
+    const registration = Object.freeze({
+      id,
+      unregister: (): boolean => {
+        if (!active) return false;
+        active = false;
+        if (this.observers.get(id) !== observer) return false;
+        this.observers.delete(id);
+        return true;
+      },
+    });
+    try {
+      this.ctx.effect(() => () => { registration.unregister(); }, `contextEngine.registerObserver(${JSON.stringify(id)})`);
+    } catch (error: unknown) {
+      registration.unregister();
+      throw error;
+    }
+    return registration;
+  }
+
   /** Build one Application-facing Context graph from injected capability views. */
   open(input: OpenContextInput): ContextBundleHandle {
     this.work.assertAttached();
@@ -164,7 +200,13 @@ export class ContextEngine extends Service {
     try {
       return createContextBundleHandle(createContextResources({
         ...input,
-        observe: (facts, projection) => { this.observations.record(facts, projection); input.observe?.(facts, projection); },
+        observe: async (facts, projection) => {
+          this.observations.record(facts, projection);
+          await Promise.allSettled([
+            ...[...this.observers.values()].map(observer => Promise.resolve(observer(facts, projection))),
+            ...(input.observe === undefined ? [] : [Promise.resolve(input.observe(facts, projection))]),
+          ]);
+        },
         additionalProviderSource: () => Object.freeze([
           ...this.additionalProviders.values(),
           ...(input.additionalProviderSource?.() ?? []),

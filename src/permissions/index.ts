@@ -12,6 +12,13 @@ export {
 } from "./providers/default.js";
 export { PermissionsService } from "./service.js";
 export {
+  DomainSessionPermissionProfileStore,
+  LeasedSessionPermissionProfileStore,
+  SessionPermissionProfiles,
+  SessionPermissionProfileUnavailableError,
+  availablePermissionProfiles,
+} from "./session-profiles.js";
+export {
   PERMISSION_PROFILES,
   TOOL_CAPABILITY_KINDS,
 } from "./types.js";
@@ -32,3 +39,9 @@ export type {
   PermissionSubject,
   ResolvePermissionRequest,
 } from "./types.js";
+export type {
+  SessionPermissionProfileSelection,
+  SessionPermissionProfileStore,
+  SessionPermissionProfilesPort,
+  SessionPermissionProfileView,
+} from "./session-profiles.js";

@@ -11,6 +11,8 @@ export { ShellService } from "./service.js";
 export { createUnavailableShell } from "./unavailable.js";
 export type {
   ResolveShellCommandRequest,
+  PrepareShellCommandRequest,
+  PreparedShellCommand,
   RunShellCommandRequest,
   Shell,
   ShellCommandPreflight,

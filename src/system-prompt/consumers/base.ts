@@ -28,7 +28,7 @@ export const BaseSystemPrompt = {
     });
     ctx.systemPrompt.register({
       id: "wish.behavior",
-      authority: "developer",
+      authority: "system",
       order: -800,
       content: [
         "Coding Agent behavior:",
@@ -40,7 +40,7 @@ export const BaseSystemPrompt = {
     });
     ctx.systemPrompt.register({
       id: "wish.tool-use",
-      authority: "developer",
+      authority: "system",
       order: -700,
       content: [
         "General Tool use:",
@@ -52,7 +52,7 @@ export const BaseSystemPrompt = {
     });
     ctx.systemPrompt.register({
       id: "wish.output",
-      authority: "developer",
+      authority: "system",
       order: -600,
       content: [
         "Output style:",

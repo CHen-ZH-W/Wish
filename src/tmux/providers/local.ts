@@ -1,5 +1,6 @@
-import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { lstat, mkdir, rm } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
 
 import type { Context } from "@deepseek-ai/cordis";
 import { registerPluginOwner } from "../../boot/plugin-control/owner-registry.js";
@@ -13,7 +14,7 @@ import { NodeTmuxCommandRunner } from "./node-command-runner.js";
 
 import {
   TmuxConflictError,
-  type TmuxError,
+  TmuxError,
   TmuxExecutionFailedError,
   TmuxInvalidInputError,
   TmuxNotFoundError,
@@ -98,33 +99,37 @@ export class LocalTmuxBackend implements Tmux {
   }
 
   async start(request: StartTmuxSessionRequest): Promise<TmuxSessionSnapshot> {
-    validateStart(request);
-    throwIfAborted(request.signal);
-    const session = `${this.options.sessionPrefix}-${safeName(request.sessionId, "tmux session id")}`;
-    const window = safeName(request.windowName, "tmux window name");
-    const target = createTarget(session, window, "%0", request.sessionId, this.options);
-    const command = request.command;
-    const args = [
-      ...this.connectionArgs(),
-      "new-session",
-      "-d",
-      "-s",
-      session,
-      "-n",
-      window,
-      "-x",
-      String(positiveInteger(request.columns ?? DEFAULT_COLUMNS, "tmux columns")),
-      "-y",
-      String(positiveInteger(request.rows ?? DEFAULT_ROWS, "tmux rows")),
-      "-c",
-      nonEmpty(command.cwd, "tmux command cwd"),
-      ...environmentArgs(command.environment),
-      "--",
-      command.executable,
-      ...(command.args ?? []),
-    ];
+    const runtimeDirectory = request?.command?.runtimeDirectory;
+    let session = "";
+    let window = "";
+    let target!: TmuxTarget;
     let started = false;
     try {
+      validateStart(request);
+      throwIfAborted(request.signal);
+      const command = request.command;
+      session = `${this.options.sessionPrefix}-${safeName(request.sessionId, "tmux session id")}`;
+      window = safeName(request.windowName, "tmux window name");
+      target = createTarget(session, window, "%0", request.sessionId, this.options);
+      const args = [
+        ...this.connectionArgs(),
+        "new-session",
+        "-d",
+        "-s",
+        session,
+        "-n",
+        window,
+        "-x",
+        String(positiveInteger(request.columns ?? DEFAULT_COLUMNS, "tmux columns")),
+        "-y",
+        String(positiveInteger(request.rows ?? DEFAULT_ROWS, "tmux rows")),
+        "-c",
+        nonEmpty(command.cwd, "tmux command cwd"),
+        ...environmentArgs(command.environment),
+        "--",
+        command.executable,
+        ...(command.args ?? []),
+      ];
       if (this.options.socketPath !== undefined) {
         await mkdir(dirname(this.options.socketPath), { recursive: true, mode: 0o700 });
       }
@@ -143,6 +148,7 @@ export class LocalTmuxBackend implements Tmux {
         request.sessionId,
         request.metadata,
         this.now(),
+        command.runtimeDirectory,
       )) {
         await this.run([
           ...this.connectionArgs(),
@@ -161,7 +167,7 @@ export class LocalTmuxBackend implements Tmux {
       }
       return snapshot;
     } catch (cause: unknown) {
-      if (started) {
+      if (started && session.length > 0) {
         await this.run([
           ...this.connectionArgs(),
           "kill-session",
@@ -169,6 +175,7 @@ export class LocalTmuxBackend implements Tmux {
           session,
         ]).catch(() => undefined);
       }
+      await cleanupRuntimeDirectory(runtimeDirectory).catch(() => undefined);
       if (cause instanceof TmuxExecutionFailedError) throw cause;
       if (isDuplicateSession(cause)) {
         throw new TmuxConflictError(`tmux session ${session} already exists`, {
@@ -293,6 +300,7 @@ export class LocalTmuxBackend implements Tmux {
 
   async stop(request: StopTmuxSessionRequest): Promise<void> {
     validateTarget(request.target);
+    const snapshot = await this.inspect(request.target, request.signal);
     try {
       await this.run([
         ...this.connectionArgs(),
@@ -301,12 +309,16 @@ export class LocalTmuxBackend implements Tmux {
         request.target.session,
       ], request.signal);
     } catch (cause: unknown) {
-      if (isMissingTarget(cause) || isNoServer(cause)) return;
+      if (isMissingTarget(cause) || isNoServer(cause)) {
+        await cleanupRuntimeDirectory(snapshot?.runtimeDirectory);
+        return;
+      }
       throw mapExecutionError(
         cause,
         `Failed to stop tmux session ${request.target.session}`,
       );
     }
+    await cleanupRuntimeDirectory(snapshot?.runtimeDirectory);
   }
 
   private connectionArgs(): readonly string[] {
@@ -394,7 +406,6 @@ export class LocalTmux extends TmuxService {
 
   private close(): Promise<void> {
     this.suspended = true;
-    // tmux, not this Provider, owns the persistent sessions. Never kill them here.
     return this.closing ??= Promise.allSettled([...this.requests]).then(() => {});
   }
 }
@@ -412,6 +423,7 @@ function listFormat(): string {
     "#{@wish_workspace_root}",
     "#{@wish_label}",
     "#{@wish_created_at}",
+    "#{@wish_runtime_directory}",
   ].join(FIELD_SEPARATOR);
 }
 
@@ -419,12 +431,14 @@ function metadataOptions(
   sessionId: string,
   metadata: TmuxSessionMetadata,
   createdAt: string,
+  runtimeDirectory?: string,
 ): readonly (readonly [string, string])[] {
   return Object.freeze([
     ["@wish_session_id", sessionId],
     ["@wish_workspace_root", metadata.workspaceRoot],
     ["@wish_label", metadata.label ?? ""],
     ["@wish_created_at", createdAt],
+    ["@wish_runtime_directory", runtimeDirectory ?? ""],
   ]);
 }
 
@@ -448,7 +462,7 @@ function environmentArgs(
 
 function parseSnapshot(line: string, options: ResolvedOptions): TmuxSessionSnapshot {
   const fields = line.split(FIELD_SEPARATOR);
-  if (fields.length !== 11) {
+  if (fields.length !== 12) {
     throw new TmuxExecutionFailedError("tmux returned malformed session metadata");
   }
   const [
@@ -463,7 +477,8 @@ function parseSnapshot(line: string, options: ResolvedOptions): TmuxSessionSnaps
     workspaceRoot,
     label,
     createdAt,
-  ] = fields as [string, string, string, string, string, string, string, string, string, string, string];
+    runtimeDirectory,
+  ] = fields as [string, string, string, string, string, string, string, string, string, string, string, string];
   if (sessionId.length === 0 || workspaceRoot.length === 0) {
     throw new TmuxExecutionFailedError("tmux session is missing Wish metadata");
   }
@@ -476,6 +491,7 @@ function parseSnapshot(line: string, options: ResolvedOptions): TmuxSessionSnaps
     }),
     createdAt,
     active: dead !== "1",
+    ...(runtimeDirectory.length === 0 ? {} : { runtimeDirectory }),
     ...(dead !== "1" || deadStatus.length === 0
       ? {}
       : { exitCode: Number.parseInt(deadStatus, 10) }),
@@ -516,6 +532,36 @@ function validateStart(request: StartTmuxSessionRequest): void {
   nonEmpty(request.command.executable, "tmux command executable");
   nonEmpty(request.command.cwd, "tmux command cwd");
   nonEmpty(request.metadata.workspaceRoot, "tmux workspace root");
+  if (request.command.runtimeDirectory !== undefined) {
+    validateRuntimeDirectory(request.command.runtimeDirectory);
+  }
+}
+
+function validateRuntimeDirectory(path: string): string {
+  const resolved = resolve(nonEmpty(path, "tmux runtime directory"));
+  if (
+    dirname(resolved) !== resolve(tmpdir()) ||
+    !basename(resolved).startsWith("wish-shell-terminal-")
+  ) {
+    throw new TmuxInvalidInputError("tmux runtime directory is outside the managed Shell scratch root");
+  }
+  return resolved;
+}
+
+async function cleanupRuntimeDirectory(path: string | undefined): Promise<void> {
+  if (path === undefined || path.length === 0) return;
+  const resolved = validateRuntimeDirectory(path);
+  try {
+    const information = await lstat(resolved);
+    if (information.isSymbolicLink()) {
+      throw new TmuxExecutionFailedError("tmux runtime directory became a symbolic link");
+    }
+    await rm(resolved, { recursive: true, force: true });
+  } catch (error: unknown) {
+    if (isNodeError(error, "ENOENT")) return;
+    if (error instanceof TmuxError) throw error;
+    throw new TmuxExecutionFailedError("Failed to clean tmux runtime directory", { cause: error });
+  }
 }
 
 function validateTarget(target: TmuxTarget): void {
@@ -581,7 +627,8 @@ function isDuplicateSession(cause: unknown): boolean {
 
 function isNoServer(cause: unknown): boolean {
   const message = errorMessage(cause);
-  return message.includes("no server running") || message.includes("failed to connect to server");
+  return message.includes("no server running") || message.includes("failed to connect to server") ||
+    (message.includes("error connecting to") && message.includes("No such file or directory"));
 }
 
 function isMissingTarget(cause: unknown): boolean {
@@ -592,6 +639,10 @@ function isMissingTarget(cause: unknown): boolean {
 function errorCode(cause: unknown): string | undefined {
   if (cause === null || typeof cause !== "object" || !("code" in cause)) return undefined;
   return typeof cause.code === "string" ? cause.code : undefined;
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return errorCode(error) === code;
 }
 
 function errorMessage(cause: unknown): string {

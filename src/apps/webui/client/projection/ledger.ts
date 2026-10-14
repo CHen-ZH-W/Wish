@@ -8,18 +8,23 @@ export interface LedgerBlock {
   readonly kind: "user" | "assistant" | "tool" | "checkpoint" | "system";
   readonly title: string; readonly text: string; readonly reasoning?: string;
   readonly toolName?: string; readonly input?: string; readonly status?: string;
+  /** Optional domain-owned renderer and opaque payload supplied through a UI slot. */
+  readonly viewId?: string; readonly data?: unknown;
+  readonly anchor?: "turn-start" | "step-start";
 }
 export interface LedgerTurn { readonly id: string; readonly title: string; readonly blocks: readonly LedgerBlock[] }
 const identity = (run: string, turn: string | undefined, step: string | undefined, kind: string) => `${run}/${turn ?? "unknown"}/${step ?? "unknown"}/${kind}`;
 
 /** Pure presentation projection. Durable transcript wins over its corresponding live output. */
-export function projectLedger(history: SessionHistorySnapshot | null, events: readonly WishOutputEvent[], language: WishLanguage = "zh-CN"): readonly LedgerTurn[] {
+export function projectLedger(history: SessionHistorySnapshot | null, events: readonly WishOutputEvent[], language: WishLanguage = "zh-CN", extensions: readonly LedgerBlock[] = []): readonly LedgerTurn[] {
   const blocks = new Map<string, LedgerBlock>(), canonical = new Set<string>();
   const t = (zh: string, en: string) => textFor(language, zh, en);
   const put = (block: LedgerBlock) => { blocks.set(block.id, Object.freeze(block)); };
   for (const record of history?.records ?? []) {
     if (record.kind === "checkpoint") { put({ id: record.recordId, turnId: record.recordId, stepId: "", time: record.createdAt, kind: "checkpoint", title: t("上下文压缩记录", "Context checkpoint"), text: record.message.content }); continue; }
     const turnId = `${record.runId}/${record.userTurnId}`, stepId = record.stepId, message = record.message;
+    // Host continuations wake the parent model but are not user-authored conversation.
+    if (message.role === "user" && record.inputSource === "continuation") continue;
     const kind = message.role === "user" ? "user" : message.role === "assistant" ? "assistant" : message.role === "tool" ? "tool" : "system";
     const id = kind === "tool" ? `${record.runId}/tool/${message.toolCallId ?? record.recordId}` : record.origin === "steering" && kind === "user" ? record.recordId : identity(record.runId, record.userTurnId, kind === "user" ? "input" : stepId, kind);
     canonical.add(id);
@@ -35,7 +40,7 @@ export function projectLedger(history: SessionHistorySnapshot | null, events: re
   const live = new Map<string, LedgerBlock>();
   for (const event of events) {
     const base = { runId: event.runId, turnId: `${event.runId}/${event.userTurnId ?? "unknown"}`, stepId: event.stepId ?? "", time: event.occurredAt };
-    if (event.type === "runtime.transition" && event.payload.type === "user_turn.started") {
+    if (event.type === "runtime.transition" && event.payload.type === "user_turn.started" && event.payload.inputSource !== "continuation") {
       const id = identity(event.runId, event.payload.userTurnId, "input", "user");
       if (!canonical.has(id)) live.set(id, { ...base, turnId: `${event.runId}/${event.payload.userTurnId}`, id, kind: "user", title: t("你的请求", "Your request"), text: event.payload.input.text });
     }
@@ -64,6 +69,16 @@ export function projectLedger(history: SessionHistorySnapshot | null, events: re
     const turn = turns.get(block.turnId) ?? { id: block.turnId, title: t("执行记录", "Activity"), blocks: [] };
     if (block.kind === "user") turn.title = block.text.slice(0, 72);
     turn.blocks.push(block); turns.set(block.turnId, turn);
+  }
+  for (const block of extensions) {
+    if (blocks.has(block.id)) continue;
+    const turn = turns.get(block.turnId) ?? { id: block.turnId, title: t("执行记录", "Activity"), blocks: [] };
+    const stepIndex = block.anchor === "step-start" ? turn.blocks.findIndex(item => item.stepId === block.stepId) : -1;
+    const index = block.anchor === "turn-start" ? 0 : stepIndex >= 0
+      ? stepIndex
+      : turn.blocks.findIndex(item => item.time.localeCompare(block.time) > 0);
+    turn.blocks.splice(index < 0 ? turn.blocks.length : index, 0, block);
+    turns.set(block.turnId, turn);
   }
   return Object.freeze([...turns.values()].map(turn => Object.freeze({ ...turn, blocks: Object.freeze(turn.blocks) })));
 }

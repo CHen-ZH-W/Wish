@@ -7,6 +7,7 @@ import { SettingsService } from "../../../settings/service.js";
 import { startWebManagementHost, type WebRequestHandler } from "./management.js";
 import { serveWishWebUiAsset } from "../server.js";
 import { ComposerPreferences } from "./preferences.js";
+import { wishWebUiAppearance } from "../appearance.js";
 
 /** Process composition only. Neither Settings nor Boot imports WebUI feature modules. */
 export function managedWebUi(options: { readonly directory: string; readonly port: number; readonly assets?: WebRequestHandler }): NonNullable<BootstrapOptions["management"]> {
@@ -18,8 +19,12 @@ export function managedWebUi(options: { readonly directory: string; readonly por
       const credentialStore = await FileCredentialStore.open(resolve(options.directory, "credentials.json"));
       const credentials = new CredentialsService(root, credentialStore, root.launch.environment);
       await root.plugin(ComposerPreferences);
+      const assets = options.assets ?? ((request, response) => serveWishWebUiAsset(request, response, () => {
+        const value = settings.port.describe().sections.find(section => section.namespace === "webui-appearance")?.value;
+        return wishWebUiAppearance(value);
+      }));
       const host = await startWebManagementHost({ root, control, lifecycle, settings: settings.port,
-        credentials: credentials.port, port: options.port, assets: options.assets ?? serveWishWebUiAsset });
+        credentials: credentials.port, port: options.port, assets });
       root.provide("webManagementHost", host);
       const stopSignals = root.launch.onSignal(signal => root.launch.complete(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143));
       process.stderr.write(`Wish management listening at ${host.url}\n`);

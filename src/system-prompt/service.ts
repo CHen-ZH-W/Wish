@@ -76,15 +76,37 @@ export class SystemPrompt extends Service {
   assembleInstructions(
     input: SystemPromptAssemblyInput,
   ): readonly ModelInstruction[] {
-    return Object.freeze(
+    return coalesceModelInstructions(
       this.assemble(input)
         .filter((section) => section.placement === "stable_prefix")
-        .map((section) => Object.freeze({
+        .map((section) => ({
           role: section.authority,
           content: section.content,
         })),
     );
   }
+}
+
+/** Preserve section ownership internally while minimizing protocol instruction boundaries. */
+export function coalesceModelInstructions(
+  instructions: readonly ModelInstruction[],
+): readonly ModelInstruction[] {
+  const result: ModelInstruction[] = [];
+  for (const instruction of instructions) {
+    const previous = result.at(-1);
+    if (previous?.role === instruction.role) {
+      result[result.length - 1] = Object.freeze({
+        role: previous.role,
+        content: `${previous.content}\n\n${instruction.content}`,
+      });
+    } else {
+      result.push(Object.freeze({
+        role: instruction.role,
+        content: instruction.content,
+      }));
+    }
+  }
+  return Object.freeze(result);
 }
 
 function normalizeSection(

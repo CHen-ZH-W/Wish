@@ -460,7 +460,7 @@ function snapshotMessageDraft(
   if (draft.inputSource !== undefined) {
     if (
       message.role !== "user" ||
-      !["user", "steering", "follow_up", "unknown"].includes(draft.inputSource)
+      !["user", "steering", "follow_up", "continuation", "unknown"].includes(draft.inputSource)
     ) {
       throw invalid("Session input source must describe a user-role input", sessionId);
     }

@@ -31,7 +31,7 @@ import {
 } from "../core/runtime/generation.js";
 import type {
   RunContinuationFactory,
-  RunFollowUp,
+  RunContinuationInput,
 } from "../core/runtime/continuation.js";
 import type { ModelRef } from "../core/model/model.js";
 import { registerPluginOwner } from "../boot/plugin-control/owner-registry.js";
@@ -210,12 +210,11 @@ export class Runtime extends Service {
       }) => Object.freeze({
         deferCompletion: (reason: string) =>
           coreRuntime?.deferRunCompletion(runId, reason),
-        followUp: (input: RunFollowUp) => {
+        resume: (input: RunContinuationInput) => {
           if (coreRuntime === undefined) {
             return Object.freeze({ accepted: false, reason: "runtime_not_ready" });
           }
-          const receipt = coreRuntime.control(agentId, runId, {
-            type: "follow_up",
+          const receipt = coreRuntime.resume(agentId, runId, {
             source: input.source,
             text: input.text,
             ...(input.reserveCapacity === undefined
@@ -230,14 +229,25 @@ export class Runtime extends Service {
         },
       }),
     });
-    const { runtime: _runtime, runContinuations: _continuations, ...configuration } = input;
-    const pipelineInput = Object.freeze({ ...structuredClone(configuration), runContinuations });
+    const {
+      runtime: _runtime,
+      runContinuations: _continuations,
+      modelCredential,
+      ...configuration
+    } = input;
+    const pipelineInput = Object.freeze({
+      ...structuredClone(configuration),
+      runContinuations,
+      ...(modelCredential === undefined ? {} : { modelCredential }),
+    });
     // Session storage and Application-facing model resources have stable owners;
     // they must not disappear when an ordinary execution implementation unloads.
     const sessions = this.ctx.sessions.acquire(input.dataDirectory);
     const generations = this.generations;
     try {
-      const models = this.ctx.models.open(input.modelsConfiguration);
+      const models = this.ctx.models.open(input.modelsConfiguration, {
+        ...(modelCredential === undefined ? {} : { credential: modelCredential }),
+      });
       const stepPipeline = this.execution.source(() => {
         const resources = this.requireAgentLoop().open(pipelineInput);
         return { pipeline: resources.stepPipeline, release: () => { resources.release(); } };

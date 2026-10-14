@@ -44,9 +44,10 @@ Tool capability request
 SandboxPolicy 证明“当前 Provider 能否强制执行声明的最小权限”，不替代 Linux Native
 Landlock/seccomp，也不拥有审批规则或 Permission profile。
 
-显式 Host Shell 是例外的逃生口：它只接受 `full-access` profile，不把
+`full-access` 是例外的逃生口：Native Provider 在这一 profile 下绕过 Landlock/seccomp；
+显式 Host Shell 也只接受 `full-access` profile。两者都不把
 `approval-required` 的批准误当成文件或网络隔离。选择该 profile 表示调用本身拥有宿主级
-访问；默认产品图不会启用它。
+访问；默认产品图会提供该选项，但默认值仍由部署配置决定，不会自动切换到它。
 
 ## 验证
 
