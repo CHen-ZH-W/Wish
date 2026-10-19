@@ -40,14 +40,12 @@ import type {} from "../boot/plugin-control/code-reload.js";
 
 export const DEFAULT_RUN_GENERATION_DRAIN_TIMEOUT_MS = 30_000;
 
-/** Loader-owned Runtime execution limits. */
+/** Loader-owned Runtime lifecycle configuration. */
 export interface Config {
-  readonly maxSteps?: number;
   readonly generationDrainTimeoutMs?: number;
 }
 
 export const Config: s<Config> = s.object({
-  maxSteps: s.number().step(1).min(1),
   generationDrainTimeoutMs: s.number().step(1).min(1),
 });
 
@@ -73,7 +71,6 @@ export type WishRuntimeOptions = Pick<
     AgentLoopMemory,
     AgentLoopResult
   >,
-  | "maxSteps"
   | "stepInboxLimits"
   | "followUpQueueLimits"
   | "maxRetainedRuns"
@@ -117,7 +114,6 @@ export class Runtime extends Service {
   static readonly inject = ["launch", "sessions", "models", "runtimeLifecycle"];
   static readonly Config = Config;
 
-  readonly maxSteps: number | undefined;
   readonly generationDrainTimeoutMs: number;
   /** Host-only Step boundary. Does not unload plugins or own their configuration. */
   readonly execution = new StepExecutionCoordinator();
@@ -131,7 +127,6 @@ export class Runtime extends Service {
     // Cordis reserves ctx.runtime for the current plugin runtime accessor.
     super(ctx, "runEngine");
     ctx.root.get("codeReload")?.registerBoundary(ctx, this.execution);
-    this.maxSteps = config.maxSteps;
     this.generationDrainTimeoutMs = positiveInteger(
       config.generationDrainTimeoutMs ??
         DEFAULT_RUN_GENERATION_DRAIN_TIMEOUT_MS,
@@ -210,6 +205,8 @@ export class Runtime extends Service {
       }) => Object.freeze({
         deferCompletion: (reason: string) =>
           coreRuntime?.deferRunCompletion(runId, reason),
+        deferUserTurnCompletion: (reason: string) =>
+          coreRuntime?.deferUserTurnCompletion(runId, reason),
         resume: (input: RunContinuationInput) => {
           if (coreRuntime === undefined) {
             return Object.freeze({ accepted: false, reason: "runtime_not_ready" });
@@ -220,6 +217,9 @@ export class Runtime extends Service {
             ...(input.reserveCapacity === undefined
               ? {}
               : { reserveCapacity: input.reserveCapacity }),
+            ...(input.withinUserTurn === undefined
+              ? {}
+              : { withinUserTurn: input.withinUserTurn }),
             payload: Object.freeze({ text: input.text, model }),
           });
           return Object.freeze({
@@ -233,10 +233,12 @@ export class Runtime extends Service {
       runtime: _runtime,
       runContinuations: _continuations,
       modelCredential,
+      agentScope,
       ...configuration
     } = input;
     const pipelineInput = Object.freeze({
       ...structuredClone(configuration),
+      ...(agentScope === undefined ? {} : { agentScope }),
       runContinuations,
       ...(modelCredential === undefined ? {} : { modelCredential }),
     });
@@ -252,13 +254,9 @@ export class Runtime extends Service {
         const resources = this.requireAgentLoop().open(pipelineInput);
         return { pipeline: resources.stepPipeline, release: () => { resources.release(); } };
       });
-      const configuredMaxSteps = input.runtime?.maxSteps ?? this.maxSteps;
       coreRuntime = createWishRuntime({ stepPipeline }, {
         ...(input.runtime ?? {}),
         continuationPolicy: this.compositeContinuationPolicy(),
-        ...(configuredMaxSteps === undefined
-          ? {}
-          : { maxSteps: configuredMaxSteps }),
       }, this.ctx.runtimeLifecycle);
       const generation = new RunGeneration<WishAgentProtocol>(coreRuntime, {
         id: `${input.agentId}:${randomUUID()}`,

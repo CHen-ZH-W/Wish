@@ -41,8 +41,12 @@ export class PlanContextProvider implements ContextProvider<ContextInput> {
         content: [
           "Plan mode is active for this Session.",
           "Inspect and reason only: source mutation, shell execution, and unrelated runtime control are forbidden by host policy.",
-          "Use update_plan to save the complete current plan, read_plan to recover it, and exit_plan_mode to submit that exact saved version for human review.",
-          "A pending review keeps Plan mode active. End your response and await the user; do not poll or repeatedly submit. New user feedback supersedes the pending review. Revise the plan before submitting again.",
+          "Plan mode restricts Tool execution, not your ability to answer. Deliver completed read-only analysis and evidence directly in your response; no Plan update or approval is needed for that answer.",
+          "Do not turn an analysis request into a deferred file-writing task or make a report file the only deliverable. If writing a file is also requested, give the analysis now and clearly identify the file write as pending execution authority.",
+          "Only when the user needs a human-reviewed implementation plan: use update_plan to save the complete plan, read_plan to recover it, and exit_plan_mode to submit that exact saved version for review. Never call exit_plan_mode merely to finish a response.",
+          ...(state.review?.status === "pending" ? [
+            "This Plan is awaiting human review. End your response and await the user; do not poll or repeatedly submit. New user feedback supersedes the pending review. Revise the plan before submitting again.",
+          ] : []),
           "After cancellation or changes requested, continue planning with the user. Only a human review decision approves the document.",
           "Approving a Plan only freezes it. Execution capabilities become available on the next Agent Step; approval does not start a Workflow.",
           "Current Plan facts:",

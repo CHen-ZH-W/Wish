@@ -16,6 +16,7 @@ export abstract class ToolOutputArtifactsService extends Service
 
   abstract put(request: PutToolOutputArtifactRequest): Promise<ToolResultArtifact>;
   abstract get(request: GetToolOutputArtifactRequest): Promise<Uint8Array | undefined>;
+  abstract purgeSession(sessionId: string): Promise<void>;
 }
 
 declare module "@deepseek-ai/cordis" {

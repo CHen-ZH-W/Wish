@@ -22,6 +22,8 @@ export function createSkillSessionFeature(skills: Skills, workspaces: SkillSessi
     return { workspace, catalog, reviewId };
   }
   return {
+    purgeOrder: 45,
+    async purgeSession(sessionId) { viewed.delete(sessionId); },
     async inspect(sessionId) {
       const { workspace, catalog, reviewId } = await current(sessionId);
       const lines = ["查看只向人类展示正文，不会激活 Skill、改变模型权限或执行脚本。", "选择“查看 Skill”，填写下列准确名称：",
@@ -83,8 +85,10 @@ export const SkillsSessionFeature = {
       },
     });
     owner.own(ctx.application.registerSessionFeature("skills", {
+      purgeOrder: 45,
       inspect: (...args) => owner.run(() => feature.inspect(...args)),
       act: (...args) => owner.run(() => feature.act(...args)),
+      purgeSession: sessionId => owner.run(() => feature.purgeSession!(sessionId)),
     }));
   },
 };

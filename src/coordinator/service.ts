@@ -24,6 +24,8 @@ export abstract class CoordinatorService extends Service implements Coordinator 
   }
 
   abstract get(request: CoordinatorRunRequest): Promise<CoordinatorState | undefined>;
+  abstract clear(request: CoordinatorRunRequest & { readonly sessionId: string }): Promise<void>;
+  abstract clearSession(sessionId: string): Promise<void>;
   abstract enter(request: EnterCoordinatorRequest): Promise<CoordinatorState>;
   abstract exit(request: ExitCoordinatorRequest): Promise<CoordinatorState>;
   abstract close(): Promise<void>;

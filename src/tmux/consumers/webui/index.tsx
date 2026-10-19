@@ -1,7 +1,8 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { useEffect, useRef, useState } from "react";
 import type {} from "../../../apps/webui/client/plugins.js";
-import type { FeatureDocumentProps } from "../../../apps/webui/client/ui/feature.js";
+import type { FeaturesClientModel } from "../../../apps/webui/client/model/features.js";
+import type { SessionFeatureView } from "../../../apps/session-features.js";
 import { TerminalSnapshot } from "../../../apps/webui/client/ui/terminal.js";
 import { ErrorNotice, readableError, useSnapshot } from "../../../apps/webui/client/ui/primitives.js";
 import type { TmuxObservationView } from "../observation-view.js";
@@ -13,14 +14,16 @@ export function tmuxLiveSyncEnabled(visible: boolean, captureAvailable: boolean,
   return visible && captureAvailable && targetCount > 0;
 }
 
-function TmuxDocument({ model, view, sessionId, visible }: FeatureDocumentProps & { readonly visible: boolean }) {
+interface TmuxDocumentProps { readonly model: FeaturesClientModel; readonly view: SessionFeatureView; readonly sessionId: string }
+
+function TmuxDocument({ model, view, sessionId, visible }: TmuxDocumentProps & { readonly visible: boolean }) {
   const state = useSnapshot(model), data = view.data as TmuxObservationView | undefined;
   if (data?.kind !== "tmux-observation" || !Array.isArray(data.sessions)) return <p>{view.text}</p>;
   return <TmuxTerminalList model={model} view={view} sessionId={sessionId} data={data} state={state} visible={visible} />;
 }
 
 function TmuxTerminalList({ model, view, sessionId, data, state, visible }: {
-  model: FeatureDocumentProps["model"]; view: FeatureDocumentProps["view"]; sessionId: string; data: TmuxObservationView; state: ReturnType<FeatureDocumentProps["model"]["getSnapshot"]>; visible: boolean;
+  model: FeaturesClientModel; view: SessionFeatureView; sessionId: string; data: TmuxObservationView; state: ReturnType<FeaturesClientModel["getSnapshot"]>; visible: boolean;
 }) {
   const t = useText(), latestView = useRef(view), captureItems = Array.isArray(data.captures) ? data.captures : [], captures = new Map(captureItems.map(capture => [capture.sessionId, capture]));
   latestView.current = view;
@@ -52,7 +55,7 @@ function TmuxTerminalList({ model, view, sessionId, data, state, visible }: {
 }
 
 function TmuxProcess({ model, view, sessionId, item, capture, captureDisabled, deleteDisabled }: {
-  model: FeatureDocumentProps["model"]; view: FeatureDocumentProps["view"]; sessionId: string; item: TmuxObservationView["sessions"][number]; capture: TmuxObservationView["captures"][number] | undefined; captureDisabled: boolean; deleteDisabled: boolean;
+  model: FeaturesClientModel; view: SessionFeatureView; sessionId: string; item: TmuxObservationView["sessions"][number]; capture: TmuxObservationView["captures"][number] | undefined; captureDisabled: boolean; deleteDisabled: boolean;
 }) {
   const t = useText();
   const [confirming, setConfirming] = useState(false), [removing, setRemoving] = useState(false), [error, setError] = useState<string | null>(null);
@@ -69,7 +72,7 @@ function TmuxProcess({ model, view, sessionId, item, capture, captureDisabled, d
     <ErrorNotice text={error} />
   </article>;
 }
-function TmuxSidebar({ model, sessionId, visible }: { model: FeatureDocumentProps["model"]; sessionId: string; visible: boolean }) {
+function TmuxSidebar({ model, sessionId, visible }: { model: FeaturesClientModel; sessionId: string; visible: boolean }) {
   const language = useLanguage(), t = useText(), state = useSnapshot(model);
   const current = state.sessionId === sessionId;
   const view = current ? state.views.find(item => item.key === "tmux") : undefined;

@@ -34,6 +34,8 @@ export const SUBAGENT_TOOL_NAMES = Object.freeze([
 
 export interface SpawnAgentToolInput {
   readonly task: string;
+  /** Existing Todo item whose progress follows this child execution. */
+  readonly todoId?: string;
   readonly role?: string;
   readonly model?: string;
   readonly permissionProfile?: PermissionProfile;
@@ -61,6 +63,7 @@ export interface AgentToolOutput {
   readonly content: readonly { readonly type: "text"; readonly text: string }[];
   readonly agent?: SubagentRecord;
   readonly agents?: readonly SubagentRecord[];
+  readonly workflowRunId?: string;
 }
 
 export interface SubagentToolOptions {
@@ -68,6 +71,13 @@ export interface SubagentToolOptions {
   /** Optional host dispatch port; the Tool never owns scheduling state. */
   readonly dispatch?: (request: SpawnSubagentRequest, context: WishToolExecutionContext, grant: ToolAuthorizationGrant) => Promise<SubagentRecord | AgentToolOutput>;
   readonly completionObserver?: SubagentToolCompletionObserver;
+  readonly todoProgress?: {
+    validate(link: { sessionId: string; runId: string; userTurnId: string; itemId: string }): Promise<void>;
+    beginDispatch(link: { sessionId: string; runId: string; userTurnId: string; itemId: string }, dispatchId: string): Promise<void>;
+    finishDispatch(link: { sessionId: string; runId: string; userTurnId: string; itemId: string }, dispatchId: string, status: "completed" | "failed"): Promise<void>;
+    bind(link: { sessionId: string; runId: string; userTurnId: string; itemId: string }, record: SubagentRecord): Promise<void>;
+    bindWorkflow(link: { sessionId: string; runId: string; userTurnId: string; itemId: string }, workflowRunId: string): Promise<void>;
+  };
 }
 
 /** Optional bridge supplied by the host composition; Tool definitions do not own Runtime state. */
@@ -83,14 +93,18 @@ const SPAWN_SCHEMA = JSON.stringify({
   type: "object",
   properties: {
     task: { type: "string", minLength: 1, description: "Bounded task for the child Agent" },
+    todoId: { type: "string", minLength: 1, description: "Optional current-turn Todo item id. Its status follows this child automatically; starting it completes earlier unbound in-progress items." },
     role: { type: "string", minLength: 1, description: "Short role label, for example reviewer or tester" },
     model: { type: "string", minLength: 1, description: "Optional provider/model reference" },
-    permissionProfile: { type: "string", enum: PERMISSION_PROFILES },
+    permissionProfile: {
+      type: "string", enum: PERMISSION_PROFILES,
+      description: "Optional child permission profile. A read-only CLI child cannot use bash because it has no human approval surface for process.exec; use read/grep without bash, or choose workspace-write only when shell execution is intended and the parent permits it.",
+    },
     availableTools: {
       type: "array",
       items: { type: "string", minLength: 1 },
       maxItems: 64,
-      description: "Optional child Tool allow-list; cannot exceed the host ceiling",
+      description: "Optional child Tool allow-list; cannot exceed the host ceiling. Do not include bash with a read-only child profile; bash requires process.exec.",
     },
   },
   required: ["task"],
@@ -144,7 +158,7 @@ export function createSubagentTools(
     {
       name: "spawn_agent",
       description:
-        "Start one bounded child Agent in a transparent terminal execution. Returns the child id plus copyable attach and capture commands; use list_agents or collect_agent after context compaction.",
+        "Start one bounded child Agent in a transparent terminal execution. If a Todo list exists, pass the matching todoId so Host progress follows the child and closes earlier unbound work. Read-only children can inspect with read/grep but cannot use bash; a shell-enabled child needs a parent-permitted execution profile. Returns the child id plus copyable attach and capture commands; the Host delivers its result before your next model step. Use list_agents or collect_agent after context compaction.",
       inputSchemaJson: SPAWN_SCHEMA,
       executionMode: "sequential",
       recoveryPolicy: "needs-reconciliation",
@@ -154,7 +168,23 @@ export function createSubagentTools(
       },
       async execute(input: SpawnAgentToolInput, context, grant, signal) {
         assertCapability(grant, "spawn_agent", "runtime.control", `subagents.spawn:${input.role ?? "worker"}`);
+        let dispatchStarted = false;
+        let todoLink: { sessionId: string; runId: string; userTurnId: string; itemId: string } | undefined;
         try {
+          todoLink = input.todoId === undefined || context.userTurn === undefined ? undefined : {
+            sessionId: context.permissions.subject.sessionId,
+            runId: context.permissions.subject.runId,
+            userTurnId: context.userTurn.userTurnId,
+            itemId: input.todoId,
+          };
+          if (input.todoId !== undefined && (!todoLink || !options.todoProgress)) {
+            throw new Error("todoId requires an active Todo UserTurn and Todo progress service");
+          }
+          if (todoLink) await options.todoProgress!.validate(todoLink);
+          if (todoLink) {
+            await options.todoProgress!.beginDispatch(todoLink, grant!.subject.id);
+            dispatchStarted = true;
+          }
           const request: SpawnSubagentRequest = {
             parentAgentId: context.permissions.subject.agentId,
             parentSessionId: context.permissions.subject.sessionId,
@@ -176,7 +206,16 @@ export function createSubagentTools(
             ...(signal === undefined ? {} : { signal }),
           };
           const record = await (options.dispatch ? options.dispatch(request, context, grant!) : subagents.spawn(request));
-          if ("content" in record) return record;
+          if ("content" in record) {
+            const warning = todoLink && record.workflowRunId
+              ? await bindTodoWorkflow(options.todoProgress!, todoLink, record.workflowRunId)
+              : todoLink && record.agent ? await bindTodo(options.todoProgress!, todoLink, record.agent)
+              : todoLink ? "Todo link could not be attached because dispatch returned no child or Workflow identity." : undefined;
+            if (todoLink) await options.todoProgress!.finishDispatch(todoLink, grant!.subject.id, warning ? "failed" : "completed");
+            return warning ? appendWarning(record, warning) : record;
+          }
+          const warning = todoLink ? await bindTodo(options.todoProgress!, todoLink, record) : undefined;
+          if (todoLink) await options.todoProgress!.finishDispatch(todoLink, grant!.subject.id, warning ? "failed" : "completed");
           if (context.runContinuation !== undefined) {
             options.completionObserver?.watch({
               record,
@@ -184,8 +223,10 @@ export function createSubagentTools(
               ...(signal === undefined ? {} : { signal }),
             });
           }
-          return subagentRecordOutput("Started", record);
+          const output = subagentRecordOutput("Started", record);
+          return warning ? appendWarning(output, warning) : output;
         } catch (error: unknown) {
+          if (dispatchStarted && todoLink) await options.todoProgress!.finishDispatch(todoLink, grant!.subject.id, "failed").catch(() => undefined);
           throw toolError(error);
         }
       },
@@ -291,6 +332,37 @@ export function createSubagentTools(
   ]);
 }
 
+async function bindTodo(
+  progress: NonNullable<SubagentToolOptions["todoProgress"]>,
+  link: { sessionId: string; runId: string; userTurnId: string; itemId: string },
+  record: SubagentRecord,
+): Promise<string | undefined> {
+  try {
+    await progress.bind(link, record);
+  } catch (error: unknown) {
+    return `Child ${record.id} started, but its Todo link could not be saved: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+async function bindTodoWorkflow(
+  progress: NonNullable<SubagentToolOptions["todoProgress"]>,
+  link: { sessionId: string; runId: string; userTurnId: string; itemId: string },
+  workflowRunId: string,
+): Promise<string | undefined> {
+  try {
+    await progress.bindWorkflow(link, workflowRunId);
+  } catch (error: unknown) {
+    return `Workflow ${workflowRunId} started, but its Todo link could not be saved: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function appendWarning(output: AgentToolOutput, warning: string): AgentToolOutput {
+  return Object.freeze({ ...output, content: Object.freeze([
+    ...output.content,
+    Object.freeze({ type: "text" as const, text: warning }),
+  ]) });
+}
+
 function readTool<Input extends AgentIdToolInput>(
   name: "capture_agent" | "collect_agent",
   schema: string,
@@ -347,9 +419,10 @@ function controlIdTool(
 }
 
 function parseSpawn(input: Readonly<Record<string, unknown>>): ToolInputParseResult<SpawnAgentToolInput> {
-  const unknown = unknownKey(input, ["task", "role", "model", "permissionProfile", "availableTools"]);
+  const unknown = unknownKey(input, ["task", "todoId", "role", "model", "permissionProfile", "availableTools"]);
   if (unknown !== undefined) return invalid(`Unknown field: ${unknown}`);
   if (!nonBlank(input.task)) return invalid("task must not be empty");
+  if (input.todoId !== undefined && !identifierValue(input.todoId)) return invalid("todoId must be non-empty trimmed text");
   if (input.role !== undefined && !identifierValue(input.role)) return invalid("role must be non-empty trimmed text");
   if (input.model !== undefined && !identifierValue(input.model)) return invalid("model must be non-empty trimmed text");
   if (input.permissionProfile !== undefined && !(PERMISSION_PROFILES as readonly unknown[]).includes(input.permissionProfile)) {
@@ -362,6 +435,7 @@ function parseSpawn(input: Readonly<Record<string, unknown>>): ToolInputParseRes
   )) return invalid("availableTools must contain at most 64 non-empty identifiers");
   return { ok: true, input: Object.freeze({
     task: input.task as string,
+    ...(input.todoId === undefined ? {} : { todoId: input.todoId as string }),
     ...(input.role === undefined ? {} : { role: input.role as string }),
     ...(input.model === undefined ? {} : { model: input.model as string }),
     ...(input.permissionProfile === undefined ? {} : { permissionProfile: input.permissionProfile as PermissionProfile }),

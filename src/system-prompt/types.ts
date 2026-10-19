@@ -1,3 +1,5 @@
+import type { AgentScope } from "../composition/agent-scope.js";
+
 export type SystemPromptAuthority = "system" | "developer";
 
 export type SystemPromptPlacement = "stable_prefix" | "dynamic_tail";
@@ -30,6 +32,9 @@ export interface RegisteredSystemPromptSection {
 export interface SystemPromptAssemblyInput {
   /** Final model-visible Tool names for this Step, after policy filtering. */
   readonly availableTools: readonly string[];
+  readonly agentScope?: AgentScope;
+  /** An Agent Step may pin the visible section set before it starts. */
+  readonly sections?: readonly RegisteredSystemPromptSection[];
 }
 
 export interface SystemPromptRegistration {

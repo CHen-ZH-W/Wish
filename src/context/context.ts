@@ -33,6 +33,8 @@ import {
   type ModelContextWindowSource,
   type ModelInputTokenCounter,
 } from "./types.js";
+import type { AgentScope } from "../composition/agent-scope.js";
+import type { RegisteredSystemPromptSection } from "../system-prompt/types.js";
 
 export const DEFAULT_CONTEXT_PROVIDER_ORDER = Object.freeze([
   "instructions",
@@ -48,6 +50,8 @@ export interface ContextBundleConfigurationInput {
 }
 
 export interface ContextBundleOptions {
+  readonly agentScope?: AgentScope;
+  readonly systemPromptSections?: readonly RegisteredSystemPromptSection[];
   readonly observe?: ContextObservationListener;
   readonly history: ContextHistorySource;
   readonly archive: ToolResultArchivePort;
@@ -146,7 +150,13 @@ export function createContextBundle(options: ContextBundleOptions): ContextBundl
       }
       return Object.freeze({
         providers,
-        input: createContextInput(input),
+        input: Object.freeze({
+          ...createContextInput(input),
+          ...(options.agentScope === undefined ? {} : { agentScope: options.agentScope }),
+          ...(options.systemPromptSections === undefined ? {} : {
+            systemPromptSections: options.systemPromptSections,
+          }),
+        }),
         projectInput({ input: base, request }: {
           readonly input: ContextInput;
           readonly request: AgentLoopRequestView;

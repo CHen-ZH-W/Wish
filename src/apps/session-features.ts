@@ -13,28 +13,38 @@ export interface SessionFeatureView {
 }
 
 export interface SessionFeature {
+  /** Lower numbers release child execution before parent projections. */
+  readonly purgeOrder?: number;
   inspect(sessionId: string): Promise<SessionFeatureView | undefined>;
   act(sessionId: string, action: string, token: Readonly<Record<string, unknown>>, feedback?: string): Promise<void>;
   beforeInput?(sessionId: string, text: string): Promise<void>;
-  /** Domain-owned veto; deletion never implies cancelling or purging another module. */
-  beforeRemoval?(sessionId: string): Promise<void>;
+  /** Check/fence related work before archiving or deletion. */
+  beforeRemoval?(sessionId: string, operation?: "archive" | "delete"): Promise<void>;
+  /** Idempotent cleanup after an aborted Run has drained. */
+  purgeRun?(sessionId: string, runId: string): Promise<void>;
+  /** Idempotent cleanup before the owning Session is physically deleted. */
+  purgeSession?(sessionId: string): Promise<void>;
 }
 
 export interface SessionFeatures {
   inspect(sessionId: string): Promise<readonly SessionFeatureView[]>;
   act(sessionId: string, key: string, action: string, token: Readonly<Record<string, unknown>>, feedback?: string): Promise<void>;
   beforeInput(sessionId: string, text: string): Promise<void>;
-  beforeRemoval?(sessionId: string): Promise<void>;
+  beforeRemoval?(sessionId: string, operation?: "archive" | "delete"): Promise<void>;
+  purgeRun?(sessionId: string, runId: string): Promise<void>;
+  purgeSession?(sessionId: string): Promise<void>;
 }
 
 /** Only registrations live here. Domain state stays with each feature. */
 export class SessionFeatureRegistry implements SessionFeatures {
   private readonly features = new Map<string, SessionFeature>();
   private readonly removalOwners = new Set<string>();
+  private readonly cleanupOwners = new Map<string, number>();
   register(key: string, feature: SessionFeature): () => void {
     if (this.features.has(key)) throw new Error(`Session feature already registered: ${key}`);
     this.features.set(key, feature);
     if (feature.beforeRemoval) this.removalOwners.add(key);
+    if (feature.purgeRun || feature.purgeSession) this.cleanupOwners.set(key, feature.purgeOrder ?? 100);
     return () => { if (this.features.get(key) === feature) this.features.delete(key); };
   }
   async inspect(sessionId: string): Promise<readonly SessionFeatureView[]> {
@@ -52,16 +62,37 @@ export class SessionFeatureRegistry implements SessionFeatures {
   async beforeInput(sessionId: string, text: string): Promise<void> {
     for (const feature of this.features.values()) await feature.beforeInput?.(sessionId, text);
   }
-  async beforeRemoval(sessionId: string): Promise<void> {
+  async beforeRemoval(sessionId: string, operation: "archive" | "delete" = "archive"): Promise<void> {
     for (const key of this.removalOwners) {
       const feature = this.features.get(key);
       try {
         if (!feature?.beforeRemoval) throw new Error(`请先启用 ${key}，核对关联工作状态。`);
-        await feature.beforeRemoval(sessionId);
+        await feature.beforeRemoval(sessionId, operation);
         if (this.features.get(key) !== feature) throw new Error(`${key} 状态已变化，请刷新后重试。`);
       } catch (cause) {
         throw Object.assign(new Error(cause instanceof Error ? cause.message : "关联工作状态无法确认"), { code: "session_busy" });
       }
     }
+  }
+  async purgeRun(sessionId: string, runId: string): Promise<void> {
+    for (const [key, feature] of this.purgeOwners()) {
+      if (!feature.purgeRun) continue;
+      await feature.purgeRun(sessionId, runId);
+      if (this.features.get(key) !== feature) throw new Error(`${key} changed during Run cleanup`);
+    }
+  }
+  async purgeSession(sessionId: string): Promise<void> {
+    for (const [key, feature] of this.purgeOwners()) {
+      if (!feature.purgeSession) continue;
+      await feature.purgeSession(sessionId);
+      if (this.features.get(key) !== feature) throw new Error(`${key} changed during Session cleanup`);
+    }
+  }
+  private purgeOwners(): [string, SessionFeature][] {
+    return [...this.cleanupOwners].sort((a, b) => a[1] - b[1]).map(([key]) => {
+      const feature = this.features.get(key);
+      if (!feature) throw new Error(`Cleanup owner ${key} is unavailable`);
+      return [key, feature];
+    });
   }
 }

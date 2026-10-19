@@ -41,6 +41,7 @@ export abstract class ToolResultArchiveService extends Service {
   }
 
   abstract open(request?: OpenToolResultArchiveRequest): ToolResultArchiveHandle;
+  abstract purgeSession(sessionId: string): Promise<void>;
 }
 
 declare module "@deepseek-ai/cordis" {

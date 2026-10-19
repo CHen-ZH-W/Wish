@@ -72,6 +72,7 @@ import {
 } from "../tools/index.js";
 import { createBasicToolResultRenderer } from "../tools/presentation/result-renderer.js";
 import type { WishToolExecutionContext } from "./tool-context.js";
+import type { AgentScope } from "./agent-scope.js";
 import type { RunContinuationFactory } from "../core/runtime/continuation.js";
 
 /** Loader-owned AgentLoop scheduling settings. */
@@ -411,6 +412,7 @@ export function createAgentLoopPipeline(
 export interface OpenAgentLoopInput {
   readonly dataDirectory: string;
   readonly agentId: string;
+  readonly agentScope?: AgentScope;
   readonly agentInstructions: readonly ContextInstruction[];
   readonly modelsConfiguration: ModelsConfiguration;
   readonly reservedOutputTokens: number;
@@ -461,7 +463,15 @@ export class AgentLoop extends Service {
     // Returned pipeline leases belong to Runtime's Step boundary. Waiting for
     // them during involuntary dependency loss would deadlock authority teardown.
     this.work.assertOpen();
-    const sessions = this.ctx.sessions.acquire(input.dataDirectory);
+    const releaseScope = input.agentScope?.acquire();
+    const promptSections = (() => {
+      try { return this.ctx.systemPrompt.capture(input.agentScope); }
+      catch (error: unknown) { releaseScope?.(); throw error; }
+    })();
+    const sessions = (() => {
+      try { return this.ctx.sessions.acquire(input.dataDirectory); }
+      catch (error: unknown) { releaseScope?.(); throw error; }
+    })();
     let context: ContextBundleHandle | undefined;
     try {
       const models = this.ctx.models.open(input.modelsConfiguration, {
@@ -476,12 +486,15 @@ export class AgentLoop extends Service {
       context = this.ctx.contextEngine.open({
         dataDirectory: input.dataDirectory,
         models,
+        ...(input.agentScope === undefined ? {} : { agentScope: input.agentScope }),
+        systemPromptSections: promptSections,
         configuration: {
           reservedOutputTokens: this.ctx.contextEngine.reservedOutputTokens ?? input.reservedOutputTokens,
         },
       });
       const ownedContext = context;
       const compaction = this.ctx.compaction.open({
+        ...(input.agentScope === undefined ? {} : { agentScope: input.agentScope }),
         dataDirectory: input.dataDirectory,
         models,
         keepRecentTokens: this.ctx.compaction.keepRecentTokens ?? input.keepRecentTokens,
@@ -498,7 +511,10 @@ export class AgentLoop extends Service {
         toolLifecycle: this.ctx.runtimeLifecycle,
         context: ownedContext,
         resolveInstructions: ({ availableTools }) => coalesceModelInstructions([
-          ...this.ctx.systemPrompt.assembleInstructions({ availableTools }),
+          ...this.ctx.systemPrompt.assembleInstructions({
+            availableTools,
+            sections: promptSections,
+          }),
           ...input.agentInstructions.map((instruction) => Object.freeze({
             role: instruction.authority,
             content: instruction.content,
@@ -506,9 +522,12 @@ export class AgentLoop extends Service {
         ]),
         compaction,
         tools: {
-          registry: this.ctx.tools.registry,
+          registry: input.agentScope === undefined
+            ? this.ctx.tools.registry
+            : this.ctx.tools.registryFor(input.agentScope),
           resultRenderer: this.ctx.tools.createResultRenderer(
             createBasicToolResultRenderer(),
+            input.agentScope,
           ),
           ...(maxParallelCalls === undefined ? {} : { maxParallelCalls }),
         },
@@ -532,12 +551,14 @@ export class AgentLoop extends Service {
           try {
             ownedContext.release();
           } finally {
-            sessions.release();
+            try { sessions.release(); }
+            finally { releaseScope?.(); }
           }
           return true;
         },
       });
     } catch (error: unknown) {
+      releaseScope?.();
       try { context?.release(); }
       finally { sessions.release(); }
       throw error;

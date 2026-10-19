@@ -5,25 +5,53 @@ import { ChildWorkflowScheduler } from "../child-scheduler.js";
 import { registerPluginOwner } from "../../boot/plugin-control/owner-registry.js";
 import type {} from "./continuations.js";
 import type {} from "../../boot/plugin-control/code-reload.js";
+import { canDelegatePermissionProfile } from "../../permissions/delegation.js";
+import { composeAgentScope } from "../../composition/agent-scope.js";
 export interface Config { readonly maxConcurrent?: number }
 export const Config: s<Config> = s.object({ maxConcurrent: s.number().step(1).min(1).max(256) });
 
 export default class WorkflowSchedulers extends WorkflowSchedulerService {
-  static readonly inject = ["workflow", "workflowContinuations", "subagents", "permissions", "workspace", "agents"];
+  static readonly inject = ["workflow", "workflowContinuations", "subagents", "permissions", "workspace", "agents", "tools", "runtimeLifecycle"];
   static readonly Config = Config;
   readonly children: ChildWorkflowScheduler;
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
+    const parentState = new Map<string, { terminal: boolean; expires: number }>();
+    const ownerTerminated = async (run: import("../types.js").WorkflowRun): Promise<boolean> => {
+      const id = run.owner.parentRunId;
+      const cached = parentState.get(id);
+      if (cached && cached.expires > Date.now()) return cached.terminal;
+      const events = await ctx.runtimeLifecycle.readEvents(id);
+      const terminal = events.some(event => event.type === "run.aborted" || event.type === "run.failed");
+      const sealed = terminal || events.some(event => event.type === "run.completed");
+      parentState.set(id, { terminal, expires: sealed ? Infinity : Date.now() + 2_000 });
+      return terminal;
+    };
     this.children = new ChildWorkflowScheduler({ workflow: ctx.workflow.state, subagents: ctx.subagents,
       continuations: ctx.workflowContinuations.state,
       ...(config.maxConcurrent === undefined ? {} : { maxConcurrent: config.maxConcurrent }),
+      ownerTerminated,
+      composeChild: request => {
+        const preset = ctx.agents.presetForRole(request.role);
+        const localTools = preset?.localTools ?? [];
+        const features = ctx.get("subagentLauncher")?.runtimeFeatures ?? [];
+        const scope = composeAgentScope({
+          availableTools: request.availableTools ?? [],
+          registeredTools: [...ctx.tools.registry.list().map(tool => tool.name), ...localTools.map(tool => tool.name)],
+          toolContracts: new Map([...ctx.tools.getCompositionContracts(), ...localTools.map(tool => [tool.name, tool] as const)]),
+          allowedCapabilities: request.allowedCapabilities ?? [],
+          ...(request.permissionProfile === undefined ? {} : { permissionProfile: request.permissionProfile }),
+          runtimeFeatures: preset?.memory === "none" ? features.filter(feature => feature !== "memory.snapshot") : features,
+        });
+        return Object.freeze({ ...request, availableTools: scope.availableTools });
+      },
       admit: async (run, step) => {
         const workspace = await ctx.workspace.resolve({ root: run.owner.workspaceRoot });
         if (workspace.root !== run.owner.workspaceRoot) throw new Error("Workflow workspace identity changed");
         const subject = { agentId: run.owner.parentAgentId, sessionId: run.owner.parentSessionId, runId: run.owner.parentRunId, userTurnId: run.id, stepId: step.task.id };
         const host = await ctx.permissions.resolve({ workspace, subject, agent: ctx.agents.permissions, registeredTools: run.availableTools });
         const hostScope = host.delegation ?? { availableTools: host.availableTools, allowedCapabilities: host.ceiling.allowedCapabilities };
-        if ((host.profile !== run.permissionProfile && host.profile !== "full-access" && run.permissionProfile !== "read-only") ||
+        if (!canDelegatePermissionProfile(host.profile, run.permissionProfile) ||
             run.availableTools.some(name => !hostScope.availableTools.includes(name)) || run.allowedCapabilities.some(kind => !hostScope.allowedCapabilities.includes(kind))) throw new Error("Current Host ceiling no longer admits this Workflow");
         const permissions = await ctx.permissions.resolve({ workspace,
           subject,

@@ -86,6 +86,13 @@ test("Coordinator state is Run-scoped and durably reloadable", async () => {
     assert.equal(exited.active, false);
     assert.equal(exited.outcome, "Reconciled");
     assert.equal(exited.exitedAt, "2026-09-12T12:00:01.000Z");
+    await second.enter({ runId: "run-2", sessionId: "session-1" });
+    await second.enter({ runId: "run-other", sessionId: "session-other" });
+    await assert.rejects(second.clear({ runId: "run-other", sessionId: "session-1" }), /another Session/);
+    await second.clearSession("session-1");
+    assert.equal(await second.get({ runId: "run-1" }), undefined);
+    assert.equal(await second.get({ runId: "run-2" }), undefined);
+    assert.ok(await second.get({ runId: "run-other" }));
     await second.close();
   } finally {
     await kv.close();

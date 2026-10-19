@@ -180,6 +180,7 @@ function dynamicSessionPermissions(ctx: Context): SessionPermissionProfilesPort 
     initialize: (sessionId, profile, signal) => current().initialize(sessionId, profile, signal),
     select: (sessionId, profile, signal) => current().select(sessionId, profile, signal),
     forRun: (sessionId, signal) => current().forRun(sessionId, signal),
+    clear: (sessionId, signal) => current().clear(sessionId, signal),
   };
   return Object.freeze(port);
 }

@@ -195,7 +195,6 @@ test("Runtime and AgentLoop complete the Context-Model-Tool-next-Step spine", as
   });
   const runtime = new Runtime({
     ...deterministicServices(),
-    maxSteps: 4,
     stepPipeline: loop,
   });
   const agent = new Agent({ id: "agent" }, runtime);
@@ -587,7 +586,6 @@ test("steering after a completed model response is appended to the forced next S
   };
   const runtime = new Runtime({
     ...deterministicServices(),
-    maxSteps: 3,
     stepPipeline: createLoop({ model, registry: tools.registry, scheduler: tools.scheduler }),
   });
   const agent = new Agent({ id: "agent" }, runtime);

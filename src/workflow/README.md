@@ -4,6 +4,9 @@
 recovery decisions and both schedulers. Coordinator remains a mode/policy capability;
 Subagents owns child identities, process state, tmux targets and retained output. Core
 Runtime continues to own generic conversation Run/Turn/Step execution.
+Ordinary `spawn_agent` calls use Subagents directly by default; set
+`WISH_SUBAGENT_WORKFLOW_ENABLED=1` to route them through this scheduler. Explicit
+approved task graphs still use `workflow_start`.
 
 ## Execution and state
 
@@ -49,8 +52,8 @@ their deadline duration. Same-Attempt recovery never resets it.
   to retry, or unknown/terminally blocked. Model Tools cannot call this decision port.
 - Cancellation is persisted before stopping children. Restart retries child cleanup by
   the stable dispatch address. Disposing the scheduler leaves tmux processes observable;
-  restarting the host reconnects them. Parent Run abort releases result waiting but does
-  not implicitly cancel a durable Workflow; use `workflow_cancel` for that operation.
+  restarting the host reconnects them. Parent Run abort releases result waiting; Host
+  finalization then cancels and removes Workflows derived from that Run.
 - Workflow continuity is distinct from rebuilding the old conversation Run.
   `workflow_read` is deliberately a pure durable-ledger read and does not depend on the
   Scheduler. Scheduler-backed start/retry paths attach result delivery only to a current
@@ -72,7 +75,9 @@ Failure to reactivate child observation leaves scheduling unavailable rather tha
 the child. `WorkflowContinuations` owns process-local parent holds and result recipients in
 the independent, isolated `workflow-continuations` Entry. Scheduler replacement does not
 release these holds: a successor publishes reconciled durable results to the same parent,
-without a second `watch()`. Enqueue precedes hold release; rejected delivery keeps the hold.
+without a second `watch()`. Results enter the parent UserTurn's next Step; the
+UserTurn waits at its Step boundary until all watched Workflows settle. Enqueue
+precedes hold release; rejected delivery keeps the hold.
 Explicit parent cancellation or closing the continuation owner releases it. Standalone
 schedulers without an injected continuation owner retain their own close/release behavior.
 
@@ -113,12 +118,19 @@ the Workflow adapter never registers a second Tool set. Removing the adapter swi
 `spawn_agent` back to direct Subagents dispatch without replacing any of the six Tools;
 list/capture/send/stop/collect remain backed by Subagents throughout. Queueing
 returns a durable Workflow id; do not submit another child merely because it is queued.
-CLI `/review` and the WebUI Session Features panel expose the execution ledger and exact
-Attempt reconciliation controls. Direct host APIs remain usable without model Tools.
-Session deletion is fenced by active, resumable or outcome-uncertain Attempts. A quiescent
-`blocked` Run whose Attempts have already failed is retained in the ledger but does not make
-its owner Session permanently undeletable; retry remains explicit and the scheduler never
-restarts a blocked Run on its own.
+CLI `/review` exposes the execution ledger and exact Attempt reconciliation controls.
+Workflow runs remain durable during execution and can run in the background without a WebUI view. Direct
+host APIs remain usable without model Tools.
+Session archiving is fenced by active, resumable or outcome-uncertain Attempts. Completing,
+failing or stopping an owning Run cancels its unfinished Workflows and removes their terminal
+ledger entries after child work has settled. Deleting a Session cancels and removes all its
+remaining Workflows before removing the Session. A
+quiescent `blocked` Run whose Attempts have already failed does not block archiving. Retry
+remains explicit and the scheduler never restarts a blocked Run on its own.
+The Session cleanup entry depends on durable Workflow state and resolves the child Scheduler
+when cancellation is needed. If the Scheduler is unavailable, empty cleanup and terminal
+ledger removal still finish; active Workflows remain recorded and block cleanup until their
+children can be stopped and verified.
 
 `WISH_WORKFLOW_ENABLED=0` disables the capability; `WISH_WORKFLOW_TOOLS_ENABLED=0` hides
 Workflow model controls only. Existing Subagent Tool exposure remains controlled by
@@ -128,9 +140,9 @@ by the graph adapter and `workflow_start`. Disabling either leaves one-Step `spa
 the remaining Workflow controls available. Child CLIs disable
 Tasks/Workflow and recursive Subagents, with isolated data and Storage directories.
 
-Storage domain `workflow/runs` uses one atomic global KV snapshot, bounded to 4096 Runs.
-This is process-local writer infrastructure, not a distributed queue. Backend payload
-limits still apply; there is no automatic pruning or multi-process leader election.
+Storage domain `workflow/runs` uses one atomic global KV snapshot. Terminal Workflow records
+are removed with their owning Run or Session. This is process-local writer infrastructure,
+not a distributed queue. Backend payload limits still apply; there is no multi-process leader election.
 Separate CLI/WebUI instances must use separate writable data directories.
 
 Verification: `npm run test:workflow`, `npm run test:plan`, `npm run test:tasks`,

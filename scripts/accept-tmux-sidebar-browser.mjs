@@ -31,7 +31,7 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(booted.context.get("webManagementHost").url);
   await page.locator("#wish-composer").waitFor();
-  await page.getByRole("button", { name: "执行记录", exact: true }).click();
+  await page.locator(".session-link[aria-current=page]").click();
   const sidebar = page.getByRole("complementary", { name: "会话侧栏", exact: true });
   await sidebar.getByRole("button", { name: "打开 tmux", exact: true }).click();
   await sidebar.getByRole("button", { name: "刷新 tmux 列表", exact: true }).click();

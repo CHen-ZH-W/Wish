@@ -215,6 +215,10 @@
       name: 'cordis:memory-write-tool'
       disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_MEMORY_WRITE_ENABLED === '0'
 
+    - id: memory-tool-guidance
+      name: 'cordis:memory-tool-guidance'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0'
+
     - id: memory-plan-controls
       name: 'cordis:memory-plan-controls'
       disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
@@ -415,10 +419,6 @@
       disabled: !!js launch.environment.WISH_SUBAGENTS_ENABLED === '0'
       config:
         backendId: file
-        maxRecords: !!js >-
-          launch.environment.WISH_SUBAGENT_MAX_RECORDS === undefined || launch.environment.WISH_SUBAGENT_MAX_RECORDS === ''
-            ? undefined
-            : Number(launch.environment.WISH_SUBAGENT_MAX_RECORDS)
         maxConcurrent: !!js >-
           launch.environment.WISH_SUBAGENT_MAX_CONCURRENT === undefined || launch.environment.WISH_SUBAGENT_MAX_CONCURRENT === ''
             ? undefined
@@ -687,7 +687,8 @@
       disabled: !!js >-
         launch.environment.WISH_SUBAGENT_TOOLS_ENABLED === '0' ||
         launch.environment.WISH_SUBAGENTS_ENABLED === '0' ||
-        launch.environment.WISH_WORKFLOW_ENABLED === '0'
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_SUBAGENT_WORKFLOW_ENABLED !== '1'
 
     - id: tool-tasks
       name: 'cordis:task-tools'
@@ -697,6 +698,13 @@
 
     - id: tool-tasks-update
       name: 'cordis:task-update-tool'
+      disabled: !!js >-
+        launch.environment.WISH_TASKS_ENABLED === '0' ||
+        launch.environment.WISH_TASK_TOOLS_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: tasks-tool-guidance
+      name: 'cordis:tasks-tool-guidance'
       disabled: !!js >-
         launch.environment.WISH_TASKS_ENABLED === '0' ||
         launch.environment.WISH_TASK_TOOLS_ENABLED === '0' ||
@@ -724,14 +732,32 @@
         launch.environment.WISH_PLAN_ENABLED === '0' ||
         launch.environment.WISH_SUBAGENTS_ENABLED === '0'
 
+    - id: workflow-tool-guidance
+      name: 'cordis:workflow-tool-guidance'
+      disabled: !!js >-
+        launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+        launch.environment.WISH_WORKFLOW_TOOLS_ENABLED === '0'
+
     - id: tool-plan
       name: 'cordis:plan-tools'
       disabled: !!js >-
         launch.environment.WISH_PLAN_ENABLED === '0' ||
         launch.environment.WISH_PLAN_TOOLS_ENABLED === '0'
 
+    - id: plan-tool-guidance
+      name: 'cordis:plan-tool-guidance'
+      disabled: !!js >-
+        launch.environment.WISH_PLAN_ENABLED === '0' ||
+        launch.environment.WISH_PLAN_TOOLS_ENABLED === '0'
+
     - id: tool-todo
       name: 'cordis:todo-tools'
+      disabled: !!js >-
+        launch.environment.WISH_TODO_ENABLED === '0' ||
+        launch.environment.WISH_TODO_TOOLS_ENABLED === '0'
+
+    - id: todo-tool-guidance
+      name: 'cordis:todo-tool-guidance'
       disabled: !!js >-
         launch.environment.WISH_TODO_ENABLED === '0' ||
         launch.environment.WISH_TODO_TOOLS_ENABLED === '0'
@@ -747,8 +773,20 @@
             ? undefined
             : Number(launch.environment.WISH_GOAL_BLOCKED_AFTER_ROUNDS)
 
+    - id: goal-tool-guidance
+      name: 'cordis:goal-tool-guidance'
+      disabled: !!js >-
+        launch.environment.WISH_GOAL_ENABLED === '0' ||
+        launch.environment.WISH_GOAL_TOOLS_ENABLED === '0'
+
     - id: tool-coordinator
       name: 'cordis:coordinator-tools'
+      disabled: !!js >-
+        launch.environment.WISH_COORDINATOR_ENABLED === '0' ||
+        launch.environment.WISH_COORDINATOR_TOOLS_ENABLED === '0'
+
+    - id: coordinator-tool-guidance
+      name: 'cordis:coordinator-tool-guidance'
       disabled: !!js >-
         launch.environment.WISH_COORDINATOR_ENABLED === '0' ||
         launch.environment.WISH_COORDINATOR_TOOLS_ENABLED === '0'
@@ -780,10 +818,6 @@
     - id: runtime
       name: 'cordis:runtime'
       config:
-        maxSteps: !!js >-
-          launch.environment.WISH_MAX_STEPS === undefined || launch.environment.WISH_MAX_STEPS === ''
-            ? undefined
-            : Number(launch.environment.WISH_MAX_STEPS)
         generationDrainTimeoutMs: !!js >-
           launch.environment.WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS === undefined || launch.environment.WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS === ''
             ? undefined
@@ -810,6 +844,8 @@
       config:
         agentId: !!js launch.environment.WISH_AGENT_ID
         agentInstructions: !!js launch.environment.WISH_AGENT_INSTRUCTIONS
+        childPresetsJson: !!js launch.environment.WISH_AGENT_PRESETS_JSON
+        scopePresetJson: !!js launch.environment.WISH_AGENT_SCOPE_PRESET
         permissionProfile: !!js launch.environment.WISH_PERMISSION_PROFILE
         availableTools: !!js >-
           launch.environment.WISH_AVAILABLE_TOOLS === undefined || launch.environment.WISH_AVAILABLE_TOOLS === ''
@@ -833,6 +869,16 @@
     - id: tasks-session-feature
       name: 'cordis:tasks-session-feature'
       disabled: !!js launch.environment.WISH_TASKS_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: coordinator-session-feature
+      name: 'cordis:coordinator-session-feature'
+      disabled: !!js launch.environment.WISH_COORDINATOR_ENABLED === '0'
+
+    - id: tool-result-archive-session-feature
+      name: 'cordis:tool-result-archive-session-feature'
+
+    - id: tool-output-artifacts-session-feature
+      name: 'cordis:tool-output-artifacts-session-feature'
 
     - id: todo-session-feature
       name: 'cordis:todo-session-feature'
@@ -858,10 +904,9 @@
 
     - id: context-session-feature
       name: 'cordis:context-session-feature'
-      disabled: !!js launch.surface !== 'webui'
     - id: subagents-session-feature
       name: 'cordis:subagents-session-feature'
-      disabled: !!js launch.surface !== 'webui'
+      disabled: !!js launch.environment.WISH_SUBAGENTS_ENABLED === '0'
     - id: tmux-session-feature
       name: 'cordis:tmux-session-feature'
       disabled: !!js >-

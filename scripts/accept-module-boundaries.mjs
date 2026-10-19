@@ -17,10 +17,13 @@ test("WebUI keeps transport, React-free models, presentation and module adapters
   for (const path of ["src/apps/webui/client/model/session.ts", "src/apps/webui/client/model/run.ts", "src/apps/webui/client/model/features.ts", "src/apps/webui/client/model/new-session.ts", "src/workspace/consumers/webui/directory-model.ts", "src/settings/consumers/webui/model.ts", "src/approval/consumers/webui/model.ts", "src/models/consumers/webui/reasoning-model.ts"]) {
     assert.doesNotMatch(await readFile(join(root, path), "utf8"), /from ["']react|from ["']react-dom/u, path);
   }
-  for (const path of ["src/apps/webui/client/ui/shell.tsx", "src/apps/webui/client/ui/conversation.tsx", "src/apps/webui/client/ui/feature.tsx"]) {
+  for (const path of ["src/apps/webui/client/ui/shell.tsx", "src/apps/webui/client/ui/conversation.tsx", "src/apps/webui/client/ui/tool-calls.tsx"]) {
     assert.doesNotMatch(await readFile(join(root, path), "utf8"), /@deepseek-ai\/cordis|\bfetch\(|new EventSource|toolName === ["'](?:bash|read|write|spawn_agent)/u, path);
   }
-  for (const module of ["plan", "todo", "goal", "skills", "memory", "workflow", "tasks", "context", "tmux", "subagents", "models"]) await access(join(root, "src", module, "consumers/webui/index.tsx"));
+  for (const module of ["todo", "goal", "skills", "tmux", "subagents", "models"]) await access(join(root, "src", module, "consumers/webui/index.tsx"));
+  for (const module of ["plan", "memory", "workflow", "tasks", "context"]) {
+    await assert.rejects(access(join(root, "src", module, "consumers/webui/index.tsx")), { code: "ENOENT" });
+  }
   const shell = await readFile(join(root, "src/apps/webui/client/ui/shell.tsx"), "utf8");
   assert.doesNotMatch(shell, /\barchives?\b|\barchived\b|SessionClientModel|wishSession|\.browse\(/u, "Shell renders owned sidebar contracts, never archive or Session dispatch");
   const settings = await readFile(join(root, "src/settings/settings.ts"), "utf8");
@@ -29,6 +32,13 @@ test("WebUI keeps transport, React-free models, presentation and module adapters
   assert.doesNotMatch(models, /apps\/webui|react/u);
   const client = await readFile(join(root, "src/apps/webui/client/main.tsx"), "utf8");
   assert.doesNotMatch(client, /ModelsClientUi|id: ["']models["']/u, "stable Browser composition does not own the Models panel");
+  assert.match(client, /id: ["']conversation["'][^\n]+label: ["']会话["']/u, "the main conversation is an explicit session view");
+  assert.match(client, /id: ["']tool-calls["'][^\n]+label: ["']工具调用["'][^\n]+navigation: ["']hidden["']/u, "Tool details stay in an explicitly opened conversation-level subview");
+  assert.doesNotMatch(client, /id: ["']activity["']|label: ["']执行记录["']/u, "the aggregate Activity page is not restored");
+  assert.doesNotMatch(client, /TrajectoryClientUi|id: ["']trajectory["']/u, "the workspace has no trajectory page");
+  assert.match(client, /id: ["']rounds["'][^\n]+forPanel: ["']conversation["']/u, "round navigation stays scoped to the main conversation");
+  const browserBuild = await readFile(join(root, "scripts/build-webui-client.mjs"), "utf8");
+  assert.doesNotMatch(browserBuild, /PlanClientUi|MemoryClientUi|TasksClientUi|WorkflowClientUi|ContextClientUi/u, "removed workspace pages are not shipped");
   const server = await readFile(join(root, "src/apps/webui/server.ts"), "utf8");
   assert.doesNotMatch(server, /directory-picker\/local/u, "HTTP adapter consumes the directory browser interface, not its local implementation");
   assert.doesNotMatch(server, /models\/(?:config|session-reasoning|pricing)|model-(?:reasoning|usage)|reasoningEffort/u,

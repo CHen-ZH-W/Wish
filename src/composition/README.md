@@ -25,6 +25,8 @@ Cordis services and lifecycle generations.
   in-flight lease counts and replacement admission, not Run state, queues, plugin loading,
   permissions, persistence or retries.
 - `agent-service.ts`: owns the default Wish Agent definition and facade.
+- `agent-scope.ts` and `agent-preset.ts`: own Agent-local visibility, parent inheritance,
+  resource cleanup and the serializable child role contract.
 - `tool-context.ts`: immutable Wish product facts fixed for one Tool execution Step, including
   Runtime-authenticated UserTurn provenance and an exact Goal-round identity only for trusted
   GoalRoundDriver follow-ups.
@@ -33,6 +35,62 @@ Cordis services and lifecycle generations.
 Core state machines and transition rules remain under `src/core/`; this directory must not become
 the canonical owner of Session, Run, Step, Tool or Subagent state. Cordis is used here only for
 composition, injection, replacement and lifecycle cleanup.
+
+## Per-Agent Scope
+
+Application registrations are visible to every Agent. `AgentScope` adds ordered parent and
+child layers; a child may replace a Tool, Prompt section, Context Provider or Compaction
+strategy by name without changing its parent or sibling. `Agents.scope` is the active
+process Agent's identity. A scoped registration takes the contributing Cordis `ctx` as its
+first argument, for example `ctx.systemPrompt.registerScoped(ctx, ctx.agents.scope, section)`.
+That Fiber's disposal and the Agent Scope's disposal both remove the contribution. The
+AgentLoop generation holds a Scope lease until its resources are released. Scope disposal
+signals Agent-local background work before waiting for leases, so a Step awaiting that
+work can finish. Agent unload starts Scope disposal and Run retirement together before
+waiting for either drain. `scope.listen(unsubscribe)` and `scope.run(operation)` own listeners and
+abortable work. Scoped Tool and Compaction calls admitted before a Fiber unload are
+drained before that Fiber is disposed; retained callbacks reject new calls after removal.
+Tool result renderers resolve the currently visible contribution, including a child's
+override without a renderer, which uses the fallback.
+
+The CLI child is a separate process. `WISH_AGENT_PRESETS_JSON` defines Host-selected role
+presets; the Launcher resolves one before the Subagent record is created, intersects its
+Tool list with the delegated parent ceiling, checks registered Tools, runtime features and
+capabilities, and commits the resulting Tool list to the child record. The child receives
+the resolved preset as `WISH_AGENT_SCOPE_PRESET`, creates its own Scope and installs its
+Prompt and Compaction settings. Its Memory mode selects whether the Host sends a snapshot;
+`none` also disables child Memory plugins. The record retains a digest of the selected
+preset. A role with no configured preset still receives the normal compatibility-filtered
+Tool set.
+
+Example deployment setting:
+
+```json
+[
+  {"role":"coder","availableTools":["read","grep","write","edit","bash"],"permissionProfile":"workspace-write","prompt":"Implement the assigned change.","compaction":{"keepRecentTokens":3000},"memory":"snapshot"},
+  {"role":"reviewer","availableTools":["read","grep"],"permissionProfile":"read-only","allowedCapabilities":["filesystem.read"],"prompt":"Review the assigned change and report findings.","compaction":{"keepRecentTokens":1500},"memory":"none"}
+]
+```
+
+Set this JSON as `WISH_AGENT_PRESETS_JSON`. The named Tools must be registered in the
+Application; a missing Tool or unmet child runtime feature rejects launch. A preset permission
+profile and capability list may narrow the parent grant; a broader profile is rejected.
+The selected profile and available review surface also narrow the stored capability ceiling
+to operations the child can actually execute.
+Child-specific
+plugins can inspect `ctx.agents.scopePreset?.role` and register their Tool, Prompt, Context
+Provider or Compaction strategy against `ctx.agents.scope` using the scoped APIs. These
+registrations live only in that child process. To add a Tool that does not exist in the
+parent Application, declare it in the role's `localTools` with its `name`, `requires` and
+optional `requiredCapabilities`, and include its name in `availableTools`. The parent
+validates that contract before launch; the child refuses to open its Agent if its plugin
+did not actually register the Tool. Tool visibility is not execution authority:
+Permissions, approval and filesystem/Shell sandbox checks still run for every Tool call.
+The child composer also removes Tools whose declared capabilities would require an
+unavailable human review surface under the selected permission profile. For example,
+`bash` is omitted from a read-only CLI child when it could only run after approval;
+Plan controls require Plan state, human review and Session resume features, so a normal
+execution child cannot enter a Plan state it cannot finish.
 
 The continuation registry is a narrow product adapter rather than a second scheduler. Policies
 cannot mutate Core queues directly; Core validates their decisions, creates the follow-up and owns

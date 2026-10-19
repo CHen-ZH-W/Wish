@@ -22,8 +22,9 @@ Tool/capability 集合，并与所有其他策略取交集。Coordinator 因此�
 - `read-only`：自动允许只读能力；只读 scope 的进程命令可审批，write/network/Web/
   external side effect 与 runtime control 是不可由审批越过的硬边界。
 - `approval-required`：自动允许普通只读能力，其他能力请求审批。
-- `workspace-write`：只有 path-scoped Linux Native Shell 可启用；工作区内普通读写与命令
-  自动放行，`web.search` / `web.fetch` 等开放世界 capability 仍请求审批。
+- `workspace-write`：只有 path-scoped Linux Native Shell 可启用；仅
+  `enter_plan_mode` 与 `exit_plan_mode` 的 Tool 调用请求审批，其余 Tool 调用在能力上限、
+  业务策略和 SandboxPolicy 检查通过后自动放行。工作区外路径等不可执行范围仍会被拒绝。
 - `full-access`：不审批并退出工作区、网络和环境变量隔离。Native Provider 只在这一个显式
   profile 下绕过 Landlock/seccomp；其他 profile 仍进入强制隔离路径。
 

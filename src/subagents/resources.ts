@@ -22,6 +22,8 @@ export interface SubagentResourceManifest {
 /** Registered by a Host Consumer, never supplied by a model Tool argument. */
 export interface SubagentResourceProvider {
   readonly id: string;
+  /** Child runtime features made available when this Host provider is active. */
+  readonly runtimeFeatures?: readonly string[];
   prepare(request: SpawnSubagentRequest, identity: SubagentLaunchIdentity):
     Promise<readonly SubagentResource[]> | readonly SubagentResource[];
 }

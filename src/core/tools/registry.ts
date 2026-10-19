@@ -48,10 +48,22 @@ export interface CaptureToolExecutionSnapshotInput {
 /** Ordered registry for concrete Tool contributions. */
 export class ToolRegistry<Context = unknown> {
   private readonly definitions = new Map<string, RegisteredToolDefinition<Context>>();
+  private readonly sources = new Map<string, ToolDefinition<string, any, any, Context>>();
+  private readonly changeListeners = new Set<() => void>();
   private currentVersion = 0;
 
   get version(): number {
     return this.currentVersion;
+  }
+
+  /** Stable source definitions for projecting an inherited Agent registry. */
+  listDefinitions(): readonly ToolDefinition<string, any, any, Context>[] {
+    return Object.freeze([...this.sources.values()]);
+  }
+
+  subscribeChanges(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => { this.changeListeners.delete(listener); };
   }
 
   register<Name extends string, Input, Output>(
@@ -70,7 +82,9 @@ export class ToolRegistry<Context = unknown> {
         definition.execute(input as Input, context, grant, signal),
     };
     this.definitions.set(descriptor.name, registered);
+    this.sources.set(descriptor.name, definition);
     this.currentVersion += 1;
+    this.notifyChanges();
 
     let active = true;
     return Object.freeze({
@@ -80,7 +94,9 @@ export class ToolRegistry<Context = unknown> {
         active = false;
         if (this.definitions.get(descriptor.name) !== registered) return false;
         this.definitions.delete(descriptor.name);
+        this.sources.delete(descriptor.name);
         this.currentVersion += 1;
+        this.notifyChanges();
         return true;
       },
     });
@@ -236,6 +252,10 @@ export class ToolRegistry<Context = unknown> {
     const definition = this.definitions.get(name);
     if (definition === undefined) throw new Error(`Tool "${name}" is not registered`);
     return definition;
+  }
+
+  private notifyChanges(): void {
+    for (const listener of this.changeListeners) listener();
   }
 }
 

@@ -1,4 +1,7 @@
 import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
+import { AgentScope } from "./agent-scope.js";
+import { parseAgentScopePresets, snapshotAgentScopePreset, type AgentScopePreset } from "./agent-preset.js";
+import { createCompactionResources } from "../compaction/service.js";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
@@ -34,6 +37,10 @@ export interface Config {
   readonly permissionProfile?: PermissionProfile;
   readonly availableTools?: string[] | undefined;
   readonly allowedCapabilities?: CapabilityKind[] | undefined;
+  /** Host-owned role presets, serialized for the CLI child boundary. */
+  readonly childPresetsJson?: string;
+  /** Resolved preset supplied only to a launched child process. */
+  readonly scopePresetJson?: string;
 }
 
 export const Config: s<Config> = s.object({
@@ -52,6 +59,8 @@ export const Config: s<Config> = s.object({
     )),
     s.const(undefined),
   ]),
+  childPresetsJson: s.string(),
+  scopePresetJson: s.string(),
 });
 
 export type WishAgent = CoreAgent<WishAgentProtocol>;
@@ -66,7 +75,7 @@ export interface AgentDependencies {
 /** Inputs supplied by the Application service when opening one generation. */
 export type OpenAgentInput = Omit<
   OpenRuntimeInput,
-  "agentId" | "agentInstructions"
+  "agentId" | "agentInstructions" | "agentScope"
 >;
 
 export interface AgentResources extends RuntimeResources {
@@ -90,7 +99,13 @@ export class Agents extends Service {
   readonly agentId: string;
   readonly agentInstructions: readonly ContextInstruction[];
   readonly permissions: AgentPermissionConfiguration;
+  readonly scope: AgentScope;
+  readonly childPresets: readonly AgentScopePreset[];
+  readonly scopePreset: AgentScopePreset | undefined;
   private readonly work: PluginWorkOwner;
+  private readonly generations = new Set<WishRunGeneration>();
+  private readonly installedPrompts = new WeakSet<object>();
+  private readonly installedCompactions = new WeakSet<object>();
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, "agents");
@@ -103,9 +118,24 @@ export class Agents extends Service {
       config.agentId ?? DEFAULT_AGENT_ID,
       "Wish Agent id",
     );
+    this.childPresets = parseAgentScopePresets(config.childPresetsJson);
+    this.scopePreset = config.scopePresetJson === undefined || config.scopePresetJson === ""
+      ? undefined
+      : snapshotAgentScopePreset(JSON.parse(config.scopePresetJson));
+    this.scope = new AgentScope(this.scopePreset === undefined ? this.agentId : `${this.agentId}:${this.scopePreset.role}`);
+    ctx.effect(() => async () => {
+      const retirements = Promise.allSettled([...this.generations].map(generation =>
+        generation.retire({ reason: `Agent Scope ${this.scope.generation} closed` })
+      ));
+      // Closing the Scope signals Agent-local work that an aborting Run may be
+      // awaiting. Start both drains before waiting for either to finish.
+      const [scopeResult] = await Promise.allSettled([this.scope.dispose(), retirements]);
+      if (scopeResult.status === "rejected") throw scopeResult.reason;
+    }, `agents.scope(${JSON.stringify(this.agentId)})`);
     this.agentInstructions = config.agentInstructions === undefined
       ? Object.freeze([])
       : createInstructions(config.agentInstructions);
+    this.installPresetContributions(false);
     this.permissions = snapshotPermissions(config);
     this.definition = Object.freeze({
       id: this.agentId,
@@ -117,18 +147,55 @@ export class Agents extends Service {
     });
   }
 
+  presetForRole(role: string | undefined): AgentScopePreset | undefined {
+    return this.childPresets.find(preset => preset.role === (role ?? "worker"));
+  }
+
   /** Build one Agent/Application generation from the current Runtime owner. */
   open(input: OpenAgentInput): AgentResources {
     this.work.assertAttached();
+    this.installPresetContributions(true);
+    for (const tool of this.scopePreset?.localTools ?? []) {
+      if (!this.ctx.get("tools")?.registryFor(this.scope).has(tool.name)) {
+        throw new Error(`Agent Scope role ${this.scopePreset!.role} did not register local Tool ${tool.name}`);
+      }
+    }
     const resources = this.ctx.runEngine.open({
       ...input,
       agentId: this.agentId,
       agentInstructions: this.agentInstructions,
+      agentScope: this.scope,
     });
+    this.generations.add(resources.generation);
     return Object.freeze({
       ...resources,
       agent: createWishAgent(this.definition, resources),
     });
+  }
+
+  private installPresetContributions(required: boolean): void {
+    const prompt = this.scopePreset?.prompt === undefined ? undefined : this.ctx.get("systemPrompt");
+    const compaction = this.scopePreset?.compaction === undefined ? undefined : this.ctx.get("compaction");
+    if (required && this.scopePreset?.prompt !== undefined && prompt === undefined) throw new Error("Agent Scope Prompt service is unavailable");
+    if (required && this.scopePreset?.compaction !== undefined && compaction === undefined) throw new Error("Agent Scope Compaction service is unavailable");
+    if (prompt !== undefined && !this.installedPrompts.has(prompt)) {
+      prompt.registerScoped(this.ctx, this.scope, {
+        id: "agent-scope-preset", content: this.scopePreset!.prompt!, authority: "developer", order: 100,
+      });
+      this.installedPrompts.add(prompt);
+    }
+    if (compaction !== undefined && !this.installedCompactions.has(compaction)) {
+      const policy = this.scopePreset!.compaction!;
+      compaction.registerScoped(this.ctx, this.scope, {
+        id: `preset:${this.scopePreset!.role}`,
+        open: input => createCompactionResources({
+          ...input,
+          keepRecentTokens: policy.keepRecentTokens ?? input.keepRecentTokens,
+          summaryMaxOutputTokens: policy.summaryMaxOutputTokens ?? input.summaryMaxOutputTokens,
+        }),
+      });
+      this.installedCompactions.add(compaction);
+    }
   }
 }
 

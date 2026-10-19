@@ -52,11 +52,13 @@ class StubAgentLoop extends Service {
       models: Object.freeze({ configuredModel: {} }),
       stepPipeline: {
         async execute({ snapshot }) {
-          return {
-            status: "continue",
-            reason: "fixture_continue",
-            memory: snapshot.step.ordinal,
-          };
+          return snapshot.step.ordinal < 40
+            ? {
+                status: "continue",
+                reason: "fixture_continue",
+                memory: snapshot.step.ordinal,
+              }
+            : { status: "completed", result: "done" };
         },
       },
       get released() {
@@ -102,7 +104,6 @@ test("Runtime owns Core construction and survives AgentLoop replacement, but sti
     },
   });
   const runtimeProvider = root.plugin(Runtime, {
-    maxSteps: 2,
     generationDrainTimeoutMs: 1_000,
   });
   assert.equal(runtimeProvider.state, fiberState.pending);
@@ -122,9 +123,8 @@ test("Runtime owns Core construction and survives AgentLoop replacement, but sti
     await consumer.await();
     assert.equal(runtimeProvider.state, fiberState.active);
     assert.equal(consumer.state, fiberState.active);
-    assert.equal(root.runEngine.maxSteps, 2);
     assert.equal(root.runEngine.generationDrainTimeoutMs, 1_000);
-    assert.equal(await executedSteps(root.runEngine), 2);
+    assert.equal(await executedSteps(root.runEngine), 40);
 
     await agentLoopProvider.dispose();
     assert.equal(root.get("agentLoop"), undefined);
@@ -135,28 +135,20 @@ test("Runtime owns Core construction and survives AgentLoop replacement, but sti
 
     agentLoopProvider = await root.plugin(StubAgentLoop);
     await consumer.await();
-    assert.equal(root.runEngine.maxSteps, 2);
     assert.equal(consumer.state, fiberState.active);
     assert.equal(generations.length, 1);
 
     const first = root.runEngine;
     await runtimeProvider.update({
-      maxSteps: 3,
       generationDrainTimeoutMs: 2_000,
     });
     await consumer.await();
     assert.notEqual(root.runEngine, first);
-    assert.equal(root.runEngine.maxSteps, 3);
     assert.equal(root.runEngine.generationDrainTimeoutMs, 2_000);
-    assert.equal(await executedSteps(root.runEngine), 3);
+    assert.equal(await executedSteps(root.runEngine), 40);
     assert.equal(disposals, 1);
     assert.equal(generations.length, 2);
 
-    assert.throws(
-      () => runtimeProvider.update({ maxSteps: 0 }),
-      /expected number >= 1/u,
-    );
-    assert.equal(root.runEngine.maxSteps, 3);
     assert.equal(consumer.state, fiberState.active);
   } finally {
     await root.fiber.dispose();
@@ -189,21 +181,15 @@ test("Loader updates and disables Runtime by stable id", async () => {
     const id = "include:runtime";
     const entry = booted.context.loader.resolve(id);
     const first = booted.surfaceContext.get("runEngine");
-    await booted.context.loader.update(id, { config: { maxSteps: 3 } });
+    await booted.context.loader.update(id, { config: { generationDrainTimeoutMs: 2_000 } });
     await booted.context.loader.resolve("include:application").fiber.await();
     assert.equal(booted.context.loader.resolve(id), entry);
     assert.notEqual(booted.surfaceContext.get("runEngine"), first);
-    assert.equal(booted.surfaceContext.get("runEngine").maxSteps, 3);
+    assert.equal(booted.surfaceContext.get("runEngine").generationDrainTimeoutMs, 2_000);
     assert.equal(
       booted.context.loader.resolve("include:application").fiber.state,
       fiberState.active,
     );
-
-    await assert.rejects(
-      booted.context.loader.update(id, { config: { maxSteps: 0 } }),
-      /expected number >= 1/u,
-    );
-    assert.equal(booted.surfaceContext.get("runEngine").maxSteps, 3);
 
     await booted.context.loader.update(id, { disabled: true });
     assert.equal(booted.context.loader.resolve(id), entry);
@@ -221,7 +207,7 @@ test("Loader updates and disables Runtime by stable id", async () => {
     await booted.context.loader.update(id, { disabled: false });
     await booted.context.loader.resolve("include:application").fiber.await();
     assert.equal(entry.disabled, false);
-    assert.equal(booted.surfaceContext.get("runEngine").maxSteps, 3);
+    assert.equal(booted.surfaceContext.get("runEngine").generationDrainTimeoutMs, 2_000);
     assert.equal(
       booted.context.loader.resolve("include:application").fiber.state,
       fiberState.active,
@@ -236,16 +222,10 @@ test("Loader updates and disables Runtime by stable id", async () => {
 
 test("Runtime schema and source keep Application and Core algorithms narrow", async () => {
   assert.deepEqual(RuntimeConfig({
-    maxSteps: 2,
     generationDrainTimeoutMs: 1_000,
   }), {
-    maxSteps: 2,
     generationDrainTimeoutMs: 1_000,
   });
-  assert.throws(
-    () => RuntimeConfig({ maxSteps: 0 }),
-    /expected number >= 1/u,
-  );
   assert.throws(
     () => RuntimeConfig({ generationDrainTimeoutMs: 0 }),
     /expected number >= 1/u,
@@ -278,11 +258,10 @@ test("Runtime schema and source keep Application and Core algorithms narrow", as
   assert.match(agentServiceSource, /this\.ctx\.runEngine\.open/u);
   assert.match(applicationSource, /this\.ctx\.agents\.open/u);
   assert.doesNotMatch(applicationSource, /readonly maxSteps/u);
+  assert.doesNotMatch(serviceSource, /maxSteps/u);
+  assert.doesNotMatch(coreSource, /maxSteps|max_steps_exceeded/u);
   assert.doesNotMatch(coreSource, /@deepseek-ai\/cordis/u);
-  assert.match(
-    profile,
-    /id: runtime\s+name: 'cordis:runtime'\s+config:\s+maxSteps:/u,
-  );
+  assert.doesNotMatch(profile, /WISH_MAX_STEPS|maxSteps/u);
   assert.doesNotMatch(
     profile,
     /id: application\s+name: 'cordis:application'[\s\S]*?maxSteps:/u,
@@ -296,7 +275,6 @@ async function executedSteps(service) {
     { scope: `scope-${++runSequence}`, payload: { text: "continue" } },
   );
   const completion = await handle.completion;
-  assert.equal(completion.status, "failed");
-  assert.equal(completion.error.code, "max_steps_exceeded");
+  assert.equal(completion.status, "completed");
   return completion.snapshot.userTurns[0].steps.length;
 }

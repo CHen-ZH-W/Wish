@@ -62,3 +62,17 @@ test("File Blob detects content that conflicts with its immutable reference", as
     await fixture.close();
   }
 });
+
+test("File Blob physically deletes one reference and permits repeated cleanup", async () => {
+  const fixture = await createFixture();
+  try {
+    const first = await fixture.blob.put({ namespace: "first", value: new TextEncoder().encode("same") });
+    const second = await fixture.blob.put({ namespace: "second", value: new TextEncoder().encode("same") });
+    assert.equal(await fixture.blob.delete({ reference: first }), true);
+    assert.equal(await fixture.blob.delete({ reference: first }), false);
+    assert.equal(await fixture.blob.stat({ reference: first }), undefined);
+    assert.ok(await fixture.blob.stat({ reference: second }));
+  } finally {
+    await fixture.close();
+  }
+});

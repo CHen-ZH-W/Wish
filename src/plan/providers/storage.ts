@@ -51,6 +51,9 @@ export class StoragePlanService extends PlanService {
   get(request: PlanSessionRequest): Promise<PlanState | undefined> {
     return this.work.run(() => this.backend.get(request));
   }
+  clear(request: PlanSessionRequest): Promise<void> {
+    return this.work.run(() => this.backend.clear(request));
+  }
 
   enter(request: EnterPlanRequest): Promise<PlanState> {
     return this.work.run(() => this.backend.enter(request));

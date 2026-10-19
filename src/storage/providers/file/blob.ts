@@ -23,6 +23,7 @@ import {
 } from "../../errors.js";
 import {
   fileBlobPath,
+  fileBlobNamespaceDirectory,
   fileBlobTemporaryPath,
 } from "./paths.js";
 
@@ -87,6 +88,32 @@ export class FileBlobStorageBackend implements BlobStorageBackend {
       value === undefined ? undefined : Object.freeze({ reference })
     );
     return this.track(operation);
+  }
+
+  delete(request: BlobReadRequest): Promise<boolean> {
+    const reference = normalizeReference(request?.reference);
+    return this.serial(`${reference.namespace.length}:${reference.namespace}:${reference.sha256}`, async () => {
+      if (await this.read(reference, request.signal) === undefined) return false;
+      const path = fileBlobPath(this.rootDirectory, reference.namespace, reference.sha256);
+      try {
+        await rm(path);
+        await syncDirectory(dirname(path));
+      } catch (error: unknown) {
+        if (isNodeError(error, "ENOENT")) return false;
+        throw mapFileFailure(error, this.options.backendId, reference.namespace);
+      }
+      return true;
+    });
+  }
+
+  async deleteNamespace(namespace: string): Promise<void> {
+    this.assertOpen();
+    const directory = fileBlobNamespaceDirectory(this.rootDirectory, requireIdentity(namespace, "Blob namespace"));
+    await Promise.allSettled([...this.active]);
+    this.assertOpen();
+    await rm(directory, { recursive: true, force: true });
+    try { await syncDirectory(dirname(directory)); }
+    catch (error: unknown) { if (!isNodeError(error, "ENOENT")) throw error; }
   }
 
   async close(): Promise<void> {

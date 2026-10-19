@@ -277,7 +277,6 @@ export interface RuntimeOptions<Configuration, Payload, StepMemory, Result> {
   readonly continuationPolicy?: UserTurnContinuationPolicy<Configuration, Payload, Result>;
   readonly lifecycle?: RuntimeLifecycleService<Payload, Result>;
   readonly observers?: readonly RuntimeTransitionObserver<Payload, Result>[];
-  readonly maxSteps?: number;
   readonly stepInboxLimits?: RuntimeMailboxLimits;
   readonly followUpQueueLimits?: RuntimeMailboxLimits;
   readonly maxRetainedRuns?: number;
@@ -305,6 +304,16 @@ export interface RuntimeContinuationInput<Payload> {
   readonly id?: string;
   readonly receivedAt?: string;
   readonly reserveCapacity?: boolean;
+  readonly withinUserTurn?: boolean;
+}
+
+const MAX_INTERNAL_STEP_RESULT_BYTES = 16 * 1024;
+
+function boundedInternalStepResult(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= MAX_INTERNAL_STEP_RESULT_BYTES) return text;
+  return new TextDecoder().decode(bytes.subarray(0, MAX_INTERNAL_STEP_RESULT_BYTES)) +
+    "\n[Internal result truncated. Inspect the owning child or Workflow for full output.]";
 }
 
 type TurnOutcome<Result> =
@@ -324,6 +333,7 @@ interface ManagedRun<Configuration, Payload, StepMemory, Result> {
   readonly completion: Promise<RunCompletion<Result, Payload>>;
   readonly resolveCompletion: (completion: RunCompletion<Result, Payload>) => void;
   readonly holds: Map<symbol, string>;
+  readonly userTurnHolds: Map<symbol, UserTurnId>;
   decisionSignal: DecisionSignal;
   observerWork: Promise<void>;
   stepMemory: StepMemory | undefined;
@@ -358,7 +368,6 @@ export class Runtime<
   private readonly retainedTerminalRuns: AgentRunId[] = [];
   private readonly lifecycle: RuntimeLifecycleService<Payload, Result>;
   private readonly observers: RuntimeObserverPipeline<Payload, Result>;
-  private readonly maxSteps: number;
   private readonly maxRetainedRuns: number;
   private readonly maxEventsPerRun: number;
   private readonly ids: RuntimeIdGenerator;
@@ -372,7 +381,6 @@ export class Runtime<
       Result
     >,
   ) {
-    this.maxSteps = positiveInteger(options.maxSteps, 32, "maxSteps");
     this.maxRetainedRuns = nonNegativeInteger(
       options.maxRetainedRuns,
       100,
@@ -446,6 +454,7 @@ export class Runtime<
       completion,
       resolveCompletion,
       holds: new Map(),
+      userTurnHolds: new Map(),
       decisionSignal: createDecisionSignal(),
       observerWork: Promise.resolve(),
       stepMemory: undefined,
@@ -578,6 +587,26 @@ export class Runtime<
         "run_already_terminal",
       );
     }
+    if (input.withinUserTurn) {
+      const turn = currentUserTurn(record.state);
+      if (turn?.status !== "running" || ![...record.userTurnHolds.values()].includes(turn.id)) {
+        return rejectedReceipt(runId, "steer", controlId, "user_turn_not_active");
+      }
+      const message = createRuntimeControlMessage({
+        id: controlId,
+        kind: "steer",
+        runId,
+        userTurnId: turn.id,
+        text: boundedInternalStepResult(input.text),
+        source: normalizeSource(input.source),
+        receivedAt: input.receivedAt ?? this.timestamp(),
+        inputSource: "continuation",
+      });
+      const receipt = record.stepInbox.enqueue(message, input.reserveCapacity === true);
+      this.recordControlReceipt(record, "steer", receipt);
+      if (receipt.accepted) this.wakeRun(record);
+      return queueReceipt(runId, "steer", receipt);
+    }
     return this.enqueueNextTurn(record, controlId, {
       payload: input.payload,
       text: input.text,
@@ -629,6 +658,7 @@ export class Runtime<
   deferRunCompletion(
     runId: AgentRunId,
     reason: string,
+    userTurnId?: UserTurnId,
   ): RunCompletionHold | undefined {
     const record = this.runs.get(runId);
     const normalizedReason = reason.trim();
@@ -642,6 +672,7 @@ export class Runtime<
     }
     const id = Symbol(normalizedReason);
     record.holds.set(id, normalizedReason);
+    if (userTurnId !== undefined) record.userTurnHolds.set(id, userTurnId);
     this.recordTransition(record, {
       type: "run.completion_deferred",
       reason: normalizedReason,
@@ -653,6 +684,7 @@ export class Runtime<
       release: () => {
         if (released) return;
         released = true;
+        record.userTurnHolds.delete(id);
         if (!record.holds.delete(id) || !record.active) return;
         this.recordTransition(record, {
           type: "run.completion_released",
@@ -662,6 +694,14 @@ export class Runtime<
         this.wakeRun(record);
       },
     });
+  }
+
+  /** Hold an active UserTurn at its Step boundary until child results arrive. */
+  deferUserTurnCompletion(runId: AgentRunId, reason: string): RunCompletionHold | undefined {
+    const record = this.runs.get(runId);
+    const turn = record === undefined ? undefined : currentUserTurn(record.state);
+    if (turn?.status !== "running") return undefined;
+    return this.deferRunCompletion(runId, reason, turn.id);
   }
 
   /** Outer loop: serializes the initial UserTurn and all accepted follow-ups. */
@@ -747,7 +787,7 @@ export class Runtime<
     }
   }
 
-  /** Inner loop: executes bounded Steps for exactly one active UserTurn. */
+  /** Inner loop: executes Steps for exactly one active UserTurn. */
   private async driveUserTurn(
     record: ManagedRun<Configuration, Payload, StepMemory, Result>,
   ): Promise<TurnOutcome<Result>> {
@@ -763,7 +803,14 @@ export class Runtime<
       };
     }
 
-    for (let ordinal = 1; ordinal <= this.maxSteps; ordinal += 1) {
+    for (let ordinal = 1; ; ordinal += 1) {
+      while (!record.cancellation.cancelled &&
+        [...record.userTurnHolds.values()].includes(turn.id)) {
+        const signal = record.decisionSignal.promise;
+        if (record.cancellation.cancelled ||
+          ![...record.userTurnHolds.values()].includes(turn.id)) break;
+        await signal;
+      }
       if (record.cancellation.cancelled) {
         return { status: "aborted", cancellation: this.requireCancellation(record) };
       }
@@ -948,8 +995,7 @@ export class Runtime<
             ? { continuationReason: outcome.reason }
             : {}),
           pendingSteering: record.stepInbox.hasPending(turn.id),
-          hasRemainingStepBudget: ordinal < this.maxSteps,
-          maxSteps: this.maxSteps,
+          pendingUserTurnResult: [...record.userTurnHolds.values()].includes(turn.id),
         });
         const stepReason = decision.type === "continue"
           ? decision.reason
@@ -967,9 +1013,6 @@ export class Runtime<
         }
         if (decision.type === "continue") continue;
         if (decision.type === "fail") {
-          if (decision.error.code === "max_steps_exceeded") {
-            record.stepInbox.closeUserTurn(turn.id, "step_budget_exhausted");
-          }
           return { status: "failed", error: decision.error };
         }
         if (decision.type === "abort") {
@@ -993,15 +1036,6 @@ export class Runtime<
         lease?.release();
       }
     }
-
-    return {
-      status: "failed",
-      error: runtimeFailure(
-        "max_steps_exceeded",
-        `UserTurn stopped after reaching maxSteps=${this.maxSteps}`,
-        false,
-      ),
-    };
   }
 
   private async captureEnvironment(
@@ -1659,6 +1693,7 @@ export class Runtime<
     record.active = false;
     record.stepOutputOpen = false;
     record.holds.clear();
+    record.userTurnHolds.clear();
     record.stepInbox.close(
       completion.status === "completed"
         ? "run_completed"

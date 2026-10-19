@@ -52,7 +52,7 @@ Tool 链路的接入点，默认实现由 `agent-loop/AgentLoop` 提供，生产
 捕获不可变快照，并提供绑定到当前 Step 执行期的 Model/Tool 输出通道；旧 Step
 持有的通道在 `execute` 返回后立即失效。pipeline 只能返回 `continue`、
 `completed`、`failed` 或 `aborted`，Runtime 会在边界校验 discriminant 及必要
-字段。`continue` 受 `maxSteps` 硬限制。
+字段。`continue` 会继续驱动下一 Step，直到 pipeline 完成、失败、取消，或 Run 收到终止控制。
 
 组合层也可提供 `StepPipelineSource`，在每个 Step 前取得包含完整 pipeline 的 lease。
 获取完成后才记录 `step.started`、投递 steering 和捕获快照，等待切换时不会生成虚假 Step。
@@ -76,9 +76,7 @@ Core 不认识插件名称、Cordis、HMR 或 Registry。
 ## 控制语义
 
 - steer 按接收顺序进入当前 UserTurn 的 next-step inbox，每条最多投递一次。
-- Step 执行期间到达的 steer 会在仍有预算时触发下一 Step。
-- 最后一个可用 Step 接受了 steer 却无法再创建下一 Step 时，UserTurn 以
-  `max_steps_exceeded` 失败，不会把已接受的 steer 静默丢弃。
+- Step 执行期间到达的 steer 会触发下一 Step，不会因为固定 Step 数量上限而被丢弃。
 - follow-up 只进入下一 UserTurn，队列同时限制条目数和 UTF-8 字节数。
 - follow-up payload 在入队时建立不可变快照，调用方后续修改不会改变未来
   UserTurn 的输入。
@@ -90,6 +88,12 @@ Core 不认识插件名称、Cordis、HMR 或 Registry。
   通用 `RunContinuation` Port 等待外部结果，再以 `inputSource=continuation` 恢复父 Run；
   该输入可进入模型上下文和持久证据，但不是人工 follow-up，展示层不得把它标成用户请求。
   hold 不修改 Step 或 UserTurn 层级，也不拥有外部任务生命周期。
+- 依赖子 Agent 结果的委派使用 `deferUserTurnCompletion()`：当前 Step 提交后，Runtime 在下一
+  Step 前等待该 UserTurn 的所有结果 hold 释放；结果通过 `withinUserTurn` 进入 next-step inbox，
+  以 `inputSource=continuation` 持久化，不新开 UserTurn。普通 completion hold 仍只阻止 Run 结束。
+  取消 Run 会唤醒等待，按原取消原因结束。结果等待不改变子 Agent 的资源所有权。
+  Host 内部结果每条最多注入 16 KiB；超过时模型收到截断提示，可用领域工具读取完整结果。
+  预留的内部 next-step 结果不受普通 steering 队列计数和总字节限制，以免多个结果阻塞释放。
 - `reserveCapacity` 只绕过 follow-up 条目数限制，不绕过字节限制。
 - abort 是 Run 级、幂等且保留第一次接受的 reason/source/time。
 - UserTurn 终态后到达的 steer 和 Run 终态后的全部控制都会得到拒绝回执。
@@ -169,7 +173,7 @@ Journal 尚未做 compaction/retention。Provider 初始化、更新或 Backend 
 依赖图转为 PENDING。File Journal 已关闭的 namespace handle 不会跨 Provider generation
 复用。
 
-Config 拥有 `maxSteps` 与 `generationDrainTimeoutMs`。稳定依赖缺失时保持 PENDING。
+Config 拥有 `generationDrainTimeoutMs`。稳定依赖缺失时保持 PENDING。
 单独 AgentLoop 换代不会销毁 Runtime；缺席时拒绝新 Run 和 Step，而非提供无权限降级执行。
 受控实现切换必须先通过 composition 的 Step barrier，详见 [执行切换](../../composition/README.md#execution-replacement)。
 Runtime 自身更新／关闭或稳定依赖消失仍依次释放 `runEngine → agents → application → surface`。旧代先永久关闭

@@ -416,6 +416,8 @@ test("graph Scheduler drains a Plan-waiting start without closing child admissio
     root.provide("workflow", { state: new WorkflowRuntime(new MemoryWorkflowStore()) });
     await root.plugin(WorkflowContinuations);
     root.provide("subagents", { subscribe() { return () => {}; } });
+    root.provide("tools", { registry: { list() { return []; } }, getCompositionContracts() { return new Map(); } });
+    root.provide("runtimeLifecycle", { async readEvents() { return []; } });
     root.provide("plan", { async get() { reading.resolve(); await finish.promise; return undefined; } });
     for (const key of ["tasks", "permissions", "workspace", "agents"]) root.provide(key, {});
     await root.loader.create({ id: "scheduler", name: "cordis:schedulers" });

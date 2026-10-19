@@ -36,7 +36,8 @@ export class SubagentResultRelay {
     readonly signal?: AbortSignal;
   }): void {
     if (this.closed) return;
-    const hold = input.continuation.deferCompletion(
+    if (input.signal?.aborted) return;
+    const hold = input.continuation.deferUserTurnCompletion(
       `waiting for Subagent ${input.record.role} result`,
     );
     if (hold === undefined) return;
@@ -44,6 +45,7 @@ export class SubagentResultRelay {
     const relay: RelayTask = { abort, completion: Promise.resolve() };
     const onAbort = () => abort.abort(input.signal?.reason);
     input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) onAbort();
     relay.completion = this.observe(input, abort.signal).finally(() => {
       input.signal?.removeEventListener("abort", onAbort);
       hold.release();
@@ -111,6 +113,18 @@ export class SubagentResultRelay {
         `Child Agent ${input.record.id} (${input.record.role}) did not produce a result within ${this.maxWaitMs}ms. It remains observable at ${input.record.target?.target ?? "an unavailable target"}.`,
       ), this.maxWaitMs);
       observeRecord(input.record);
+      if (finished) return;
+      // A child may settle between spawn returning and this subscription.
+      void this.subagents.inspect({
+        id: input.record.id,
+        parentAgentId: input.record.parentAgentId,
+        parentSessionId: input.record.parentSessionId,
+        parentRunId: input.record.parentRunId,
+        workspaceRoot: input.record.workspaceRoot,
+        signal,
+      }).then((latest) => { if (latest !== undefined) observeRecord(latest); }).catch(() => {
+        // The event subscription and timeout remain authoritative if inspection fails.
+      });
     });
   }
 }
@@ -120,6 +134,7 @@ function resume(continuation: RunContinuation, text: string): void {
     source: "wish-subagent-result",
     text,
     reserveCapacity: true,
+    withinUserTurn: true,
   });
 }
 

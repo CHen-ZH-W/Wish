@@ -57,7 +57,7 @@ const modelsConfiguration = Object.freeze({
   maxRetries: 0,
 });
 
-function harness(overrides = {}) {
+function harness(overrides = {}, toolOptions = {}) {
   const calls = [];
   const subagents = {
     async spawn(request) { calls.push(["spawn", request]); return record; },
@@ -72,7 +72,7 @@ function harness(overrides = {}) {
     ...overrides,
   };
   const registry = new ToolRegistry();
-  for (const definition of createSubagentTools({ subagents })) registry.register(definition);
+  for (const definition of createSubagentTools({ subagents, ...toolOptions })) registry.register(definition);
   const authorizations = [];
   const executor = new ToolExecutor({
     registry,
@@ -120,6 +120,7 @@ function harness(overrides = {}) {
       ref: modelsConfiguration.defaultModel,
       configuration: modelsConfiguration,
     }),
+    userTurn: Object.freeze({ runId: "run-1", userTurnId: "turn-1", ordinal: 1, inputSource: "user", provenance: Object.freeze({ origin: "run_input", source: "user", receivedAt: "2026-09-12T12:00:00.000Z" }) }),
   });
   async function execute(name, input) {
     const parsed = registry.parseCall({ id: `call-${name}`, name, argumentsJson: JSON.stringify(input) });
@@ -135,6 +136,24 @@ function harness(overrides = {}) {
   }
   return { registry, execute, calls, authorizations };
 }
+
+test("spawn_agent links an explicit Todo item after admission without another todo_write", async () => {
+  const progress = [];
+  const todoProgress = {
+    async validate(link) { progress.push(["validate", link]); },
+    async beginDispatch(link, id) { progress.push(["begin", link, id]); },
+    async bind(link, child) { progress.push(["bind", link, child.id]); },
+    async finishDispatch(link, id, status) { progress.push(["finish", link, id, status]); },
+  };
+  const h = harness({}, { todoProgress });
+  const result = await h.execute("spawn_agent", { task: "Review core", role: "reviewer", todoId: "core" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(progress.map(item => item[0]), ["validate", "begin", "bind", "finish"]);
+  assert.equal(progress[0][1].itemId, "core");
+  assert.equal(progress[2][2], "child-1");
+  assert.equal(progress[3][3], "completed");
+  assert.equal(h.calls.filter(item => item[0] === "spawn").length, 1);
+});
 
 test("the model Tool Consumer is owned by Subagents and absent from Tools and Core", async () => {
   await assert.rejects(
@@ -219,8 +238,25 @@ test("the stable dispatch port switches committed scheduler strategies without r
   const calls = [];
   const direct = { async spawn() { calls.push("direct"); return record; } };
   try {
-    const dispatch = new SubagentToolDispatchService(root, direct);
-    const request = { task: "review" }, context = {}, grant = {};
+    const scopeTools = {
+      registry: { list: () => [{ name: "read" }] },
+      getCompositionContracts: () => new Map(),
+    };
+    const dispatch = new SubagentToolDispatchService(root, direct, scopeTools);
+    const request = {
+      task: "review", parentAgentId: "wish", parentSessionId: "session-1",
+      parentRunId: "run-1", workspaceRoot: "/workspace",
+    };
+    const context = {
+      workspace: { root: "/workspace" },
+      permissions: {
+        subject: { agentId: "wish", sessionId: "session-1", runId: "run-1" },
+        profile: "full-access",
+        availableTools: ["read"],
+        ceiling: { allowedCapabilities: ["filesystem.read"] },
+      },
+    };
+    const grant = {};
     assert.equal(dispatch.activeStrategy, "direct");
     assert.equal(await dispatch.dispatch(request, context, grant), record);
 
@@ -242,6 +278,80 @@ test("the stable dispatch port switches committed scheduler strategies without r
   } finally { await root.fiber.dispose(); }
 });
 
+test("child Agent Scope is assembled before direct or Workflow dispatch", async () => {
+  const root = new Context();
+  const submitted = [];
+  const tools = {
+    registry: { list: () => ["read", "bash", "enter_plan_mode", "spawn_agent"].map(name => ({ name })) },
+    getCompositionContracts: () => new Map([
+      ["enter_plan_mode", { requires: ["plan.state", "human.review", "session.resume"] }],
+      ["spawn_agent", { requires: ["subagents.service"] }],
+    ]),
+  };
+  const request = {
+    task: "edit", parentAgentId: "wish", parentSessionId: "session-1",
+    parentRunId: "run-1", workspaceRoot: "/workspace",
+  };
+  const context = {
+    workspace: { root: "/workspace" },
+    permissions: {
+      subject: { agentId: "wish", sessionId: "session-1", runId: "run-1" },
+      profile: "full-access",
+      availableTools: ["read", "bash", "enter_plan_mode", "spawn_agent"],
+      ceiling: { allowedCapabilities: ["filesystem.read", "process.exec", "runtime.control"] },
+    },
+  };
+  try {
+    const dispatch = new SubagentToolDispatchService(root, {
+      async spawn(input) { submitted.push(input); return record; },
+    }, tools);
+    await dispatch.dispatch(request, context, {});
+    assert.deepEqual(submitted[0].availableTools, ["read", "bash"]);
+    assert.deepEqual(submitted[0].allowedCapabilities,
+      ["filesystem.read", "process.exec", "runtime.control"]);
+
+    dispatch.register({ id: "workflow", active: () => true,
+      async dispatch(input) { submitted.push(input); return record; } });
+    await dispatch.dispatch({ ...request, permissionProfile: "workspace-write" }, context, {});
+    assert.deepEqual(submitted[1].availableTools, ["read", "bash"]);
+    assert.equal(submitted[1].permissionProfile, "workspace-write");
+
+    await assert.rejects(dispatch.dispatch({ ...request,
+      availableTools: ["read", "enter_plan_mode"],
+    }, context, {}), /requires runtime feature\(s\): plan.state, human.review, session.resume/u);
+    await assert.rejects(dispatch.dispatch({ ...request,
+      availableTools: ["read", "unknown"],
+    }, context, {}), /exceeds the Host delegation ceiling/u);
+    await assert.rejects(dispatch.dispatch({ ...request,
+      allowedCapabilities: ["network.connect"],
+    }, context, {}), /exceed the Host delegation ceiling/u);
+    assert.equal(submitted.length, 2);
+
+    const reviewedRoot = new Context();
+    try {
+      const reviewed = new SubagentToolDispatchService(reviewedRoot, {
+        async spawn(input) { submitted.push(input); return record; },
+      }, tools, ["plan.state", "human.review", "session.resume"]);
+      await reviewed.dispatch({ ...request, availableTools: ["read", "enter_plan_mode"] }, context, {});
+      assert.deepEqual(submitted[2].availableTools, ["read", "enter_plan_mode"]);
+    } finally {
+      await reviewedRoot.fiber.dispose();
+    }
+    const localRoot = new Context();
+    try {
+      const local = new SubagentToolDispatchService(localRoot, {
+        async spawn(input) { submitted.push(input); return record; },
+      }, tools, [], role => role === "specialist" ? {
+        role, localTools: [{ name: "inspect_patch", requires: [] }],
+      } : undefined);
+      await local.dispatch({ ...request, role: "specialist", availableTools: ["read", "inspect_patch"] }, context, {});
+      assert.deepEqual(submitted[3].availableTools, ["read", "inspect_patch"]);
+    } finally { await localRoot.fiber.dispose(); }
+  } finally {
+    await root.fiber.dispose();
+  }
+});
+
 test("Subagent result relay holds the parent and resumes it with one internal result", async () => {
   let released = 0;
   const resumptions = [];
@@ -252,13 +362,14 @@ test("Subagent result relay holds the parent and resumes it with one internal re
         listener = next;
         return () => { listener = undefined; };
       },
+      inspect: async () => record,
     },
     maxWaitMs: 1_000,
   });
   relay.watch({
     record,
     continuation: {
-      deferCompletion(reason) {
+      deferUserTurnCompletion(reason) {
         assert.match(reason, /reviewer result/u);
         return { reason, release() { released += 1; } };
       },
@@ -293,11 +404,11 @@ test("Subagent result relay holds the parent and resumes it with one internal re
   assert.equal(resumptions.length, 1);
   assert.equal(resumptions[0].source, "wish-subagent-result");
   assert.equal(resumptions[0].reserveCapacity, true);
+  assert.equal(resumptions[0].withinUserTurn, true);
   assert.match(resumptions[0].text, /review found no issues/u);
   assert.match(resumptions[0].text, /wish-child-1:reviewer\.0/u);
   await relay.close();
 });
-
 test("Subagent result relay reports subscription failure before releasing its hold", async () => {
   let released = 0;
   const resumptions = [];
@@ -310,7 +421,7 @@ test("Subagent result relay reports subscription failure before releasing its ho
   relay.watch({
     record,
     continuation: {
-      deferCompletion(reason) {
+      deferUserTurnCompletion(reason) {
         return { reason, release() { released += 1; } };
       },
       resume(input) {
@@ -328,5 +439,29 @@ test("Subagent result relay reports subscription failure before releasing its ho
   assert.equal(resumptions[0].source, "wish-subagent-result");
   assert.match(resumptions[0].text, /event source unavailable/u);
   assert.match(resumptions[0].text, /wish-child-1:reviewer\.0/u);
+  await relay.close();
+});
+
+test("Subagent result relay observes a child that settled before subscription", async () => {
+  let released = 0;
+  const resumptions = [];
+  const completed = { ...record, status: "exited", result: {
+    schemaVersion: 1, id: record.id, childSessionId: record.childSessionId,
+    childRunId: record.childRunId, status: "completed", text: "already done",
+    completedAt: "2026-09-12T12:00:01.000Z",
+  } };
+  const relay = new SubagentResultRelay({ subagents: {
+    subscribe() { return () => {}; },
+    inspect: async () => completed,
+  }, maxWaitMs: 1_000 });
+  relay.watch({ record, continuation: {
+    deferUserTurnCompletion(reason) { return { reason, release() { released++; } }; },
+    resume(input) { resumptions.push(input); return { accepted: true }; },
+  } });
+  const deadline = Date.now() + 1_000;
+  while (released === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 1));
+  assert.equal(released, 1);
+  assert.equal(resumptions.length, 1);
+  assert.match(resumptions[0].text, /already done/u);
   await relay.close();
 });

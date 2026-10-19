@@ -7,6 +7,7 @@ import {
   truncate,
 } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { decodeCanonicalBase64 } from "../../base64.js";
 
 import {
   StorageClosedError,
@@ -607,14 +608,7 @@ function stableJson(value: unknown): string {
 }
 
 function decodeBase64(value: string): Uint8Array {
-  if (
-    value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
-      .test(value)
-  ) throw new TypeError("invalid base64");
-  const decoded = Buffer.from(value, "base64");
-  if (decoded.toString("base64") !== value) throw new TypeError("invalid base64");
-  return Uint8Array.from(decoded);
+  return decodeCanonicalBase64(value);
 }
 
 function requireIdentity(value: string, label: string): string {

@@ -28,6 +28,7 @@ export abstract class SubagentsService extends Service implements Subagents {
   abstract capture(request: CaptureSubagentRequest): Promise<string>;
   abstract send(request: SendSubagentRequest): Promise<void>;
   abstract stop(request: StopSubagentRequest): Promise<SubagentRecord>;
+  abstract purge(request: StopSubagentRequest): Promise<void>;
   abstract collect(request: CollectSubagentRequest): Promise<CollectedSubagent>;
   abstract subscribe(listener: SubagentEventListener): () => void;
   abstract close(): Promise<void>;

@@ -14,6 +14,8 @@ export interface RunContinuationInput {
   readonly source: string;
   readonly text: string;
   readonly reserveCapacity?: boolean;
+  /** Deliver to the active UserTurn's next Step instead of opening another UserTurn. */
+  readonly withinUserTurn?: boolean;
 }
 
 /** @deprecated Use RunContinuationInput. */
@@ -22,6 +24,8 @@ export type RunFollowUp = RunContinuationInput;
 /** Run-bound continuation Port; Consumers cannot address another Run through it. */
 export interface RunContinuation {
   deferCompletion(reason: string): RunCompletionHold | undefined;
+  /** Keep the current UserTurn open until an awaited result is delivered. */
+  deferUserTurnCompletion(reason: string): RunCompletionHold | undefined;
   /** Resume parent work with Host-authenticated internal data, not human input. */
   resume(input: RunContinuationInput): RunContinuationReceipt;
 }

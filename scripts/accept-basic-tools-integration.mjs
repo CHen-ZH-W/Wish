@@ -203,7 +203,6 @@ test("five Basic Tools complete Registry-to-AgentLoop integration", async () => 
   });
   const runtime = new Runtime({
     ...deterministicRuntimeServices(),
-    maxSteps: 3,
     stepPipeline: loop,
   });
   const agent = new Agent({ id: "agent" }, runtime);

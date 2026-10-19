@@ -74,8 +74,10 @@ export function selectSessionDockTab(layout: SessionDockLayout, paneId: string, 
 }
 
 export function openSessionDockGuide(layout: SessionDockLayout, paneId: string): SessionDockLayout {
+  const target = layout.panes.find(pane => pane.id === paneId);
+  if (!target) return layout;
+  if (layout.activePaneId === paneId && target.activeTabId === null) return layout;
   const panes = layout.panes.map(pane => pane.id === paneId ? Object.freeze({ ...pane, activeTabId: null }) : pane);
-  if (panes.every((pane, index) => pane === layout.panes[index])) return layout;
   return Object.freeze({ ...layout, panes: Object.freeze(panes), activePaneId: paneId });
 }
 
@@ -89,6 +91,7 @@ export function openSessionDockTab(layout: SessionDockLayout, paneId: string, in
       return owner ? selectSessionDockTab(layout, owner.id, existing.id) : layout;
     }
   }
+  if (Object.keys(layout.tabs).length >= 100 && !(input.replace && target.activeTabId !== null)) return layout;
   const id = `tab-${layout.nextTab}`;
   const tab = Object.freeze({ id, kind: input.kind, contentId: input.contentId, title: input.title, ...(input.params === undefined ? {} : { params: input.params }) });
   let removed: string | undefined;

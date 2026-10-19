@@ -11,6 +11,7 @@ export default class StorageTasks extends TasksService {
   static readonly inject = ["storageBackend"];
   static readonly Config = Config;
   readonly get: Tasks["get"];
+  readonly clear: Tasks["clear"];
   readonly replace: Tasks["replace"];
   readonly freeze: Tasks["freeze"];
   readonly transition: Tasks["transition"];
@@ -22,6 +23,7 @@ export default class StorageTasks extends TasksService {
     const work = new PluginWorkOwner(ctx, { code: "tasks", codeReload: true,
       close: () => runtime.close().finally(() => lease.release()) });
     this.get = (...args) => work.run(() => runtime.get(...args));
+    this.clear = (...args) => work.run(() => runtime.clear(...args));
     this.replace = (...args) => work.run(() => runtime.replace(...args));
     this.freeze = (...args) => work.run(() => runtime.freeze(...args));
     this.transition = (...args) => work.run(() => runtime.transition(...args));

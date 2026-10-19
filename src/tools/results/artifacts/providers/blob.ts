@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 import { PluginWorkOwner } from "../../../../boot/plugin-control/work-owner.js";
@@ -13,6 +14,7 @@ import type {
 } from "../types.js";
 
 const BLOB_NAMESPACE = "tool-results/output-artifacts";
+const SESSION_NAMESPACE_PREFIX = `${BLOB_NAMESPACE}/session-`;
 const LOCATOR_PREFIX = "wish-tool-output:v1:";
 
 export interface Config {
@@ -54,11 +56,19 @@ export class BlobToolOutputArtifacts extends ToolOutputArtifactsService {
     return this.work.run(() => this.getAccepted(request));
   }
 
+  purgeSession(sessionId: string): Promise<void> {
+    return this.work.run(async () => {
+      this.assertOpen();
+      if (!this.blob.deleteNamespace) throw new Error("Tool output artifact namespace deletion is unavailable");
+      await this.blob.deleteNamespace(sessionNamespace(sessionId));
+    });
+  }
+
   private async putAccepted(request: PutToolOutputArtifactRequest): Promise<ToolResultArtifact> {
     this.assertOpen();
     validatePutRequest(request);
     const reference = await this.blob.put({
-      namespace: BLOB_NAMESPACE,
+      namespace: sessionNamespace(request.sessionId),
       value: request.value,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
@@ -140,7 +150,7 @@ function decodeLocator(artifact: ToolResultArtifact): BlobReference {
   if (!Number.isSafeInteger(value.size) || (value.size as number) < 0) {
     throw new TypeError("Tool output artifact size is invalid");
   }
-  if (namespace !== BLOB_NAMESPACE) {
+  if (namespace !== BLOB_NAMESPACE && !/^tool-results\/output-artifacts\/session-[a-f0-9]{64}$/u.test(namespace)) {
     throw new TypeError("Tool output artifact namespace is unsupported");
   }
   return Object.freeze({
@@ -149,6 +159,10 @@ function decodeLocator(artifact: ToolResultArtifact): BlobReference {
     sha256,
     size: value.size as number,
   });
+}
+
+function sessionNamespace(sessionId: string): string {
+  return `${SESSION_NAMESPACE_PREFIX}${createHash("sha256").update(requireIdentifier(sessionId, "sessionId")).digest("hex")}`;
 }
 
 function requireIdentifier(value: unknown, label: string): string {

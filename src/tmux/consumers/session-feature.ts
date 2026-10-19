@@ -40,6 +40,8 @@ export function createTmuxSessionFeature(options: TmuxSessionFeatureOptions): Se
     return created;
   }
   return {
+    purgeOrder: 45,
+    async purgeSession(sessionId) { captures.delete(sessionId); },
     async inspect(sessionId) {
       const items = await sessions(sessionId);
       const ids = new Set(items.map(item => item.target.sessionId));

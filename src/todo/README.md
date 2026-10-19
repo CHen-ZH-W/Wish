@@ -1,19 +1,27 @@
 # Todo
 
-Todo 是一个进程内、按 Session 查询、由单个活动 UserTurn 拥有的整表替换进度视图。
+Todo 是一个进程内、按 Session 查询、由单个活动 UserTurn 拥有的进度视图。模型通过
+`todo_write` 替换清单，明确关联的子 Agent 项由 Host 根据执行结果推进。
 它不是持久 Tasks DAG，不调度工作，也不会跨 UserTurn 继承列表。
 
 ## 状态与边界
 
 `TodoState` 绑定精确的 `sessionId`、`runId` 和 `userTurnId`，并携带单调 `revision`。
-`TodoService` 从 Runtime 认证过的 `openUserTurn` 边界重置列表；当前 UserTurn 结束后最后一份
-列表仍可查看，但下一个 UserTurn 打开时会重置为空。
+`TodoService` 从 Runtime 认证过的 `openUserTurn` 边界重置列表；当前 Run 完成、停止或删除时
+清理列表，下一 UserTurn 打开时也会重置为空。
 
 模型入口 `todo_write` 总是替换完整列表，不提供增量 patch。它从不可变
 `WishToolExecutionContext.userTurn` 取得 Run/UserTurn 身份，并与 Permissions subject
 复核；旧 Step 或错误身份不能覆盖新 UserTurn 的列表。列表最多 50 项，每项使用稳定非空 ID、
-不超过 500 字符的正文，以及 `pending`、`in_progress` 或 `completed` 状态；同时最多一个
-`in_progress`。
+不超过 500 字符的正文，以及 `pending`、`in_progress`、`completed`、`failed` 或
+`stopped` 状态。并行工作可以让多个项同时处于 `in_progress`；失败和停止不会继续转圈。
+
+`spawn_agent` 可以传 `todoId`，指向当前 UserTurn 已存在的 Todo 项。Host 会在开始分发时
+将该项置为进行中，并在子 Agent 返回结果、失败或停止时更新它。若分发先进入
+Workflow 队列，则从 Workflow Run 提交时开始跟踪，终态由 Workflow 结果决定。同一个 Todo
+项关联多个子 Agent 时，全部成功才标记完成。开始一个后续项时，前面尚未关联执行任务的
+进行中项会被标记完成；已有子 Agent 关联的并行项继续按各自结果推进。没有 `todoId` 的
+调用不会根据任务文字猜测 Todo 项，仍由模型通过 `todo_write` 管理。
 
 ## 产品装配
 

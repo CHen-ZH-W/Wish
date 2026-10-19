@@ -44,6 +44,11 @@ export class PlanRuntime implements Plan {
     return this.store.get(sessionId, request.signal);
   }
 
+  clear(request: PlanSessionRequest): Promise<void> {
+    const sessionId = identifier(request.sessionId, "Plan Session id");
+    return this.serial(sessionId, () => this.store.delete(sessionId, request.signal));
+  }
+
   enter(request: EnterPlanRequest): Promise<PlanState> {
     const sessionId = identifier(request.sessionId, "Plan Session id");
     const goal = request.goal === undefined

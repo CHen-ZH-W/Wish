@@ -26,11 +26,13 @@ export interface TaskCollection {
 }
 export interface TaskStore {
   get(sessionId: string): Promise<TaskCollection | undefined>;
+  delete(sessionId: string): Promise<void>;
   put(state: TaskCollection, expectedRevision: number): Promise<void>;
   close(): Promise<void>;
 }
 export interface Tasks {
   get(sessionId: string, version?: number): Promise<TaskGraph | undefined>;
+  clear(sessionId: string): Promise<void>;
   replace(sessionId: string, tasks: readonly TaskSpec[], expectedVersion: number): Promise<TaskGraph>;
   freeze(ref: TaskGraphRef, approvedPlanDigest: string): Promise<TaskGraph>;
   transition(ref: TaskGraphRef, taskId: string, status: TaskStatus, attemptId: string, result?: string): Promise<TaskGraph>;

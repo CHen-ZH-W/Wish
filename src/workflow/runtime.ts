@@ -13,6 +13,14 @@ export class WorkflowRuntime implements Workflow {
   constructor(private readonly store: WorkflowStore, private readonly now: () => Date = () => new Date()) {}
   async get(id: string) { return this.serial(() => this.store.get(id)); }
   async list() { return this.serial(() => this.store.list()); }
+  remove(id: string): Promise<void> { return this.serial(async () => {
+    const run = await this.store.get(id);
+    if (!run) return;
+    if (!["completed", "failed", "cancelled"].includes(run.status) || run.steps.some(step => step.attempts.some(activeAttempt))) {
+      throw new Error("Workflow must be terminal before removal");
+    }
+    await this.store.remove(id);
+  }); }
   create(request: CreateWorkflowRequest): Promise<WorkflowRun> {
     if (!request.key.trim() || request.key.length > 4096) throw new Error("Invalid Workflow key");
     const tasks = normalizeTasks(request.tasks);

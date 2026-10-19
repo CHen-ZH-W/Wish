@@ -73,8 +73,9 @@ launcher 会拆分普通子树；如果一个目录含有受保护的直属项�
 ## Permission profile 对应关系
 
 - `read-only`：只自动放行只读 Tool；只读 scope 的进程命令进入审批，修改和网络是硬边界。
-- `workspace-write`：只有 path-scoped Linux Native Provider 能启用；工作区读写与无开放
-  世界效应的命令自动放行，高风险 capability 仍进入审批。
+- `workspace-write`：只有 path-scoped Linux Native Provider 能启用；除
+  `enter_plan_mode` 和 `exit_plan_mode` 外，Tool 调用不再因能力种类进入审批；
+  路径、网络与进程执行仍须通过能力上限、SandboxPolicy 和 Native Provider 检查。
 - `approval-required`：只读自动放行，其他调用进入审批；进程执行必须使用 Native Provider。
 - `full-access`：显式退出 Landlock/seccomp 和审批，继承宿主环境，允许访问工作区外文件及
   网络。默认 Native Provider 只为这一 profile 走无隔离分支；其他 profile 不受影响。

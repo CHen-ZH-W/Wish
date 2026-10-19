@@ -148,7 +148,7 @@ for (const target of ["scheduler", "subagents", "tmux", "storage", "batch", "cap
     }
     const edits = {
       scheduler: ["workflow/child-scheduler.js", "maxConcurrent ?? 4", "maxConcurrent ?? 3"],
-      subagents: ["subagents/runtime.js", "DEFAULT_MAX_CONCURRENT = 4", "DEFAULT_MAX_CONCURRENT = 3"],
+      subagents: ["subagents/runtime.js", "DEFAULT_MAX_CONCURRENT = 8", "DEFAULT_MAX_CONCURRENT = 7"],
       tmux: ["tmux/providers/local.js", "DEFAULT_CAPTURE_LINES = 200", "DEFAULT_CAPTURE_LINES = 199"],
       storage: ["workflow/runtime.js", "maxTotalAttempts: 200", "maxTotalAttempts: 199"],
       "activation-failure": ["subagents/runtime.js", "await this.backend.resume();", 'await this.backend.resume(); throw Error("fixture activation failure");'],

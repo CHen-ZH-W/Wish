@@ -79,5 +79,5 @@ export function createWorkflowStartTool(workflow: Workflow, children: ChildWorkf
 
 export default { name: "workflow-tools", inject: ["tools", "workflow"], apply(ctx: Context) {
   const owner = new ManagedToolOwner(ctx, { code: "workflow_read_tool", codeReload: true });
-  owner.register(createWorkflowReadTool(ctx.workflow.state));
+  owner.register(createWorkflowReadTool(ctx.workflow.state), undefined, { requires: ["workflow.state"] });
 } };

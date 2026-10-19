@@ -1,6 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolDefinition, ToolRegistration } from "../core/tools/scheduler.js";
 import type { WishToolExecutionContext } from "../composition/tool-context.js";
+import type { ToolCompositionContract } from "../composition/agent-scope.js";
 import { PluginWorkOwner, type PluginWorkOwnerOptions } from "../boot/plugin-control/work-owner.js";
 import type { ToolResultRendererContribution } from "./service.js";
 import type { WishPluginManifestView } from "../boot/plugin-control/manifest.js";
@@ -23,6 +24,7 @@ export class ManagedToolOwner {
   register<Name extends string, Input, Output>(
     definition: ToolDefinition<Name, Input, Output, WishToolExecutionContext>,
     renderer?: ToolResultRendererContribution,
+    compositionContract?: ToolCompositionContract,
   ): ToolRegistration {
     // Registration is part of activation; execution remains fenced until the
     // reload receipt commits. Cordis owns registration validity and disposal.
@@ -39,7 +41,8 @@ export class ManagedToolOwner {
         return request;
       }),
       execute: (...args) => this.work.run(() => definition.execute(...args)),
-    }, renderer ? { render: input => this.work.run(() => renderer.render(input)) } : undefined);
+    }, renderer ? { render: input => this.work.run(() => renderer.render(input)) } : undefined,
+    compositionContract);
     this.registrations.push(registration);
     return registration;
   }

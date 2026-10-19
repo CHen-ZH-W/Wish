@@ -219,6 +219,8 @@ export class FileSessionStore implements SessionStore {
       throw error;
     }
     const sessions: Session[] = [];
+    // The index is metadata-only. Full transaction validation and crash recovery
+    // stay on get()/readHistory()/mutation paths, where the transcript is needed.
     for (const entry of entries) {
       throwIfAborted(normalized.signal);
       if (!entry.isDirectory() || !entry.name.startsWith("session-")) continue;
@@ -235,7 +237,14 @@ export class FileSessionStore implements SessionStore {
       }
       const session = await this.serial(sessionId, async () => {
         if (!await pathExists(directory)) return undefined;
-        return (await this.loadState(sessionId)).document.session;
+        const current = await this.readSessionDocument(directory, sessionId);
+        if (current.session.sessionId !== sessionId) {
+          throw new SessionCorruptionError(
+            sessionId,
+            "session.json identity does not match its storage key",
+          );
+        }
+        return current.session;
       }, true);
       if (!session) continue;
       if (

@@ -9,6 +9,7 @@ export const Grep = {
   inject: ["tools", "filesystemSearch"],
   apply(ctx: Context): void {
     const owner = new ManagedToolOwner(ctx, { code: "grep_consumer", codeReload: true });
-    owner.register(createGrepTool({ search: ctx.filesystemSearch }));
+    owner.register(createGrepTool({ search: ctx.filesystemSearch }), undefined,
+      { requires: [], requiredCapabilities: ["filesystem.read"] });
   },
 };

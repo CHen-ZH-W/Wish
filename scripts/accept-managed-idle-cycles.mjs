@@ -4,6 +4,7 @@ import { mkdtemp, readdir, readFile, readlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { setImmediate as nextTurn } from "node:timers/promises";
 
 import { bootstrap } from "../dist/boot/bootstrap.js";
@@ -196,6 +197,16 @@ async function runCycle(booted, entryIds, baseline, baselineStorageLeases, basel
 test("every operable managed WebUI entry survives independent and 100 full-graph cycles without resource growth", { timeout: 900000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-managed-idle-cycles-"));
   const timers = installTimerTracker();
+  // Node retains a process-wide descriptor after the first HTTP listen.
+  // Warm that backend with a closed server before measuring Host resources.
+  const warmupServer = createServer();
+  await new Promise((resolve, reject) => {
+    warmupServer.once("error", reject);
+    warmupServer.listen(0, "127.0.0.1", resolve);
+  });
+  await new Promise(resolve => warmupServer.close(resolve));
+  // Let the descriptor probe itself settle before storing the baseline.
+  await processResources(timers);
   const beforeBootstrap = await processResources(timers);
   let booted, completed = false;
   try {

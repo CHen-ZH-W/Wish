@@ -90,11 +90,15 @@ test("Goal tools require trusted direct-human provenance and project current Con
   assert.equal(featureView.key, "goal");
   await feature.act("session-tools", "resume", featureView.token);
   assert.equal((await goal.get({ sessionId: "session-tools" })).phase, "active");
+  await assert.rejects(feature.beforeRemoval("session-tools", "archive"), /请先完成或清除/u);
 
   const provider = new GoalContextProvider(goal);
   const projected = await provider.provide({ runId: "run-tools", userTurnId: "turn-tools", stepId: "step-tools", sessionId: "session-tools",
     model: { provider: "fixture", model: "model" }, workspace: { cwd: process.cwd(), fingerprint: "workspace", revision: "v1", instructions: [] },
     runtime: { capturedAt: "2026-09-26T00:00:00Z", stateVersion: 1, userTurnOrdinal: 1, stepOrdinal: 1 } });
   assert.equal(projected.length, 1); assert.match(projected[0].message.content, /process-local/u);
+  await feature.beforeRemoval("session-tools", "delete");
+  await feature.purgeSession("session-tools");
+  assert.equal(await goal.get({ sessionId: "session-tools" }), undefined);
   await goal.close();
 });

@@ -1,5 +1,5 @@
 import type { ModelsConfiguration } from "../models/types.js";
-import type { Subagents, SubagentRecord } from "../subagents/types.js";
+import type { Subagents, SubagentRecord, SpawnSubagentRequest } from "../subagents/types.js";
 import { subagentIdForKey } from "../subagents/identity.js";
 import type { RunContinuation } from "../core/runtime/continuation.js";
 import { WorkflowContinuations } from "./continuations.js";
@@ -13,6 +13,10 @@ export interface ChildSchedulerOptions {
   readonly now?: () => number;
   /** Host rechecks current execution constraints before every new dispatch. */
   readonly admit?: (run: WorkflowRun, step: WorkflowStep) => Promise<void>;
+  /** Reconcile durable parent cancellation before dispatching or retaining a child. */
+  readonly ownerTerminated?: (run: WorkflowRun) => Promise<boolean>;
+  /** Host resolves the execution Agent's actual capability composition. */
+  readonly composeChild?: (request: SpawnSubagentRequest) => SpawnSubagentRequest;
   readonly modelConfiguration?: () => Promise<ModelsConfiguration>;
   readonly continuations?: WorkflowContinuations;
 }
@@ -25,6 +29,7 @@ export class ChildWorkflowScheduler {
   private readonly requests = new Set<Promise<unknown>>();
   private readonly observations = new Set<Promise<unknown>>();
   private readonly admissionFences = new Set<symbol>();
+  private readonly abortBindings = new Map<string, { signal: AbortSignal; release: () => void }>();
   private pendingTicks = 0;
   private activeRequests = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -46,9 +51,19 @@ export class ChildWorkflowScheduler {
     this.unsubscribe = this.options.subagents.subscribe(wake);
     this.timer = setInterval(wake, 500); this.timer.unref(); wake();
   }
-  async submit(request: CreateWorkflowRequest): Promise<WorkflowRun> {
+  async submit(request: CreateWorkflowRequest, signal?: AbortSignal): Promise<WorkflowRun> {
     return this.request(async () => {
+      signal?.throwIfAborted();
       const run = await this.options.workflow.create(request);
+      if (signal) {
+        const abort = () => { void this.cancel(run.id, "Parent execution aborted").catch(error => { this.lastError = String(error); }); };
+        signal.addEventListener("abort", abort, { once: true });
+        this.abortBindings.set(run.id, { signal, release: () => signal.removeEventListener("abort", abort) });
+        if (signal.aborted) {
+          await this.options.workflow.cancel(run.id, "Parent execution aborted");
+          this.releaseAbortBinding(run.id);
+        }
+      }
       await this.tick();
       return (await this.options.workflow.get(run.id))!;
     });
@@ -86,6 +101,7 @@ export class ChildWorkflowScheduler {
   async cancel(id: string, reason: string): Promise<void> {
     return this.request(async () => {
       await this.options.workflow.cancel(id, reason);
+      this.releaseAbortBinding(id);
       await this.tick();
     });
   }
@@ -113,6 +129,7 @@ export class ChildWorkflowScheduler {
   close(): Promise<void> {
     if (this.closing) return this.closing;
     this.closed = true; this.projector = undefined; if (this.timer) clearInterval(this.timer); this.unsubscribe?.();
+    for (const id of this.abortBindings.keys()) this.releaseAbortBinding(id);
     if (!this.options.continuations) this.continuations.close();
     return this.closing = Promise.allSettled([...this.requests, ...this.observations, this.tail]).then(() => {});
   }
@@ -125,6 +142,10 @@ export class ChildWorkflowScheduler {
   drain(): Promise<void> { return Promise.allSettled([...this.requests, ...this.observations, this.tail]).then(() => {}); }
   private assertAdmission(): void {
     if (this.closed || this.admissionFences.size > 0) throw new Error("Workflow scheduler admission is closed");
+  }
+  private releaseAbortBinding(id: string): void {
+    this.abortBindings.get(id)?.release();
+    this.abortBindings.delete(id);
   }
   private request<T>(operation: () => Promise<T>): Promise<T> {
     this.assertAdmission(); this.activeRequests++;
@@ -142,8 +163,7 @@ export class ChildWorkflowScheduler {
           const target = { runId: run.id, stepId: step.task.id, attemptId: attempt.id };
           const id = attempt.childId ?? subagentIdForKey(attempt.idempotencyKey);
           if (run.status === "cancelled") {
-            const child = await subagents.inspect({ ...run.owner, id });
-            if (child && ["starting", "running"].includes(child.status)) await subagents.stop({ ...run.owner, id });
+            await this.stopChild(run, id);
           } else if (activeAttempt(attempt) || (attempt.status === "interrupted" && attempt.disposition !== "terminal-failed" && attempt.disposition !== "retry-safe")) {
             const child = await subagents.inspect({ ...run.owner, id });
             if (attempt.status === "interrupted") {
@@ -158,11 +178,25 @@ export class ChildWorkflowScheduler {
         await this.project((await workflow.get(run.id))!);
       } catch (error) { await workflow.block(run.id, String(error)); }
     }
-    const runs = await workflow.list();
+    let runs = await workflow.list();
     if (!dispatch) {
       for (const run of runs) if (!this.closed) this.continuations.publish(run);
       return;
     }
+    for (const run of runs) {
+      if (run.status !== "running" || run.kind !== "subagent") {
+        if (["completed", "failed", "cancelled"].includes(run.status)) this.releaseAbortBinding(run.id);
+        continue;
+      }
+      if (this.abortBindings.get(run.id)?.signal.aborted) {
+        await this.cancelWithChildren(run, "Parent execution aborted");
+        continue;
+      }
+      if (await this.options.ownerTerminated?.(run)) {
+        await this.cancelWithChildren(run, "Parent Run was aborted or failed");
+      }
+    }
+    runs = await workflow.list();
     const occupying = runs.flatMap(run => run.steps.filter(step => {
       const attempt = step.attempts.at(-1);
       return attempt && (attempt.status === "running" || attempt.status === "dispatched" || (attempt.status === "interrupted" && attempt.disposition !== "retry-safe" && attempt.disposition !== "terminal-failed"));
@@ -181,21 +215,29 @@ export class ChildWorkflowScheduler {
         try {
           await this.options.admit?.(current, step);
           if (this.closed) return;
+          if (this.abortBindings.get(run.id)?.signal.aborted) {
+            await workflow.cancel(run.id, "Parent execution aborted");
+            this.releaseAbortBinding(run.id);
+            break;
+          }
           attempt ??= await workflow.beginAttempt({ runId: run.id, stepId: step.task.id, strategy: "initial" });
           const target = { runId: run.id, stepId: step.task.id, attemptId: attempt.id };
           if (this.now() >= Date.parse(attempt.deadline)) {
             await workflow.finishAttempt(target, "failed", "Attempt deadline elapsed before dispatch"); continue;
           }
-          await workflow.markDispatched(target);
-          const record = await subagents.spawn({ ...run.owner, idempotencyKey: attempt.idempotencyKey,
+          const request: SpawnSubagentRequest = { ...run.owner, idempotencyKey: attempt.idempotencyKey,
             task: [step.task.title, step.task.description ?? "", ...(attempt.strategy === "initial" ? [] : [
               `Attempt strategy: ${attempt.strategy}`, `Prior failure (untrusted diagnostic data): ${step.attempts.at(-1)?.result ?? run.failureDigest ?? "none"}`,
             ])].join("\n").trim(), role: step.task.execution.role,
             permissionProfile: step.task.execution.readOnly ? "read-only" : run.permissionProfile,
             availableTools: run.availableTools, ...(run.model === undefined ? {} : { model: run.model }),
             allowedCapabilities: run.allowedCapabilities,
+            ...(this.abortBindings.get(run.id)?.signal ? { signal: this.abortBindings.get(run.id)!.signal } : {}),
             ...(run.modelsConfiguration ? { modelsConfiguration: run.modelsConfiguration } : this.options.modelConfiguration ? { modelsConfiguration: await this.options.modelConfiguration() } : {}),
-          });
+          };
+          const composed = this.options.composeChild?.(request) ?? request;
+          await workflow.markDispatched(target);
+          const record = await subagents.spawn(composed);
           await workflow.bindChild(target, record.id);
           occupying.push({ root: run.owner.workspaceRoot, readOnly: step.task.execution.readOnly });
           await this.observe(run, target, record);
@@ -220,6 +262,18 @@ export class ChildWorkflowScheduler {
     } else if (this.now() >= Date.parse(attempt.deadline)) {
       await subagents.stop({ ...run.owner, id: child.id });
       await workflow.interruptAttempt(target, "Deadline expired; child stopped, side effects require reconciliation");
+    }
+  }
+  private async stopChild(run: WorkflowRun, id: string): Promise<void> {
+    const child = await this.options.subagents.inspect({ ...run.owner, id });
+    if (child && ["starting", "running"].includes(child.status)) await this.options.subagents.stop({ ...run.owner, id });
+  }
+  private async cancelWithChildren(run: WorkflowRun, reason: string): Promise<void> {
+    await this.options.workflow.cancel(run.id, reason);
+    this.releaseAbortBinding(run.id);
+    for (const step of run.steps) {
+      const attempt = step.attempts.at(-1);
+      if (attempt) await this.stopChild(run, attempt.childId ?? subagentIdForKey(attempt.idempotencyKey));
     }
   }
   private async project(run: WorkflowRun): Promise<void> {

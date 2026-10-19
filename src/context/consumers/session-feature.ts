@@ -2,6 +2,9 @@ import type { Context } from "@deepseek-ai/cordis";
 import { registerManagedSessionFeature } from "../../apps/session-feature-owner.js";
 export default { name: "context-session-feature", inject: ["application", "contextEngine", "sessions", "agents"], apply(ctx: Context) {
   registerManagedSessionFeature(ctx, "context", {
+    purgeOrder: 45,
+    purgeRun(sessionId, runId) { ctx.contextEngine.observations.clear(sessionId, runId); return Promise.resolve(); },
+    purgeSession(sessionId) { ctx.contextEngine.observations.clear(sessionId); return Promise.resolve(); },
     async inspect(sessionId) {
       const session = await ctx.sessions.manager.get({ sessionId });
       if (session.agentId !== ctx.agents.agentId) throw new Error("Context observation belongs to another Agent");

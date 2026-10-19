@@ -6,6 +6,7 @@ import {
 } from "../storage/domain.js";
 import { StorageConflictError } from "../storage/errors.js";
 import { KV_ABSENT } from "../storage/kv.js";
+import type { KvStorageBackend } from "../storage/kv.js";
 import {
   CoordinatorClosedError,
   CoordinatorConflictError,
@@ -46,6 +47,13 @@ export class MemoryCoordinatorStateStore implements CoordinatorStateStore {
     signal?.throwIfAborted();
     return this.states.get(requireIdentifier(runId, "Coordinator Run id"));
   }
+  async listBySession(sessionId: string, signal?: AbortSignal): Promise<readonly CoordinatorState[]> {
+    this.assertOpen(); signal?.throwIfAborted();
+    return [...this.states.values()].filter(state => state.sessionId === sessionId);
+  }
+  async delete(runId: string, signal?: AbortSignal): Promise<void> {
+    this.assertOpen(); signal?.throwIfAborted(); this.states.delete(runId);
+  }
 
   async put(
     state: CoordinatorState,
@@ -76,9 +84,11 @@ export interface DomainCoordinatorStateStoreOptions {
 /** Durable Run-keyed Coordinator state with Storage-level CAS. */
 export class DomainCoordinatorStateStore implements CoordinatorStateStore {
   private readonly domain: StorageDomain<string, CoordinatorState>;
+  private readonly kv: KvStorageBackend;
   private closed = false;
 
   constructor(options: DomainCoordinatorStateStoreOptions) {
+    this.kv = options.storage.backend(options.backendId, { kv: { list: true } }).kv!;
     this.domain = new StorageDomain({
       storage: options.storage,
       backendId: options.backendId,
@@ -92,6 +102,18 @@ export class DomainCoordinatorStateStore implements CoordinatorStateStore {
     return (await this.domain.resolve(
       requireIdentifier(runId, "Coordinator Run id"),
     ).load(signal))?.value;
+  }
+  async listBySession(sessionId: string, signal?: AbortSignal): Promise<readonly CoordinatorState[]> {
+    this.assertOpen();
+    const entries = await this.kv.list!({ namespace: COORDINATOR_DOMAIN_ID, ...(signal ? { signal } : {}) });
+    const states = await Promise.all(entries.map(entry => this.get(entry.key, signal)));
+    return states.filter((state): state is CoordinatorState => state?.sessionId === sessionId);
+  }
+  async delete(runId: string, signal?: AbortSignal): Promise<void> {
+    this.assertOpen();
+    const target = this.domain.resolve(requireIdentifier(runId, "Coordinator Run id"));
+    const current = await target.load(signal);
+    if (current) await target.delete({ kind: "revision", revision: current.revision! }, signal);
   }
 
   async put(

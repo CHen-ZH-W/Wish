@@ -7,6 +7,8 @@ import type { ModelDependencies } from "../models/runtime.js";
 import type { SessionResources } from "../sessions/service.js";
 import { SessionCompactor } from "./compaction.js";
 import { ModelCompactionSummarizer } from "./summarizer.js";
+import { AgentScope, AgentScopeContributionWork } from "../composition/agent-scope.js";
+import type { ContextOverflowCompactor } from "./types.js";
 
 /** Loader-owned Compaction retention and summary settings. */
 export interface Config {
@@ -20,6 +22,7 @@ export const Config: s<Config> = s.object({
 });
 
 export interface OpenCompactionInput {
+  readonly agentScope?: AgentScope;
   readonly dataDirectory: string;
   readonly models: ModelDependencies;
   readonly keepRecentTokens: number;
@@ -27,8 +30,19 @@ export interface OpenCompactionInput {
   readonly summaryModel?: ModelRef;
 }
 
+/** A per-Agent strategy receives the same Session and Model ports as the default. */
+export interface CompactionStrategy {
+  readonly id: string;
+  open(input: CompactionResourcesOptions): ContextOverflowCompactor;
+}
+
 export interface CompactionResourcesOptions extends OpenCompactionInput {
   readonly sessions: SessionResources;
+}
+
+interface ScopedCompactionStrategy {
+  readonly strategy: CompactionStrategy;
+  readonly work: AgentScopeContributionWork;
 }
 
 /** Explicit standalone composition helper; product processes use the service. */
@@ -61,6 +75,7 @@ export class Compaction extends Service {
   readonly keepRecentTokens: number | undefined;
   readonly summaryMaxOutputTokens: number | undefined;
   private readonly work: PluginWorkOwner;
+  private readonly scopedStrategies = new Map<AgentScope, ScopedCompactionStrategy>();
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, "compaction");
@@ -69,16 +84,57 @@ export class Compaction extends Service {
     this.summaryMaxOutputTokens = config.summaryMaxOutputTokens;
   }
 
-  /** Build one Application-facing compactor from injected capability views. */
-  open(input: OpenCompactionInput): SessionCompactor {
+  registerScoped(owner: Context, scope: AgentScope, strategy: CompactionStrategy): () => void {
     this.work.assertAttached();
-    const compactor = createCompactionResources({
+    if (!strategy || typeof strategy.id !== "string" || !strategy.id.trim() || typeof strategy.open !== "function") {
+      throw new TypeError("Invalid Compaction strategy");
+    }
+    if (this.scopedStrategies.has(scope)) throw new Error("Compaction strategy already registered in this Agent Scope");
+    const entry: ScopedCompactionStrategy = {
+      strategy,
+      work: new AgentScopeContributionWork(`compaction:${strategy.id}`),
+    };
+    this.scopedStrategies.set(scope, entry);
+    const unregister = () => {
+      if (!entry.work.revoke()) return;
+      if (this.scopedStrategies.get(scope) === entry) this.scopedStrategies.delete(scope);
+    };
+    let detach = () => {};
+    try {
+      detach = scope.own(async () => { unregister(); await entry.work.drain(); });
+      owner.effect(() => async () => { unregister(); detach(); await entry.work.drain(); }, `compaction.strategy(${strategy.id})`);
+    } catch (error) { unregister(); detach(); throw error; }
+    return () => { unregister(); void entry.work.drain().then(detach); };
+  }
+
+  /** Build one Application-facing compactor from the nearest Agent strategy. */
+  open(input: OpenCompactionInput): ContextOverflowCompactor {
+    this.work.assertAttached();
+    const options = {
       ...input,
       sessions: this.ctx.sessions.open(input.dataDirectory),
+    };
+    let entry: ScopedCompactionStrategy | undefined;
+    for (const scope of input.agentScope?.chain() ?? []) {
+      entry = this.scopedStrategies.get(scope) ?? entry;
+    }
+    entry?.work.assertOpen();
+    const compactor = entry === undefined
+      ? createCompactionResources(options)
+      : entry.strategy.open(options);
+    if (!compactor || typeof compactor.compact !== "function") throw new TypeError("Invalid Compaction strategy result");
+    if (entry === undefined) {
+      const defaultCompactor = compactor as SessionCompactor;
+      const compact = defaultCompactor.compact.bind(defaultCompactor);
+      defaultCompactor.compact = request => this.work.run(() => compact(request));
+      return defaultCompactor;
+    }
+    const keepRecentTokens = (compactor as { readonly keepRecentTokens?: unknown }).keepRecentTokens;
+    return Object.freeze({
+      ...(typeof keepRecentTokens === "number" ? { keepRecentTokens } : {}),
+      compact: (request: Parameters<ContextOverflowCompactor["compact"]>[0]) =>
+        this.work.run(() => entry.work.run(() => compactor.compact(request))),
     });
-    const compact = compactor.compact.bind(compactor);
-    compactor.compact = input => this.work.run(() => compact(input));
-    return compactor;
   }
 }
 

@@ -13,6 +13,9 @@ business capability, not a folder under `src/tools` and not a Workflow alias.
   contributes Context and Permissions projections, so replacing either infrastructure
   service does not replace Plan state.
 - `PlanContextProvider` projects active-mode instructions on every Step.
+- A read-only analysis can be delivered directly in the assistant response while
+  Plan mode remains active. Saving a Plan and requesting review are only needed
+  for a human-reviewed implementation plan, not to finish an analysis turn.
 - `createPlanPermissionPolicy` can only narrow Permissions. Entering Plan mode
   therefore blocks stale write/bash calls immediately, while leaving Plan mode
   restores broader Tools only on the next Step.

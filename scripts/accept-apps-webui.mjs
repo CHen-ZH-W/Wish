@@ -6,6 +6,8 @@ import test from "node:test";
 
 import { ApplicationFacade } from "../dist/apps/application.js";
 import { SessionFeatureRegistry } from "../dist/apps/session-features.js";
+import { createUserTerminalSessionFeature } from "../dist/terminal/consumers/session-feature.js";
+import { createSubagentSessionFeature } from "../dist/subagents/consumers/session-feature.js";
 import { PlanRuntime, MemoryPlanStateStore } from "../dist/plan/index.js";
 import { createPlanSessionFeature } from "../dist/plan/consumers/session-feature.js";
 import { createWishAgent } from "../dist/composition/agent-service.js";
@@ -308,6 +310,9 @@ test("WebUI static assets build a CSP-compatible responsive application shell", 
   assert.deepEqual(manifest.modules.find(module => module.id === "ModelsClientUi").entryIds, ["include:models", "include:models-webui-control"]);
   assert.deepEqual(manifest.modules.find(module => module.id === "ModelUsageClientUi").entryIds, ["include:model-usage-webui-control"]);
   assert.deepEqual(manifest.modules.find(module => module.id === "SystemPromptHistoryClientUi").entryIds, ["include:system-prompt-history-webui-control"]);
+  for (const removed of ["PlanClientUi", "MemoryClientUi", "TasksClientUi", "WorkflowClientUi", "ContextClientUi"]) {
+    assert.equal(manifest.modules.some(module => module.id === removed), false, `${removed} is not shipped as a workspace page`);
+  }
   assert.equal(entry.trim(), `import ${JSON.stringify(manifest.core)};`);
   const script = await readFile(new URL(manifest.core.slice("/assets/".length), assetRoot), "utf8");
   const coreUrl = new URL(manifest.core.slice("/assets/".length), assetRoot);
@@ -316,12 +321,14 @@ test("WebUI static assets build a CSP-compatible responsive application shell", 
   const runtimeScripts = [script, ...sharedScripts].join("\n");
 
   assert.match(html, /id="wish-root"/u);
+  assert.match(html, /<main class="wish-boot" aria-label="Wish"><span class="wish-boot-mark"/u, "the document paints a clean initial surface before React starts");
   assert.match(html, /<html lang="zh-CN" data-theme="light" data-font-size="standard">/u);
   assert.match(html, /type="module" src="\/assets\/client\.js"/u);
   assert.match(html, /href="\/assets\/app\.css"/u);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)/u);
   assert.doesNotMatch(html, /\sstyle=/u);
   assert.match(css, /\.wish-shell/u);
+  assert.match(css, /\.wish-boot\{display:grid;place-items:center;[^}]*height:100dvh/u);
   assert.match(css, /@media\s*\(max-width:\s*720px\)/u);
   assert.match(css, /prefers-reduced-motion:\s*reduce/u);
   assert.match(runtimeScripts, /EventSource/u);
@@ -736,16 +743,45 @@ test("HTTP API maps Sessions, Runs, controls, and Runtime cursors", async () => 
   }
 });
 
+test("Session removal closes owned terminals and stops children while preserving uncertain child state", async () => {
+  const terminals = new Map([["a", { id: "a" }], ["b", { id: "b" }]]), closed = [];
+  const terminalFeature = createUserTerminalSessionFeature({
+    async list() { return [...terminals.values()]; },
+    async close(_sessionId, _workspace, id) { closed.push(id); terminals.delete(id); },
+  }, async () => ({ scope: "/workspace" }));
+  await assert.rejects(terminalFeature.beforeRemoval("s", "archive"), /关闭所有用户终端/u);
+  await terminalFeature.beforeRemoval("s", "delete");
+  assert.deepEqual(closed, ["a", "b"]);
+  assert.equal(terminals.size, 0);
+
+  const child = status => ({ id: "child", status, target: { id: "process" }, parentAgentId: "wish", parentSessionId: "s", parentRunId: "r", workspaceRoot: "/workspace" });
+  let children = [child("running"), { ...child("lost"), id: "uncertain", target: undefined }];
+  const stopped = [];
+  const subagentFeature = createSubagentSessionFeature({
+    async observeSession() { return children; },
+    async stop(request) { stopped.push(request.id); const next = { ...children.find(item => item.id === request.id), status: "stopped" }; children = children.map(item => item.id === request.id ? next : item); return next; },
+    async capture() { return ""; },
+  }, async () => ({ agentId: "wish", scope: "/workspace" }), "wish");
+  await assert.rejects(subagentFeature.beforeRemoval("s", "archive"), /子 Agent/u);
+  await assert.rejects(subagentFeature.beforeRemoval("s", "delete"), /子 Agent/u);
+  assert.deepEqual(stopped, ["child"], "uncertain child status must not be silently overwritten");
+  children = [children[0], { ...children[1], status: "stopped" }];
+  await subagentFeature.beforeRemoval("s", "delete");
+});
+
 test("Session actions enforce ownership, active completion and module vetoes through the API", async () => {
   const root = await mkdtemp(join(tmpdir(), "wish-session-api-"));
   const sessions = createFileSessionResources(root);
   const features = new SessionFeatureRegistry();
   const completion = deferred();
+  const abortRequested = deferred();
   let unsettled = false;
+  const aborts = [];
   let pendingReconciliations = [];
   const options = { sessions, sessionFeatures: features,
     recovery: { async snapshot() { return { pendingReconciliations }; } },
-    agent: { definition: { id: "wish" }, startRun({ scope }) { unsettled = true; return { runId: "run", scope, completion: completion.promise }; }, control() {}, async *observe() {} },
+    agent: { definition: { id: "wish" }, startRun({ scope }) { unsettled = true; return { runId: "run", scope, completion: completion.promise }; },
+      control(runId, control) { aborts.push({ runId, control }); abortRequested.resolve(); return { accepted: true, kind: "abort", runId, controlId: "abort" }; }, async *observe() {} },
     models: { configuredModel: { getDefaultModel: () => ({ provider: "test", model: "test" }), resolve: ref => ({ ref }) } },
   };
   const application = new ApplicationFacade(options), otherFacade = new ApplicationFacade(options);
@@ -763,23 +799,35 @@ test("Session actions enforce ownership, active completion and module vetoes thr
     const renamed = await requestJson(server.url, "/api/sessions/one", { method: "PATCH", body: { title: "  新名字  " } });
     assert.equal(renamed.value.session.title, "新名字");
     assert.equal((await requestJson(server.url, "/api/sessions/one", { method: "PATCH", body: { title: " " } })).response.status, 400);
-    const starting = application.startRun({ sessionId: "one", payload: { text: "test" } });
-    await assert.rejects(otherFacade.deleteSession({ sessionId: "one" }), { code: "session_busy" });
-    await starting; assert.ok(unsettled);
+    await application.startRun({ sessionId: "one", payload: { text: "test" } }); assert.ok(unsettled);
     assert.equal((await post("one", "archive")).response.status, 409);
-    assert.equal((await remove("one")).response.status, 409);
-    completion.resolve({}); await completion.promise;
-    pendingReconciliations = [{ scope: "one" }];
-    assert.equal((await remove("one")).response.status, 409);
-    pendingReconciliations = [];
     const unregister = features.register("fixture", { async inspect() {}, async act() {}, async beforeRemoval() { throw new Error("正在运行的子任务"); } });
-    const vetoed = await remove("one");
-    assert.equal(vetoed.response.status, 409);
-    assert.deepEqual(vetoed.value.error, { code: "session_busy", message: "正在运行的子任务" });
+    const removing = otherFacade.deleteSession({ sessionId: "one" }).then(() => assert.fail("removal veto was ignored"), error => error);
+    await abortRequested.promise;
+    assert.equal(await Promise.race([removing.then(() => true), new Promise(resolve => setImmediate(() => resolve(false)))]), false,
+      "deletion must wait for the original Run completion");
+    assert.equal((await sessions.manager.get({ sessionId: "one" })).status, "active");
+    completion.resolve({});
+    const vetoed = await removing;
+    assert.equal(vetoed.code, "session_busy");
+    assert.deepEqual(aborts.map(item => [item.runId, item.control.type]), [["run", "abort"]]);
+    assert.equal((await sessions.manager.get({ sessionId: "one" })).status, "active");
+    const vetoedApi = await remove("one");
+    assert.equal(vetoedApi.response.status, 409);
+    assert.deepEqual(vetoedApi.value.error, { code: "session_busy", message: "正在运行的子任务" });
     unregister();
     assert.equal((await remove("one")).response.status, 409, "missing owner cannot be treated as idle");
-    features.register("fixture", { async inspect() {}, async act() {}, async beforeRemoval() {} });
+    const removalOperations = [];
+    features.register("fixture", { async inspect() {}, async act() {}, async beforeRemoval(_sessionId, operation) { removalOperations.push(operation); } });
+    pendingReconciliations = [{ scope: "one" }];
+    assert.equal((await post("one", "archive")).response.status, 409);
+    pendingReconciliations = [];
+    assert.equal((await post("one", "archive")).response.status, 200);
+    assert.equal((await post("one", "restore")).response.status, 200);
+    pendingReconciliations = [{ scope: "one" }];
     assert.equal((await remove("one")).response.status, 200);
+    assert.equal(pendingReconciliations.length, 1, "deletion must preserve unresolved Runtime evidence");
+    assert.deepEqual(removalOperations, ["archive", "delete"]);
     assert.equal((await requestJson(server.url, "/api/sessions/one")).response.status, 404);
     assert.ok(await sessions.manager.get({ sessionId: "foreign" }));
   } finally { completion.resolve({}); await server?.close(); await sessions.manager.store.close(); await rm(root, { recursive: true, force: true }); }
@@ -941,7 +989,7 @@ test("real Application streams Tool approval and commits one Session transcript"
       keepRecentTokens: 512,
       summaryMaxOutputTokens: 256,
       tools: { approval: approvals },
-    }, { ...deterministicRuntime(), maxSteps: 4 });
+    }, deterministicRuntime());
     const application = new ApplicationFacade({
       sessions,
       agent: createWishAgent(

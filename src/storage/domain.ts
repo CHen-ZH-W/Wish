@@ -3,6 +3,7 @@ import type {
   StorageBackendResolver,
 } from "./backend.js";
 import { StorageCorruptionError } from "./errors.js";
+import { decodeCanonicalBase64 } from "./base64.js";
 import type {
   KvDeleteResult,
   KvPrecondition,
@@ -431,14 +432,7 @@ function mergeKvRequirement(
 }
 
 function decodeBase64(value: string): Uint8Array {
-  if (
-    value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
-      .test(value)
-  ) throw new Error("invalid base64");
-  const decoded = Buffer.from(value, "base64");
-  if (decoded.toString("base64") !== value) throw new Error("invalid base64");
-  return Uint8Array.from(decoded);
+  return decodeCanonicalBase64(value);
 }
 
 export const DOMAIN_ABSENT: DomainDefault<never> = Object.freeze({

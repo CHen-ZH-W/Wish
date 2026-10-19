@@ -58,7 +58,7 @@ function SessionRow({ session, model, slots, drafts, selected, disabled, panelId
   }
   async function act(action: "archive" | "restore" | "delete") {
     closeMenu();
-    if (action === "delete" && !window.confirm(t(`删除“${title}”及其聊天记录？\n此操作不可撤销，项目文件不受影响。`, `Delete “${title}” and its conversation history?\nThis cannot be undone. Project files are unaffected.`))) return;
+    if (action === "delete" && !window.confirm(t(`删除“${title}”及其聊天记录？\n运行、关联后台工作和会话终端将停止；项目文件与待核对记录保留。此操作不可撤销。`, `Delete “${title}” and its conversation history?\nRuns, related background work and session terminals will stop. Project files and unresolved records remain. This cannot be undone.`))) return;
     setError(null);
     try {
       await model[action](session.sessionId);

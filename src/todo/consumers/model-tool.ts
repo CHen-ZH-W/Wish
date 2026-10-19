@@ -27,7 +27,7 @@ const SCHEMA = JSON.stringify({
         properties: {
           id: { type: "string", minLength: 1 },
           content: { type: "string", minLength: 1, maxLength: 500 },
-          status: { enum: ["pending", "in_progress", "completed"] },
+          status: { enum: ["pending", "in_progress", "completed", "failed", "stopped"] },
         },
         required: ["id", "content", "status"],
         additionalProperties: false,

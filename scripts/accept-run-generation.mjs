@@ -312,7 +312,6 @@ test("Cordis Runtime update drains the old generation before activating the new 
     },
   });
   const runtimeProvider = root.plugin(Runtime, {
-    maxSteps: 2,
     generationDrainTimeoutMs: 1_000,
   });
   try {
@@ -322,8 +321,7 @@ test("Cordis Runtime update drains the old generation before activating the new 
     const oldId = oldGeneration.id;
 
     await runtimeProvider.update({
-      maxSteps: 3,
-      generationDrainTimeoutMs: 1_000,
+      generationDrainTimeoutMs: 2_000,
     });
     await consumer.await();
     const completion = await oldHandle.completion;
@@ -421,7 +419,7 @@ test("Loader stable-id update safely replaces a WebUI graph with an active model
     const oldRuntime = booted.surfaceContext.get("runEngine");
     await withTimeout(
       booted.context.loader.update("include:runtime", {
-        config: { maxSteps: 33, generationDrainTimeoutMs: 2_000 },
+        config: { generationDrainTimeoutMs: 2_000 },
       }),
       5_000,
       "Loader update did not drain the active generation",
@@ -431,7 +429,7 @@ test("Loader stable-id update safely replaces a WebUI graph with an active model
 
     const newRuntime = booted.surfaceContext.get("runEngine");
     assert.notEqual(newRuntime, oldRuntime);
-    assert.equal(newRuntime.maxSteps, 33);
+    assert.equal(newRuntime.generationDrainTimeoutMs, 2_000);
     const health = await requestJson(webPort, "/api/health");
     assert.equal(health.response.status, 200);
     const sessions = await requestJson(webPort, "/api/sessions");

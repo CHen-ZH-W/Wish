@@ -173,11 +173,13 @@ test("feature result renderers share the Tool plugin lifecycle", async () => {
             toolCallId: result.callId,
           };
         },
-      });
+      }, { requires: ["human.review"] });
     },
   });
   try {
     await plugin.await();
+    assert.deepEqual(root.tools.getCompositionContracts().get("custom"),
+      { requires: ["human.review"] });
     const input = {
       call: { status: "ready", id: "call-custom", name: "custom", input: {} },
       result: {
@@ -194,6 +196,7 @@ test("feature result renderers share the Tool plugin lifecycle", async () => {
     assert.deepEqual(fallbackCalls, []);
 
     await plugin.dispose();
+    assert.equal(root.tools.getCompositionContracts().has("custom"), false);
     assert.equal((await renderer.render(input)).content, "fallback");
     assert.deepEqual(fallbackCalls, ["custom"]);
   } finally {
@@ -239,7 +242,7 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
       argv: ["--version"],
       cwd: repositoryRoot,
       homeDirectory: directory,
-      environment: {},
+      environment: { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" },
       configurationFile,
     });
     assert.equal(await booted.completion, 0);

@@ -11,13 +11,13 @@ export class TaskRuntime implements Tasks {
     const collection = await this.store.get(sessionId);
     return version === undefined ? collection?.graphs.at(-1) : collection?.graphs.find((graph) => graph.version === version);
   }
+  clear(sessionId: string): Promise<void> { return this.serial(() => this.store.delete(sessionId)); }
   replace(sessionId: string, input: readonly TaskSpec[], expectedVersion: number): Promise<TaskGraph> {
     const tasks = normalizeTasks(input);
     return this.serial(async () => {
       const current = await this.store.get(sessionId);
       const latest = current?.graphs.at(-1);
       if ((latest?.version ?? 0) !== expectedVersion) throw new Error("Task graph version conflict");
-      if ((current?.graphs.length ?? 0) >= 100) throw new Error("Task graph revision limit reached");
       const graph: TaskGraph = Object.freeze({ sessionId, version: expectedVersion + 1,
         state: "draft", digest: graphDigest(tasks), createdAt: new Date().toISOString(),
         tasks: Object.freeze(tasks.map((task) => Object.freeze({ ...task, status: "pending" as const }))),

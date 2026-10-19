@@ -85,6 +85,13 @@ test("Blob Tool Result Archive is versioned, readable and idempotent", async () 
     assert.equal(stored.result.output.content, "complete");
     assert.deepEqual(stored.result.output.nested, [1, 2, 3]);
     assert.equal(stored.createdAt, "2026-09-11T12:00:00.000Z");
+    const other = await value.archive.archive({ ...input(), sessionId: "session-2" });
+    const blob = JSON.parse(Buffer.from(first.locator.slice("wish-tool-result:v2:".length), "base64url").toString("utf8"));
+    await value.archive.purgeSession("session-1");
+    await value.archive.purgeSession("session-1");
+    assert.equal(await value.backend.blob.stat({ reference: blob }), undefined);
+    await assert.rejects(value.archive.read(first), /missing/i);
+    assert.equal((await value.archive.read(other)).sessionId, "session-2");
   } finally {
     await value.close();
   }
@@ -115,6 +122,8 @@ test("Blob Tool Result Archive reads legacy relative locators", async () => {
     const stored = await value.archive.read(reference);
     assert.equal(stored.result.output.content, "legacy");
     assert.equal(stored.resultSha256, reference.hash);
+    await legacy.purgeSession("session-1");
+    await assert.rejects(value.archive.read(reference), /cannot be read/i);
   } finally {
     await value.close();
   }
@@ -149,13 +158,15 @@ test("Cordis Archive Provider controls Consumer availability", async () => {
   assert.equal(consumer.state, states.active);
   assert.equal(generations.length, 1);
   const archive = generations[0].open({ legacyLocatorRoot: directory });
-  assert.match(
-    (await archive.archive(input())).locator,
-    /^wish-tool-result:v2:/u,
-  );
+  const reference = await archive.archive(input());
+  assert.match(reference.locator, /^wish-tool-result:v2:/u);
   assert.equal(archive.released, false);
   assert.equal(archive.release(), true);
   assert.equal(archive.release(), false);
+  await root.toolResultArchive.purgeSession("session-1");
+  const remaining = root.toolResultArchive.open();
+  await assert.rejects(remaining.read(reference), /missing/i);
+  remaining.release();
   await storageProvider.dispose();
   assert.equal(root.get("toolResultArchive"), undefined);
   assert.throws(() => generations[0].open(), /tool_result_archive_closed/);
@@ -206,6 +217,14 @@ test("Blob Tool Output Artifacts return opaque readable references", async () =>
       await root.toolOutputArtifacts.get({ artifact }),
       source,
     );
+    const other = await root.toolOutputArtifacts.put({
+      sessionId: "session-2", runId: "run-2", userTurnId: "turn-2", stepId: "step-2",
+      toolCallId: "call-2", toolName: "bash", mediaType: "text/plain;charset=utf-8", value: source,
+    });
+    await root.toolOutputArtifacts.purgeSession("session-1");
+    await root.toolOutputArtifacts.purgeSession("session-1");
+    assert.equal(await root.toolOutputArtifacts.get({ artifact }), undefined);
+    assert.deepEqual(await root.toolOutputArtifacts.get({ artifact: other }), source);
 
     await provider.dispose();
     assert.equal(root.get("toolOutputArtifacts"), undefined);

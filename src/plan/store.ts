@@ -42,6 +42,10 @@ export class MemoryPlanStateStore implements PlanStateStore {
     signal?.throwIfAborted();
     return this.states.get(requireIdentifier(sessionId, "Plan Session id"));
   }
+  async delete(sessionId: string, signal?: AbortSignal): Promise<void> {
+    this.assertOpen(); signal?.throwIfAborted();
+    this.states.delete(requireIdentifier(sessionId, "Plan Session id"));
+  }
 
   async put(
     state: PlanState,
@@ -88,6 +92,12 @@ export class DomainPlanStateStore implements PlanStateStore {
     return (await this.domain.resolve(
       requireIdentifier(sessionId, "Plan Session id"),
     ).load(signal))?.value;
+  }
+  async delete(sessionId: string, signal?: AbortSignal): Promise<void> {
+    this.assertOpen();
+    const target = this.domain.resolve(requireIdentifier(sessionId, "Plan Session id"));
+    const current = await target.load(signal);
+    if (current) await target.delete({ kind: "revision", revision: current.revision! }, signal);
   }
 
   async put(

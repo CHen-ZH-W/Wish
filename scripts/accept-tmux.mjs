@@ -67,10 +67,27 @@ test("private tmux command runner is synchronous and bounded", async () => {
     maxOutputBytes: 1024,
   });
   assert.deepEqual(result, { stdout: "out", stderr: "err" });
+  await assert.rejects(runner.run({ executable: process.execPath,
+    args: ["-e", "process.stderr.write('missing target'); process.exit(7)"],
+  }), error => error.code === 7 && error.stderr === "missing target");
   await assert.rejects(
     runner.run({ executable: "bad\0command" }),
     /without null bytes/u,
   );
+});
+
+test("tmux command runner does not wait for a detached server that inherited its pipes", async () => {
+  const runner = new NodeTmuxCommandRunner();
+  const started = Date.now();
+  const result = await runner.run({
+    executable: process.execPath,
+    args: ["-e", `const { spawn } = require("node:child_process");
+      spawn(process.execPath, ["-e", "setTimeout(() => {}, 600)"],
+        { detached: true, stdio: ["ignore", 1, 2] }).unref();
+      process.stdout.write("ready");`],
+  });
+  assert.equal(result.stdout, "ready");
+  assert.ok(Date.now() - started < 500, "the CLI exit must settle before the server closes its pipes");
 });
 
 test("Local tmux start publishes real target and discovery metadata", async () => {
@@ -112,6 +129,21 @@ test("Local tmux start publishes real target and discovery metadata", async () =
   assert.equal(runner.calls.some((call) => call.args.includes("remain-on-exit")), true);
   assert.equal(runner.calls[0].args.includes("WISH_CHILD=1"), true);
   assert.equal(runner.calls[0].args.includes("WISH_DATA_DIR=/workspace/.wish-child"), true);
+});
+
+test("cancellation after tmux creates a child removes the owned session", async () => {
+  const controller = new AbortController(), calls = [];
+  const runner = { async run(request) {
+    calls.push(request.args);
+    if (request.args.includes("new-session")) controller.abort("parent stopped");
+    return { stdout: "", stderr: "" };
+  } };
+  const tmux = new LocalTmuxBackend({ socketPath: "/tmp/wish.sock", runner });
+  await assert.rejects(tmux.start({ sessionId: "cancelled-child", windowName: "worker",
+    command: { executable: "node", cwd: "/workspace" },
+    metadata: { workspaceRoot: "/workspace" }, signal: controller.signal,
+  }), /aborted/u);
+  assert.equal(calls.some(args => args.includes("kill-session") && args.includes("wish-cancelled-child")), true);
 });
 
 test("Local tmux list is reconstructible, filterable, and preserves dead panes", async () => {

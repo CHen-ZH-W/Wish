@@ -8,6 +8,7 @@ export default {
   inject: ["tools", "filesystem"],
   apply(ctx: Context): void {
     const owner = new ManagedToolOwner(ctx, { code: "read_consumer", codeReload: true });
-    owner.register(createReadTool({ filesystem: ctx.filesystem }));
+    owner.register(createReadTool({ filesystem: ctx.filesystem }), undefined,
+      { requires: [], requiredCapabilities: ["filesystem.read"] });
   },
 };

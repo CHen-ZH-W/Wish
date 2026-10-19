@@ -61,5 +61,5 @@ export function createTaskTools(tasks: Tasks, plan: Plan): readonly ToolDefiniti
 
 export default { name: "task-tools", inject: ["tools", "tasks"], apply(ctx: Context) {
   const owner = new ManagedToolOwner(ctx, { code: "task_read_tool", codeReload: true });
-  owner.register(createTaskReadTool(ctx.tasks));
+  owner.register(createTaskReadTool(ctx.tasks), undefined, { requires: ["tasks.state"] });
 } };

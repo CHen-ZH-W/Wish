@@ -75,7 +75,7 @@ export function createSessionInputRenderer<Payload = unknown>(
           userTurnId: input.snapshot.userTurn.userTurnId,
           stepId: input.snapshot.step.stepId,
           origin: "steering",
-          inputSource: "steering",
+          inputSource: input.message.inputSource ?? "steering",
           message,
         }],
       });

@@ -118,6 +118,24 @@ test("File KV classifies malformed envelopes as corruption", async () => {
   }
 });
 
+test("File KV reads multi-megabyte Base64 and rejects malformed large values", async () => {
+  const fixture = await createFileFixture();
+  try {
+    const namespace = "large-workflow";
+    const key = "state";
+    const value = Buffer.alloc(3_800_000, 0x61);
+    await fixture.kv.put({ namespace, key, value, precondition: { kind: "absent" } });
+    assert.equal(Buffer.from((await fixture.kv.get({ namespace, key })).value).equals(value), true);
+    const path = fileKvStoragePath(fixture.kv, namespace, key);
+    const envelope = JSON.parse(await readFile(path, "utf8"));
+    envelope.valueBase64 = `!${envelope.valueBase64.slice(1)}`;
+    await writeFile(path, JSON.stringify(envelope), "utf8");
+    await assert.rejects(fixture.kv.get({ namespace, key }), error => error?.code === "storage_corruption");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("File KV maps filesystem failures to storage_unavailable", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-storage-file-unavailable-"));
   const rootPath = join(directory, "not-a-directory");

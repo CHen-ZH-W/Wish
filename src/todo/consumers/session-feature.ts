@@ -5,6 +5,11 @@ import type { Todo } from "../types.js";
 
 export function createTodoSessionFeature(todo: Todo): SessionFeature {
   return {
+    // This Run-owned list can be released as soon as the Run is terminal;
+    // child/workflow cleanup may take longer and must not keep it visible.
+    purgeOrder: 5,
+    purgeRun(sessionId, runId) { return todo.clear(sessionId, runId); },
+    purgeSession(sessionId) { return todo.clear(sessionId); },
     async inspect(sessionId) {
       const state = await todo.get(sessionId);
       if (state === undefined || state.items.length === 0) return undefined;
@@ -20,13 +25,13 @@ export function createTodoSessionFeature(todo: Todo): SessionFeature {
       };
     },
     async act() {
-      throw new Error("Todo is model-owned within the current UserTurn");
+      throw new Error("Todo has no Session action; use todo_write or linked execution progress");
     },
   };
 }
 
-function marker(status: "pending" | "in_progress" | "completed"): string {
-  return status === "completed" ? "[x]" : status === "in_progress" ? "[>]" : "[ ]";
+function marker(status: "pending" | "in_progress" | "completed" | "failed" | "stopped"): string {
+  return status === "completed" ? "[x]" : status === "in_progress" ? "[>]" : status === "failed" ? "[!]" : status === "stopped" ? "[-]" : "[ ]";
 }
 
 export default {

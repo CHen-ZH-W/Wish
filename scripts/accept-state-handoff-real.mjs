@@ -18,7 +18,7 @@ async function until(check) {
 }
 function continuation() {
   const view = { holds: 0, releases: 0, messages: [] };
-  return { view, deferCompletion() { view.holds++; return { release() { view.releases++; } }; }, resume(message) { view.messages.push(message); return { accepted: true }; } };
+  return { view, deferUserTurnCompletion() { view.holds++; return { release() { view.releases++; } }; }, resume(message) { view.messages.push(message); return { accepted: true }; } };
 }
 
 for (const failRestore of [false, true]) test(`real tmux child survives module handoff${failRestore ? " and failed observation activation" : ""} without duplicate dispatch`, { timeout: 45000 }, async () => {

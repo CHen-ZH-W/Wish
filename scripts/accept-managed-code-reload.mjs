@@ -126,9 +126,14 @@ export default { inject: ["tools", "filesystem"], apply(ctx) {
       } };
     };
     f.edit = () => writeFile(f.readPath, f.readSource.replace("Read a UTF-8 text file", "Read managed version two UTF-8 file"));
-    f.breakActivation = () => writeFile(f.readEntryPath, f.readEntrySource.replace(
-      "owner.register(createReadTool({ filesystem: ctx.filesystem }));",
-      'owner.register(createReadTool({ filesystem: ctx.filesystem })); throw Error("PRIVATE_CANDIDATE_FAILURE");'));
+    f.breakActivation = () => {
+      const broken = f.readEntrySource.replace(
+        /(owner\.register\(createReadTool\(\{ filesystem: ctx\.filesystem \}\)[^\n]*;)/u,
+        '$1 throw Error("PRIVATE_CANDIDATE_FAILURE");',
+      );
+      assert.notEqual(broken, f.readEntrySource, "fixture must change the candidate source");
+      return writeFile(f.readEntryPath, broken);
+    };
     f.restoreActivation = () => writeFile(f.readEntryPath, f.readEntrySource + "\n// corrected after rejected candidate\n");
     f.start = async () => {
       assert.equal((await f.post("/api/sessions", { sessionId: "session", workspaceRoot: directory })).status, 201);

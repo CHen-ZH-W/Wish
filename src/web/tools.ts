@@ -198,6 +198,7 @@ export const WebSearchTool = {
         search: request => lifecycle.run(() => ctx.webSearch.search(request)),
       } }),
       { render: ({ result }) => renderWebSearchToolResult(result) },
+      { requires: [], requiredCapabilities: ["web.search"] },
     );
   },
 };
@@ -214,6 +215,7 @@ export const WebFetchTool = {
         fetch: request => lifecycle.run(() => ctx.webFetch.fetch(request)),
       } }),
       { render: ({ result }) => renderWebFetchToolResult(result) },
+      { requires: [], requiredCapabilities: ["web.fetch"] },
     );
   },
 };

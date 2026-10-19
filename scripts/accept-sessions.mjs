@@ -611,6 +611,7 @@ test("file Store fails closed on middle corruption", async () => {
     });
     const directory = join(root, `session-${sessionStorageKey("session-corrupt")}`);
     await appendFile(join(directory, "history.jsonl"), "not-json\n");
+    assert.deepEqual((await store.list()).map(item => item.sessionId), ["session-corrupt"], "metadata browsing does not parse the transcript");
     await assert.rejects(
       sessions.readHistory({ sessionId: "session-corrupt" }),
       /invalid JSON/u,

@@ -68,6 +68,8 @@ test("CLI launcher obtains resources only from the Host and preserves child data
     assert.deepEqual(seen, { request, child: identity });
     assert.equal(launch.command.environment.WISH_DATA_DIR, exchange.childDataDirectory(identity.id));
     assert.equal(launch.command.environment.WISH_STORAGE_FILE_ROOT, join(exchange.childDataDirectory(identity.id), "storage"));
+    assert.equal(launch.command.environment.WISH_SHELL_PROVIDER, "linux-native");
+    assert.equal(launch.command.environment.WISH_SHELL_HOST_ENABLED, "0");
     assert.equal(launch.command.environment.WISH_CHILD_RESOURCES_FILE, exchange.inputResourcesPath(identity.id));
     assert.equal(launch.command.environment.WISH_CHILD_RESOURCES_DIGEST, (await exchange.readInputResources(identity)).digest);
     await launch.cleanupOnFailure();

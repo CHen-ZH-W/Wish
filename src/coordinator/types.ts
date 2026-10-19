@@ -26,6 +26,8 @@ export interface ExitCoordinatorRequest extends CoordinatorRunRequest {
 
 export interface Coordinator {
   get(request: CoordinatorRunRequest): Promise<CoordinatorState | undefined>;
+  clear(request: CoordinatorRunRequest & { readonly sessionId: string }): Promise<void>;
+  clearSession(sessionId: string): Promise<void>;
   enter(request: EnterCoordinatorRequest): Promise<CoordinatorState>;
   exit(request: ExitCoordinatorRequest): Promise<CoordinatorState>;
   close(): Promise<void>;
@@ -33,6 +35,8 @@ export interface Coordinator {
 
 export interface CoordinatorStateStore {
   get(runId: string, signal?: AbortSignal): Promise<CoordinatorState | undefined>;
+  listBySession(sessionId: string, signal?: AbortSignal): Promise<readonly CoordinatorState[]>;
+  delete(runId: string, signal?: AbortSignal): Promise<void>;
   /** expectedVersion undefined means the Run must not exist yet. */
   put(
     state: CoordinatorState,

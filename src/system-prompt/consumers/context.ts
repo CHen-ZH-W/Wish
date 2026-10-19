@@ -20,6 +20,10 @@ export class SystemPromptContextProvider
     signal?.throwIfAborted();
     const sections = this.systemPrompt.assemble({
       availableTools: input.request?.availableTools ?? [],
+      ...(input.agentScope === undefined ? {} : { agentScope: input.agentScope }),
+      ...(input.systemPromptSections === undefined ? {} : {
+        sections: input.systemPromptSections,
+      }),
     });
     signal?.throwIfAborted();
     return Object.freeze(

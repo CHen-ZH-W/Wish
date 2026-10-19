@@ -3,6 +3,7 @@ import type { Tasks } from "./types.js";
 export abstract class TasksService extends Service implements Tasks {
   constructor(ctx: Context) { super(ctx, "tasks"); }
   abstract get: Tasks["get"];
+  abstract clear: Tasks["clear"];
   abstract replace: Tasks["replace"];
   abstract freeze: Tasks["freeze"];
   abstract transition: Tasks["transition"];

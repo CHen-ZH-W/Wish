@@ -15,6 +15,7 @@ export const BashToolGuidance = {
         "Use bash for operations that genuinely require shell execution.",
         "Bash runs synchronously; do not detach unmanaged background processes.",
         "Declare the least permissions required by the whole command, and investigate nonzero exits, timeouts, or aborted execution before continuing.",
+        "When a check's failure matters, do not let a later command or pipeline hide its exit status; check the relevant status explicitly.",
       ].join("\n"),
     });
   },

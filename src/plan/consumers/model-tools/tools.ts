@@ -131,7 +131,7 @@ export function createPlanTools(
     {
       name: "update_plan",
       description:
-        "Replace the complete durable Plan draft for the current Session. Returns the exact version required by exit_plan_mode.",
+        "Replace the complete durable implementation Plan draft for the current Session. Use when a human-reviewed plan is requested; read-only analysis can be delivered directly in a response. Returns the exact version required by exit_plan_mode.",
       inputSchemaJson: UPDATE_SCHEMA,
       executionMode: "sequential",
       recoveryPolicy: "needs-reconciliation",
@@ -157,7 +157,7 @@ export function createPlanTools(
     {
       name: "exit_plan_mode",
       description:
-        "Submit the exact saved Plan for human review. Returns immediately with a durable pending review; stay in Plan mode and await feedback. Only the human review surface can approve or request changes.",
+        "Submit the exact saved implementation Plan for human review when the user needs an approved plan. Do not call merely to finish an analysis response. Returns immediately with a durable pending review; stay in Plan mode and await feedback. Only the human review surface can approve or request changes.",
       inputSchemaJson: EXIT_SCHEMA,
       executionMode: "sequential",
       recoveryPolicy: "needs-reconciliation",

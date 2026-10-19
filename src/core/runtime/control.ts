@@ -84,6 +84,8 @@ export interface RuntimeControlMessage<
   readonly text: string;
   readonly source: string;
   readonly receivedAt: string;
+  /** Host-authenticated internal input must not be presented as a user message. */
+  readonly inputSource?: "continuation";
 }
 
 export interface RuntimeControlRecord<
@@ -159,7 +161,7 @@ export class NextStepInbox {
     this.activeUserTurnId = userTurnId;
   }
 
-  enqueue(message: RuntimeControlMessage<"steer">): QueueReceipt<"steer"> {
+  enqueue(message: RuntimeControlMessage<"steer">, reserveCapacity = false): QueueReceipt<"steer"> {
     const duplicate = this.records.find(
       (record) => record.message.id === message.id,
     );
@@ -174,7 +176,7 @@ export class NextStepInbox {
       };
     }
 
-    const rejection = this.enqueueRejection(message);
+    const rejection = this.enqueueRejection(message, reserveCapacity);
     if (rejection !== undefined) {
       this.records.push({
         message,
@@ -247,6 +249,7 @@ export class NextStepInbox {
 
   private enqueueRejection(
     message: RuntimeControlMessage<"steer">,
+    reserveCapacity: boolean,
   ): RuntimeControlReceiptReason | undefined {
     if (this.closedReason !== undefined) return this.closedReason;
     const closedReason = this.closedUserTurns.get(message.userTurnId);
@@ -256,10 +259,11 @@ export class NextStepInbox {
     }
     if (message.text.trim().length === 0) return "empty_control_message";
     const pending = this.pending(message.userTurnId);
-    if (pending.length >= this.limits.maxEntries) {
+    if (!reserveCapacity && pending.length >= this.limits.maxEntries) {
       return "next_step_inbox_full";
     }
     if (
+      !(reserveCapacity && message.inputSource === "continuation") &&
       pending.reduce(
         (total, record) => total + utf8Bytes(record.message.text),
         0,
@@ -435,6 +439,7 @@ export function createRuntimeControlMessage<
   readonly text: string;
   readonly source: string;
   readonly receivedAt: string;
+  readonly inputSource?: "continuation";
 }): RuntimeControlMessage<Kind> {
   return Object.freeze({ ...input });
 }

@@ -16,7 +16,6 @@ import type { SubagentRecord, SubagentRecordStore } from "./types.js";
 import { snapshotChildCapabilities } from "./identity.js";
 
 const SUBAGENT_DOMAIN_ID = "subagents/records";
-const DEFAULT_MAX_RECORDS = 4_096;
 
 interface SubagentState {
   readonly schemaVersion: 1;
@@ -49,21 +48,9 @@ export const subagentDomain: DomainSpec<void, SubagentState> = Object.freeze({
   },
 });
 
-export interface MemorySubagentRecordStoreOptions {
-  readonly maxRecords?: number;
-}
-
 export class MemorySubagentRecordStore implements SubagentRecordStore {
   private readonly records = new Map<string, SubagentRecord>();
-  private readonly maxRecords: number;
   private closed = false;
-
-  constructor(options: MemorySubagentRecordStoreOptions = {}) {
-    this.maxRecords = positiveInteger(
-      options.maxRecords ?? DEFAULT_MAX_RECORDS,
-      "Subagent max records",
-    );
-  }
 
   async create(record: SubagentRecord, signal?: AbortSignal): Promise<void> {
     this.assertOpen();
@@ -71,11 +58,6 @@ export class MemorySubagentRecordStore implements SubagentRecordStore {
     const stable = snapshotRecord(record);
     if (this.records.has(stable.id)) {
       throw new SubagentConflictError(`Subagent ${stable.id} already exists`);
-    }
-    if (this.records.size >= this.maxRecords) {
-      throw new SubagentConflictError(
-        `Subagent store exceeds the ${this.maxRecords} record limit`,
-      );
     }
     this.records.set(stable.id, stable);
   }
@@ -101,6 +83,10 @@ export class MemorySubagentRecordStore implements SubagentRecordStore {
     throwIfAborted(signal);
     return Object.freeze([...this.records.values()]);
   }
+  async remove(id: string, signal?: AbortSignal): Promise<void> {
+    this.assertOpen(); throwIfAborted(signal);
+    this.records.delete(requireText(id, "Subagent id"));
+  }
 
   async close(): Promise<void> {
     this.closed = true;
@@ -114,22 +100,16 @@ export class MemorySubagentRecordStore implements SubagentRecordStore {
 export interface DomainSubagentRecordStoreOptions {
   readonly storage: StorageBackendResolver;
   readonly backendId: string;
-  readonly maxRecords?: number;
 }
 
 /** Durable record store. Live process truth is reconciled by the execution Provider. */
 export class DomainSubagentRecordStore implements SubagentRecordStore {
   private readonly domain: ResolvedStorageDomain<SubagentState>;
-  private readonly maxRecords: number;
   private cached: DomainReadResult<SubagentState> | undefined;
   private tail = Promise.resolve();
   private closed = false;
 
   constructor(options: DomainSubagentRecordStoreOptions) {
-    this.maxRecords = positiveInteger(
-      options.maxRecords ?? DEFAULT_MAX_RECORDS,
-      "Subagent max records",
-    );
     this.domain = new StorageDomain({
       storage: options.storage,
       backendId: options.backendId,
@@ -144,11 +124,6 @@ export class DomainSubagentRecordStore implements SubagentRecordStore {
       const current = await this.state(signal);
       if (current.value.records.some((item) => item.id === stable.id)) {
         throw new SubagentConflictError(`Subagent ${stable.id} already exists`);
-      }
-      if (current.value.records.length >= this.maxRecords) {
-        throw new SubagentConflictError(
-          `Subagent store exceeds the ${this.maxRecords} record limit`,
-        );
       }
       await this.save([...current.value.records, stable], current, signal);
     });
@@ -184,6 +159,14 @@ export class DomainSubagentRecordStore implements SubagentRecordStore {
     await this.tail;
     return (await this.state(signal)).value.records;
   }
+  remove(id: string, signal?: AbortSignal): Promise<void> {
+    return this.serial(async () => {
+      throwIfAborted(signal);
+      const current = await this.state(signal);
+      if (!current.value.records.some(item => item.id === id)) return;
+      await this.save(current.value.records.filter(item => item.id !== id), current, signal);
+    });
+  }
 
   async close(): Promise<void> {
     if (this.closed) return;
@@ -196,11 +179,6 @@ export class DomainSubagentRecordStore implements SubagentRecordStore {
     if (this.cached !== undefined) return this.cached;
     const loaded = await this.domain.load(signal);
     if (loaded === undefined) throw new Error("Subagent Domain unexpectedly resolved absent");
-    if (loaded.value.records.length > this.maxRecords) {
-      throw new SubagentConflictError(
-        `Subagent store exceeds the ${this.maxRecords} record limit`,
-      );
-    }
     return this.cached = loaded;
   }
 
@@ -252,9 +230,11 @@ export function snapshotRecord(value: unknown): SubagentRecord {
   const createdAt = timestamp(record.createdAt, "Subagent createdAt");
   const updatedAt = timestamp(record.updatedAt, "Subagent updatedAt");
   if (record.resourceManifestDigest !== undefined && !/^[a-f0-9]{64}$/u.test(record.resourceManifestDigest)) throw new TypeError("Invalid Subagent resource manifest digest");
+  if (record.scopePresetDigest !== undefined && !/^[a-f0-9]{64}$/u.test(record.scopePresetDigest)) throw new TypeError("Invalid Agent Scope preset digest");
   return Object.freeze({
     schemaVersion: 1 as const,
     ...(record.resourceManifestDigest === undefined ? {} : { resourceManifestDigest: record.resourceManifestDigest }),
+    ...(record.scopePresetDigest === undefined ? {} : { scopePresetDigest: record.scopePresetDigest }),
     id: requireText(record.id, "Subagent id"),
     parentAgentId: requireText(record.parentAgentId, "Subagent parent Agent id"),
     parentSessionId: requireText(record.parentSessionId, "Subagent parent Session id"),

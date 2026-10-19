@@ -38,6 +38,20 @@ export class CoordinatorRuntime implements Coordinator {
     await (this.tails.get(runId) ?? Promise.resolve());
     return this.store.get(runId, request.signal);
   }
+  clear(request: CoordinatorRunRequest & { readonly sessionId: string }): Promise<void> {
+    const runId = identifier(request.runId, "Coordinator Run id");
+    const sessionId = identifier(request.sessionId, "Coordinator Session id");
+    return this.serial(runId, async () => {
+      const state = await this.store.get(runId, request.signal);
+      if (state && state.sessionId !== sessionId) throw new CoordinatorConflictError("Coordinator belongs to another Session");
+      if (state) await this.store.delete(runId, request.signal);
+    });
+  }
+  async clearSession(sessionId: string): Promise<void> {
+    for (const state of await this.store.listBySession(identifier(sessionId, "Coordinator Session id"))) {
+      await this.clear({ sessionId, runId: state.runId });
+    }
+  }
 
   enter(request: EnterCoordinatorRequest): Promise<CoordinatorState> {
     const runId = identifier(request.runId, "Coordinator Run id");

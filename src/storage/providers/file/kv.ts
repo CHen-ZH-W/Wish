@@ -9,6 +9,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { decodeCanonicalBase64 } from "../../base64.js";
 
 import {
   StorageClosedError,
@@ -497,18 +498,11 @@ function decodeBase64(
   value: string,
   context: Parameters<typeof validateEnvelope>[1],
 ): Buffer {
-  if (
-    value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
-      .test(value)
-  ) {
+  try {
+    return decodeCanonicalBase64(value);
+  } catch {
     throw new StorageCorruptionError("File KV envelope value is invalid base64", context);
   }
-  const decoded = Buffer.from(value, "base64");
-  if (decoded.toString("base64") !== value) {
-    throw new StorageCorruptionError("File KV envelope value is invalid base64", context);
-  }
-  return decoded;
 }
 
 function mapFileFailure(

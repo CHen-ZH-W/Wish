@@ -34,11 +34,13 @@ export interface SessionPermissionProfilesPort {
   initialize(sessionId: string, profile?: PermissionProfile, signal?: AbortSignal): Promise<SessionPermissionProfileView>;
   select(sessionId: string, profile: PermissionProfile, signal?: AbortSignal): Promise<SessionPermissionProfileView>;
   forRun(sessionId: string, signal?: AbortSignal): Promise<PermissionProfile>;
+  clear(sessionId: string, signal?: AbortSignal): Promise<void>;
 }
 
 export interface SessionPermissionProfileStore {
   get(sessionId: string, signal?: AbortSignal): Promise<{ readonly value: SessionPermissionProfileSelection; readonly revision: string } | undefined>;
   put(selection: SessionPermissionProfileSelection, revision: string | undefined, signal?: AbortSignal): Promise<void>;
+  delete(sessionId: string, revision: string, signal?: AbortSignal): Promise<void>;
 }
 
 export class SessionPermissionProfileUnavailableError extends Error {
@@ -93,6 +95,9 @@ export class DomainSessionPermissionProfileStore implements SessionPermissionPro
       : { kind: "revision", revision };
     await this.domain.resolve(selection.sessionId).save(selection, precondition, signal);
   }
+  async delete(sessionId: string, revision: string, signal?: AbortSignal): Promise<void> {
+    await this.domain.resolve(sessionId).delete({ kind: "revision", revision }, signal);
+  }
 }
 
 export class LeasedSessionPermissionProfileStore implements SessionPermissionProfileStore {
@@ -104,6 +109,9 @@ export class LeasedSessionPermissionProfileStore implements SessionPermissionPro
 
   put(selection: SessionPermissionProfileSelection, revision: string | undefined, signal?: AbortSignal): Promise<void> {
     return this.withStore((store) => store.put(selection, revision, signal));
+  }
+  delete(sessionId: string, revision: string, signal?: AbortSignal): Promise<void> {
+    return this.withStore((store) => store.delete(sessionId, revision, signal));
   }
 
   private async withStore<T>(action: (store: DomainSessionPermissionProfileStore) => Promise<T>): Promise<T> {
@@ -167,6 +175,10 @@ export class SessionPermissionProfiles implements SessionPermissionProfilesPort 
 
   async forRun(sessionId: string, signal?: AbortSignal): Promise<PermissionProfile> {
     return (await this.inspect(sessionId, signal)).selected;
+  }
+  async clear(sessionId: string, signal?: AbortSignal): Promise<void> {
+    const current = await this.store.get(validSessionId(sessionId), signal);
+    if (current) await this.store.delete(sessionId, current.revision, signal);
   }
 
   private view(selected: PermissionProfile, source: SessionPermissionProfileView["source"]): SessionPermissionProfileView {

@@ -61,7 +61,7 @@ surface 只收集用户的审批与有效期选择，是否需要审批和是否
 
 可选业务模块通过 `SessionFeature` 接口贡献当前 Session 的状态投影、带版本凭证的人工操作，
 以及普通用户消息到达前的通知。Application 只注册和转发，不拥有 Todo、Goal、Plan、Tasks
-或 Workflow 状态。CLI `/review` 与 WebUI 的 Session Features 面板共享此接口；Plan 审批与 Workflow
+或 Workflow 状态。CLI `/review` 与 WebUI 的 Session Features HTTP 接口共享此契约；Plan 审批与 Workflow
 结果核对不是模型可调用的 Tool，也不等同于单次 Tool 权限审批。
 WebUI 提供 `GET /api/sessions/:id/features` 与
 `POST /api/sessions/:id/features/:key`；后者必须携带显示过的 `action`、`token`，必要时携带
@@ -99,7 +99,7 @@ models.configurationPath
 - `WISH_CONTEXT_RESERVED_OUTPUT_TOKENS`；
 - `WISH_COMPACTION_KEEP_RECENT_TOKENS`、
   `WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS`；
-- `WISH_MAX_STEPS`、`WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS`；
+- `WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS`；
 - `WISH_TODO_ENABLED`、`WISH_TODO_CONTEXT_ENABLED`、`WISH_TODO_TOOLS_ENABLED`、
   `WISH_TODO_SESSION_FEATURE_ENABLED`；
 - `WISH_GOAL_ENABLED`、`WISH_GOAL_MAX_ROUNDS`、`WISH_GOAL_CONTEXT_ENABLED`、
@@ -165,6 +165,8 @@ Apps 不根据正文猜测控制意图，只提供确定映射：
 - `observeRun`：观察有序 OutputEvent，不暴露 Runtime 内部可变状态。
 
 排序、容量、去重与送达由 Runtime 的 `NextStepInbox` 和 `NextTurnQueue` 保证。
+WebUI 的“停止运行”会在 abort 被接受后等待 Host 报告 Run 终态；若 30 秒内仍未结束，
+界面明确报告运行仍在收尾，后续状态以 Host 为准。
 
 ## CLI
 
@@ -200,7 +202,7 @@ wish recovery resolve --resolution-id <id> --run-id <id> --user-turn-id <id> \
 ## WebUI
 
 ```bash
-# 执行记录界面、独立插件管理与 Settings；已有密钥环境时直接 npm run webui
+# 主会话工作台、独立插件管理与 Settings；已有密钥环境时直接 npm run webui
 DEEPSEEK_API_KEY=... npm run webui
 WISH_MODELS_CONFIG=./models.json npm run webui
 # 构建或安装后也可运行 wish-webui
@@ -288,29 +290,37 @@ Root 监听端口由 `WISH_WEBUI_PORT` 指定，默认 8790；业务插件行的
 模型、按版本加载及界面代码更新边界见 [Browser Client](webui/client/README.md)。
 业务 UI 修改后可单独运行 `npm run build:webui-client`，不重写 Host 插件；浏览器在 core
 版本兼容时局部替换模块，保留会话选择和草稿；共享运行库或全局 CSS 更新需保存草稿后刷新。
-Plan、Todo、Goal、Skills、Memory、Tasks、Workflow 与观察模块分别在自己的
-`consumers/webui` 注册视图；Host 能力失效会卸载相关
+Todo、Goal、Skills、Subagents 与会话侧栏模块在自己的 `consumers/webui` 注册主会话或全局贡献；
+Plan、Memory、Tasks、Workflow、Context 不提供独立工作区页面，但 Host 能力与 Session Feature 契约仍保留。Host 能力失效会卸载相关
 Browser 插件，历史仍使用通用 Tool renderer。模块停用可能因未完成工作或缺少安全清理
 协议被拒绝；这不是“所有插件随时可强制关闭”的开关。
 
-当前业务页提供有版本凭证的状态阅读和已有人工操作，不是完整的 Skill 编辑器、Memory
-知识库管理器或 Workflow 可视化编排器。Subagent/tmux 是所属记录及有界终端快照，不是
-网页交互终端；attach 命令供本机终端接入。Context 只展示实际请求投影摘要，不收集正文
-或伪造未知预算。规范聊天历史可重读；执行轨迹是有界进程内窗口，重启不能重建完整轨迹。
-草稿按当前浏览器中的会话保留，切换面板不丢失；刷新/关闭标签页不承诺恢复未提交草稿。
+工作区侧栏负责新建、选择会话并显示当前会话的完整轮次索引；点击轮次可按需加载并定位对应正文。点击会话直接进入主会话页面，并可在当前会话下切换到只读“工具调用”子页面查看参数、结果和模块证据；不提供聚合执行记录，也不再列出执行轨迹、
+Context、任务图等工作区页面。System Prompt 最新快照显示在主会话顶部，Subagent 证据保留在“工具调用”的对应 Tool 记录中，tmux 仍是
+会话右侧栏里的有界终端快照，不是网页交互终端；attach 命令供本机终端接入。
+草稿按当前浏览器中的会话保留，切换会话或全局区域不丢失；刷新/关闭标签页不承诺恢复未提交草稿。
 会话名右侧三点菜单提供重命名、归档和删除；双击名称或按 F2 可直接行内重命名，
-Enter 保存、Escape 取消。普通列表只显示活动会话；最左侧全局导航提供与“执行工作区”
+Enter 保存、Escape 取消。普通列表只显示活动会话；最左侧全局导航提供与“会话”
 同级的“归档”入口，不放在会话/业务视图列表中。活动与归档会话分别按完整 `Session.scope`
 工作区路径分组，可折叠，同名目录不合并；归档会话可取消归档。删除只需一次确认，不要求先归档。
 进入归档时，侧栏只列归档会话，主区显示选中的归档聊天；活动/归档分别保留浏览选择。
 最左侧工具栏固定，会话侧栏可收起并通过 W 展开（悬停/键盘焦点切换展开图标）。界面不设
 顶部横栏，区域标题和收起按钮位于侧栏内；连接状态以 W 右下角蓝/红点及可访问文字表达。
-Host 复用所有权检查，并将 Run 接纳与归档/删除串行化；活动 Run 完成前、Runtime 待核对
-或模块 `beforeRemoval` 拒绝时返回 `session_busy`。子 Agent 和 Workflow 在自己的 Consumer
-提供检查，Apps 不解释它们的状态。已注册的检查所有者卸载后不能当作空闲；从未装配的
+Host 复用所有权检查，并将 Run 接纳与归档/删除串行化。归档仍拒绝活动 Run、Runtime 待核对
+或模块 `beforeRemoval` 拒绝的会话。Run 完成（含失败和停止）后，按所有者顺序清理其
+Workflow、子 Agent、Todo、Coordinator 和进程内观察状态；清理失败会显式保留错误。
+删除会话会请求取消活动 Run 并等待结束；Subagent Consumer 停止可定位的活动子 Agent，
+User Terminal Consumer 关闭会话终端，Workflow Consumer 取消未结束的后台 Workflow。
+随后各模块清理该会话的派生状态，再删除 Session 本身。无法确认运行或资源已停止时返回 `session_busy`；
+Runtime 待核对记录保留，可在删除会话后通过 CLI 核对。
+子 Agent 和 Workflow 在自己的 Consumer 提供检查，Apps 不解释它们的状态。已注册的检查所有者卸载后不能当作空闲；从未装配的
 模块不在检查覆盖范围内，部署时应保留有关模块的检查入口。
-删除只清理 Session 元数据、聊天历史与 checkpoint，不联动删除项目文件、Memory、任务、
-Workflow、Runtime 日志、Tool Result 归档或 tmux 进程。持久层保留不可复用 ID 的空标记。
+删除清理 Session 元数据、聊天历史、checkpoint，以及 Plan、Tasks、Goal、Todo、
+Coordinator、Workflow、子 Agent 记录和临时文件、工具结果归档、当前版本的工具输出 Blob、
+会话设置与进程内观察状态。不联动删除项目文件、跨会话 Memory、Runtime／System Prompt／
+Model Attempt 等追加式审计日志或独立 tmux 进程。
+旧版本共享命名空间的工具输出 Blob 缺少 Session 所有权索引，无法安全地按会话删除。
+持久层保留不可复用 ID 的空标记。
 模型选择、审批规则撤销和 Runtime 副作用人工核对的专用页面尚未接入；对应业务 API 保留。
 模型可通过 `WISH_MODEL` 等现有配置选择，Runtime 核对
 可通过 CLI `wish recovery` 完成；删除旧页面不删除会话、规则或恢复记录。

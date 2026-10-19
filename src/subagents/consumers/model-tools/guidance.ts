@@ -14,6 +14,7 @@ export const SubagentToolGuidance = {
       content: [
         "Use child Agents for bounded work that materially benefits from independent context or parallel execution.",
         "Give each child a concrete task, avoid duplicating its work, and do not run concurrent write-capable children against overlapping files in the shared workspace.",
+        "For a read-only child, select read/grep or omit availableTools so the Host assembles usable Tools. Do not request bash with permissionProfile read-only: this child has no human review surface for process.exec. If shell execution is necessary, choose a parent-permitted execution profile deliberately.",
       ].join("\n"),
     });
     ctx.systemPrompt.register({
@@ -21,7 +22,7 @@ export const SubagentToolGuidance = {
       order: 410,
       requiredTools: ["spawn_agent", "list_agents", "collect_agent"],
       content:
-        "Continue useful independent work while children run. Do not busy-poll; use list_agents or collect_agent when status or recovered output is actually needed.",
+        "Start independent child tasks together when possible. The Host waits for their results before your next model step, so synthesize the results before giving a final answer. Do not busy-poll; use list_agents or collect_agent only when recovered output is needed.",
     });
   },
 };

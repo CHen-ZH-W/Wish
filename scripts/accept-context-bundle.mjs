@@ -332,7 +332,6 @@ test("plugs directly into AgentLoop with archive-first Tool Result admission", a
   });
   const runtime = new Runtime({
     ...deterministicServices(),
-    maxSteps: 4,
     stepPipeline: loop,
   });
   const completion = await new Agent({ id: "agent" }, runtime).startRun({

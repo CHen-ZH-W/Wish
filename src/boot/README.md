@@ -151,7 +151,7 @@ Boot 不拥有具体 UI。业务 surface 缺席或 pending 时管理面仍可供
 - Shell：native launcher、默认/最大 timeout；Host Provider 需要双重显式启用；
 - Tmux：可执行文件、socket、会话前缀与 capture 上限；
 - SubagentExecution：透明执行 Provider；SubagentLauncher：host-owned child App 入口；
-- Subagents Runtime：Storage Backend、全局/每 Run 并发和记录上限；
+- Subagents Runtime：Storage Backend 与全局/每 Run 并发；持久记录不设数量上限；
 - Approval：进程表面 answerer 的生命周期；ApprovalRuleStore：持久 backend 与规则上限；
 - SandboxPolicy：当前 Filesystem/Shell generation 的审批前可执行性；
 - Permissions：默认 profile 与 policy version；
@@ -160,7 +160,7 @@ Boot 不拥有具体 UI。业务 surface 缺席或 pending 时管理面仍可供
 - Plan：Storage Backend；Coordinator：Storage Backend 与现有 Subagents capability；
 - Models：配置来源、默认模型、fallback 与重试次数；
 - ContextEngine / Compaction：各自的预算；
-- Runtime：Step 上限与 generation 排空期限；
+- Runtime：generation 排空期限；
 - Agents：Agent ID、instructions、permission profile、Tool 可见范围与 capability ceiling；
 - WebUI：host、port 与 workspace root；
 - Application：不重复声明上游业务配置。
@@ -169,9 +169,10 @@ CLI 的显式参数作为 surface override 传给 Application，不改变字段�
 
 默认 profile 还映射 `WISH_TMUX_SOCKET`、`WISH_TMUX_ENABLED`、
 `WISH_SUBAGENTS_ENABLED`、`WISH_SUBAGENT_TOOLS_ENABLED`、
-`WISH_SUBAGENT_MAX_RECORDS`、`WISH_SUBAGENT_MAX_CONCURRENT`、
+`WISH_SUBAGENT_MAX_CONCURRENT`、
 `WISH_SUBAGENT_MAX_CONCURRENT_PER_RUN`、`WISH_SUBAGENT_EXECUTABLE` 和
 `WISH_SUBAGENT_CLI_ENTRY`。tmux、Subagents capability 与模型 Tool Consumer 分别启用；
+两个 Subagent 并发上限默认都是 8；
 `WISH_SUBAGENT_TOOLS_ENABLED=0` 只卸载模型入口。内部 child 进程将
 `WISH_SUBAGENTS_ENABLED=0` 和 `WISH_SUBAGENT_TOOLS_ENABLED=0`，避免递归创建同一管理分支；
 launcher 同时固定独立的 `WISH_DATA_DIR` 与
@@ -194,8 +195,10 @@ Todo 与 Goal 默认启用。Todo 的状态、Context、模型入口和 SessionF
 
 Tasks 与 Workflow 默认启用；`WISH_TASKS_ENABLED=0` / `WISH_WORKFLOW_ENABLED=0` 分别关闭
 能力，`WISH_TASK_TOOLS_ENABLED=0` / `WISH_WORKFLOW_TOOLS_ENABLED=0` 只隐藏相应模型入口。
-`WISH_WORKFLOW_MAX_CONCURRENT` 设置 Scheduler 并发上限。默认 `spawn_agent` Consumer 经由
-Workflow 调度；关闭调度前置能力后恢复独立 Subagents Consumer，同名 Tool 不重复注册。
+`WISH_WORKFLOW_MAX_CONCURRENT` 设置 Scheduler 并发上限。普通 `spawn_agent` 默认直接由
+Subagents 调度，不创建单步骤 Workflow；设置 `WISH_SUBAGENT_WORKFLOW_ENABLED=1` 才通过
+Workflow 调度。显式批准任务图仍使用 `workflow_start`。关闭调度前置能力后恢复独立
+Subagents Consumer，同名 Tool 不重复注册。
 Plan 的 `exit_plan_mode` 只提交评审，人工批准后才退出；Tasks、Workflow 状态和人工核对
 通过 Apps 的通用 Session Feature 接口展示。内部 child 禁用 Tasks/Workflow，保持独立数据目录。
 

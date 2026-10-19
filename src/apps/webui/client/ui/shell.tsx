@@ -38,6 +38,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
     if (target) { target.onOpen?.(); setArea(target.area); select(id); showDrawer(false); }
   }), [slots]);
   const panel = panels.find(item => item.id === selected) ?? panels.find(item => item.defaultForArea?.()) ?? panels.find(item => item.navigation === undefined) ?? panels[0];
+  const localPanels = panels.filter(item => item.navigation === undefined && (panel?.navigationGroup === undefined ? item.navigationGroup === undefined : item.navigationGroup === panel.navigationGroup));
   const globalPanel = panel?.navigation === "rail";
   useEffect(() => { if (selected && !panels.some(item => item.id === selected)) { panel?.onOpen?.(); select(null); } }, [contributions, area, selected, panel]);
   function openArea(next: "workspace" | "settings") {
@@ -47,7 +48,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
     else { setArea(next); select(null); showDrawer(false); }
   }
   const panelLabel = (item: typeof panel) => item && language === "en-US" ? item.labelEn ?? item.label : item?.label;
-  const sidebarTitle = globalPanel ? panelLabel(panel) : area === "workspace" ? t("执行工作区", "Workspace") : t("设置", "Settings");
+  const sidebarTitle = globalPanel ? panelLabel(panel) : area === "workspace" ? t("会话", "Conversations") : t("设置", "Settings");
   const connectionLabel = status.online ? t("Host 已连接", "Host connected") : t("Host 连接中断", "Host disconnected");
   return <div className={`wish-shell${sidebarOpen ? " sidebar-open" : " sidebar-collapsed"}`} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
     <a className="skip-link" href="#workspace-main">{t("跳到工作区", "Skip to workspace")}</a>
@@ -56,18 +57,18 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
         {sidebarOpen ? <span className="wordmark" aria-label="Wish">W</span> : <button ref={expandButton} className="brand-toggle" aria-label={t("展开侧栏", "Open sidebar")} title={t("展开侧栏", "Open sidebar")} aria-expanded={false} aria-controls="wish-sidebar" aria-describedby="host-connection-status" onClick={openSidebar}><span className="wordmark" aria-hidden="true">W</span><span className="brand-expand-icon"><Icon name="panel-open" /></span></button>}
         <span id="host-connection-status" role="status" className={`connection-state ${status.online ? "online" : "offline"}`} title={connectionLabel}><span className="sr-only">{connectionLabel}</span></span>
       </div>
-      <button className={area === "workspace" && !globalPanel ? "rail-button active" : "rail-button"} aria-current={area === "workspace" && !globalPanel ? "page" : undefined} aria-label={t("执行工作区", "Workspace")} title={t("执行工作区", "Workspace")} onClick={() => openArea("workspace")}><Icon name="conversation" /></button>
+      <button className={area === "workspace" && !globalPanel ? "rail-button active" : "rail-button"} aria-current={area === "workspace" && !globalPanel ? "page" : undefined} aria-label={t("会话", "Conversations")} title={t("会话", "Conversations")} onClick={() => openArea("workspace")}><Icon name="conversation" /></button>
       {railPanels.map(item => <button key={item.id} className={panel?.id === item.id ? "rail-button active" : "rail-button"} aria-current={panel?.id === item.id ? "page" : undefined} aria-label={panelLabel(item)} title={panelLabel(item)} onClick={() => slots.openPanel(item.id)}>{item.Icon ? <IsolatedView View={item.Icon} /> : <Icon name="trace" />}</button>)}
       <button className={area === "settings" && !globalPanel ? "rail-button active rail-bottom" : "rail-button rail-bottom"} aria-current={area === "settings" && !globalPanel ? "page" : undefined} aria-label={t("设置与插件", "Settings and plugins")} title={t("设置与插件", "Settings and plugins")} onClick={() => openArea("settings")}><Icon name="settings" /></button>
     </nav>
     {overlay ? <button className="navigation-backdrop" aria-label={t("关闭侧栏遮罩", "Close sidebar overlay")} tabIndex={-1} onClick={closeSidebar} /> : null}
-    <aside id="wish-sidebar" ref={navigation} hidden={!sidebarOpen} tabIndex={-1} className="session-index" aria-label={t(`${sidebarTitle}侧栏`, `${sidebarTitle} sidebar`)} onClick={event => { if ((event.target as Element).closest("a")) showDrawer(false); }} onKeyDown={event => {
+    <aside id="wish-sidebar" ref={navigation} hidden={!sidebarOpen} tabIndex={-1} className="session-index" aria-label={globalPanel ? t(`${sidebarTitle}侧栏`, `${sidebarTitle} sidebar`) : area === "workspace" ? t("会话列表侧栏", "Conversation list sidebar") : t("设置侧栏", "Settings sidebar")} onClick={event => { if ((event.target as Element).closest("a")) showDrawer(false); }} onKeyDown={event => {
       if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeSidebar(); }
     }}>
       <header className="sidebar-header"><div><span className="brand">Wish</span><h2>{sidebarTitle}</h2></div><button className="icon-button" aria-label={t("收起侧栏", "Collapse sidebar")} title={t("收起侧栏", "Collapse sidebar")} aria-expanded={true} aria-controls="wish-sidebar" onClick={closeSidebar}><Icon name="panel-close" /></button></header>
       <div className="sidebar-content">{panel?.Sidebar ? <IsolatedView View={panel.Sidebar} /> : <>
         {area === "workspace" ? contributions.navigation.length ? contributions.navigation.filter(item => !item.forPanel || item.forPanel === panel?.id).map(item => <IsolatedView key={item.id} View={item.View} />) : <><h2>{t("会话", "Sessions")}</h2><p className="muted">{t("会话入口尚未加载。", "Session navigation has not loaded.")}</p></> : null}
-        <nav className="panel-navigation" aria-label={t("可用视图", "Available views")}>{panels.filter(item => item.navigation === undefined).map(item => <button key={item.id} className={panel?.id === item.id ? "navigation-item selected" : "navigation-item"} onClick={() => slots.openPanel(item.id)} aria-current={panel?.id === item.id ? "page" : undefined}>{item.Icon ? <IsolatedView View={item.Icon} /> : <Icon name={area === "settings" ? "settings" : "trace"} />}{panelLabel(item)}</button>)}</nav>
+        {localPanels.length > 1 ? <nav className="panel-navigation" aria-label={t("可用视图", "Available views")}>{localPanels.map(item => <button key={item.id} className={panel?.id === item.id ? "navigation-item selected" : "navigation-item"} onClick={() => slots.openPanel(item.id)} aria-current={panel?.id === item.id ? "page" : undefined}>{item.Icon ? <IsolatedView View={item.Icon} /> : <Icon name={area === "settings" ? "settings" : "trace"} />}{panelLabel(item)}</button>)}</nav> : null}
       </>}</div>
     </aside>
     {sidebarOpen && !narrow ? <SidebarResizeHandle side="left" width={sidebarWidth} min={LEFT_SIDEBAR_MIN_WIDTH} max={LEFT_SIDEBAR_MAX_WIDTH} label={t("调整左侧栏宽度", "Resize left sidebar")} controls="wish-sidebar" onChange={setSidebarWidth} /> : null}
@@ -75,7 +76,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
       {!status.online && status.error ? <p className="connection-notice" role="status">{status.error}</p> : null}
       {status.online && !status.businessAvailable ? <p className="connection-notice" role="status">{t("业务服务暂不可用。设置和插件管理仍可操作。", "Agent service is temporarily unavailable. Settings and plugins remain available.")}</p> : null}
       {contributions.notices.map(item => <IsolatedView key={item.id} View={item.View} />)}
-      <div className="workspace-content">{panel ? <IsolatedView View={panel.View} /> : <section className="empty-state"><Icon name="trace" /><h1>{t("执行记录", "Activity")}</h1><p>{t("这里按轮次展示对话、工具调用和子 Agent 的执行过程。", "Conversations, tool calls, and subagent work appear here by turn.")}</p><p className="muted">{t("当前没有已加载的会话视图。你可以先检查插件状态。", "No session view is loaded. Check plugin status first.")}</p><button className="primary" onClick={() => openArea("settings")}>{t("打开设置与插件", "Open settings and plugins")}</button></section>}</div>
+      <div className="workspace-content">{panel ? <IsolatedView View={panel.View} /> : <section className="empty-state"><Icon name="trace" /><h1>{t("会话", "Conversation")}</h1><p>{t("消息、工具调用和子 Agent 工作会按轮次显示在这里。", "Messages, tool calls, and subagent work appear here by turn.")}</p><p className="muted">{t("当前没有可用的会话界面，请检查插件状态。", "No conversation view is available. Check plugin status.")}</p><button className="primary" onClick={() => openArea("settings")}>{t("打开设置与插件", "Open settings and plugins")}</button></section>}</div>
     </main>
   </div>;
 }

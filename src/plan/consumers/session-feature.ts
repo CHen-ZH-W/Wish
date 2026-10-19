@@ -5,6 +5,8 @@ import type { Plan } from "../types.js";
 
 export function createPlanSessionFeature(plan: Plan): SessionFeature {
   return {
+    purgeOrder: 60,
+    purgeSession(sessionId) { return plan.clear({ sessionId }); },
     async inspect(sessionId) {
       const state = await plan.get({ sessionId });
       if (!state?.active || !state.document) return undefined;

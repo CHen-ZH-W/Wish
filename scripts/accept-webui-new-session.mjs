@@ -6,7 +6,7 @@ import { NewSessionClientModel } from "../dist/apps/webui/client/model/new-sessi
 import { SnapshotStore } from "../dist/apps/webui/client/model/store.js";
 import { UiSlots } from "../dist/apps/webui/client/slots.js";
 import { NewSession } from "../dist/apps/webui/client/ui/new-session.js";
-import { Conversation } from "../dist/apps/webui/client/ui/conversation.js";
+import { Conversation, RoundNavigation, tailLedgerTurns } from "../dist/apps/webui/client/ui/conversation.js";
 import { ComposerDrafts } from "../dist/apps/webui/client/ui/drafts.js";
 import { NewSessionReasoningComposerItem, ReasoningComposerItem } from "../dist/models/consumers/webui/reasoning-view.js";
 
@@ -17,6 +17,34 @@ function draftHandoff() {
     return bySession.get(id);
   } };
 }
+
+test("long conversations initially render only their latest turns", () => {
+  const turns = Array.from({ length: 60 }, (_, index) => `turn-${index + 1}`);
+  assert.deepEqual(tailLedgerTurns(turns, 24), turns.slice(36));
+  assert.equal(tailLedgerTurns(turns, 80), turns);
+});
+
+test("round navigation lists the complete conversation and requests enough history for an older turn", () => {
+  const records = Array.from({ length: 60 }, (_, index) => ({
+    schemaVersion: 1, kind: "message", recordId: `record-${index + 1}`, sequence: index + 1,
+    idempotencyKey: `message-${index + 1}`, runId: `run-${index + 1}`,
+    userTurnId: `turn-${index + 1}`, stepId: `step-${index + 1}`, origin: "user",
+    createdAt: `2026-10-15T00:00:${String(index).padStart(2, "0")}Z`,
+    message: { role: "user", content: `question-${index + 1}` },
+  }));
+  const sessions = new SnapshotStore({ selectedId: "session-long", history: { sessionId: "session-long", historyRevision: "v60", records } });
+  const slots = new UiSlots(), requests = [];
+  const unsubscribe = slots.onOpenLedgerTurn(request => requests.push(request));
+  try {
+    const html = renderToStaticMarkup(createElement(RoundNavigation, { model: sessions, slots }));
+    assert.equal((html.match(/<a /gu) ?? []).length, 60);
+    assert.match(html, /href="#turn-run-1%2Fturn-1"/u);
+    assert.match(html, /question-1/u);
+    assert.match(html, /question-60/u);
+    slots.openLedgerTurn({ sessionId: "session-long", turnId: "run-1/turn-1", requiredTurns: 60 });
+    assert.deepEqual(requests, [{ sessionId: "session-long", turnId: "run-1/turn-1", requiredTurns: 60 }]);
+  } finally { unsubscribe(); }
+});
 
 test("centered new-session intent creates nothing until the first message is submitted", async () => {
   const calls = [], drafts = draftHandoff();
@@ -134,4 +162,48 @@ test("an existing Session uses the same card with compact effective effort and s
   assert.doesNotMatch(card, /value="default"|默认（/u);
   assert.match(card, /class="composer-send"/u);
   drafts.close();
+});
+
+test("a long Conversation renders the latest page and exposes earlier turns on demand", () => {
+  const records = Array.from({ length: 60 }, (_, index) => ({
+    schemaVersion: 1, kind: "message", recordId: `record-${index + 1}`, sequence: index + 1,
+    idempotencyKey: `message-${index + 1}`, runId: `run-${index + 1}`,
+    userTurnId: `turn-${index + 1}`, stepId: `step-${index + 1}`, origin: "assistant",
+    createdAt: `2026-10-15T00:00:${String(index).padStart(2, "0")}Z`,
+    message: { role: "assistant", content: `answer-${index + 1}` },
+  }));
+  const sessions = new SnapshotStore({ selectedId: "session-long", filter: "active", sessions: [
+    { sessionId: "session-long", title: "长会话", scope: "/work/project", status: "active", historyRevision: "v60" },
+  ], runs: [], history: { sessionId: "session-long", historyRevision: "v60", records }, loading: false, available: true, working: false, error: null });
+  sessions.run = new SnapshotStore({ events: [], gap: false, error: null, deliveries: [], connected: false });
+  const drafts = new ComposerDrafts();
+  try {
+    const html = renderToStaticMarkup(createElement(Conversation, { model: sessions, settings: new SnapshotStore({ sections: [] }), slots: new UiSlots(), drafts }));
+    assert.match(html, /加载更早轮次（还剩 36 轮）/u);
+    assert.doesNotMatch(html, /answer-36(?:<|\b)/u);
+    assert.match(html, /answer-37(?:<|\b)/u);
+    assert.match(html, /answer-60(?:<|\b)/u);
+    assert.doesNotMatch(html, /等待请求/u);
+  } finally { drafts.close(); }
+});
+
+test("Conversation never paints a ledger contribution before canonical history is ready", () => {
+  const source = new SnapshotStore([{ id: "prompt", turnId: "run/turn", stepId: "step", time: "2026-10-15T00:00:00Z", kind: "system", title: "系统提示词抢先出现", text: "", viewId: "prompt" }]);
+  const slots = new UiSlots(), remove = slots.ledger({ id: "prompt", source, View: ({ block }) => createElement("p", null, block.title) });
+  const snapshot = { selectedId: "session-loading", filter: "active", sessions: [
+    { sessionId: "session-loading", title: "载入中的会话", scope: "/work/project", status: "active", historyRevision: "v1" },
+  ], runs: [], history: null, loading: true, available: true, working: false, error: null };
+  const render = history => {
+    const sessions = new SnapshotStore({ ...snapshot, history, loading: history === null });
+    sessions.run = new SnapshotStore({ events: [], gap: false, error: null, deliveries: [], connected: false });
+    const drafts = new ComposerDrafts();
+    try { return renderToStaticMarkup(createElement(Conversation, { model: sessions, settings: new SnapshotStore({ sections: [] }), slots, drafts })); }
+    finally { drafts.close(); }
+  };
+  try {
+    const loading = render(null);
+    assert.match(loading, /正在加载会话/u);
+    assert.doesNotMatch(loading, /系统提示词抢先出现/u);
+    assert.match(render({ sessionId: "session-loading", historyRevision: "v1", records: [] }), /系统提示词抢先出现/u);
+  } finally { remove(); }
 });

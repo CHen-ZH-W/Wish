@@ -188,7 +188,6 @@ test("Agent completes the fixed Core and Models composition through retry, fallb
   });
   const runtime = new Runtime({
     ...deterministicServices(),
-    maxSteps: 4,
     stepPipeline: loop,
   });
   const agent = new Agent({ id: "agent" }, runtime);
@@ -291,7 +290,6 @@ test("DeepSeek Responses replays complete reasoning and Tool output in the next 
   const tools = createTools();
   const runtime = new Runtime({
     ...deterministicServices(),
-    maxSteps: 4,
     stepPipeline: createLoop(stack.model, tools, {
       resolve() {
         return {

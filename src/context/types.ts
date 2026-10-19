@@ -10,6 +10,8 @@ import type {
 import type { AgentStepId } from "../core/runtime/runtime.js";
 import type { AgentLoopInputSource, AgentLoopRequestView } from "../core/agent-loop/types.js";
 import type { ToolResultArchiveReference } from "../tools/results/types.js";
+import type { AgentScope } from "../composition/agent-scope.js";
+import type { RegisteredSystemPromptSection } from "../system-prompt/types.js";
 import type {
   WorkspaceFingerprint,
   WorkspaceRepository,
@@ -47,6 +49,8 @@ export interface ContextRuntimeFacts {
 
 /** Complete resolved input shared by the concrete Context providers. */
 export interface ContextInput {
+  readonly agentScope?: AgentScope;
+  readonly systemPromptSections?: readonly RegisteredSystemPromptSection[];
   readonly runId: AgentRunId;
   readonly userTurnId: UserTurnId;
   readonly stepId: AgentStepId;

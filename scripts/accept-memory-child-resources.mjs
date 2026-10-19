@@ -177,12 +177,14 @@ test("parent Consumer recovers missed completions and unregisters resources and 
     root.provide("subagents", { async list() { return [f.record]; }, async inspect() { return f.record; }, subscribe() { listeners++; return () => { listeners--; }; } });
     await root.plugin(Launcher);
     const plugin = await root.plugin(MemorySubagentResources);
+    assert.deepEqual(root.subagentLauncher.runtimeFeatures, ["memory.snapshot"]);
     const deadline = Date.now() + 1000;
     while (!(await f.parent.state()).candidates.some(item => item.actor.kind === "child") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 2));
     assert.equal((await f.parent.state()).candidates.filter(item => item.actor.kind === "child").length, 1);
     assert.equal(listeners, 1);
     assert.equal((await root.subagentLauncher.resolve(f.request, childIdentity)).length, 1);
     await plugin.dispose();
+    assert.deepEqual(root.subagentLauncher.runtimeFeatures, []);
     assert.equal(listeners, 0);
     assert.equal(acquisitions, releases);
     assert.deepEqual(await root.subagentLauncher.resolve(f.request, childIdentity), []);

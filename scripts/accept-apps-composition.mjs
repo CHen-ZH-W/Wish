@@ -252,7 +252,7 @@ test("composes one shared App through durable Session, Context, Tool and Runtime
         policyVersion: "acceptance-policy-v1",
         authorityVersion: "acceptance-authority-v1",
       },
-    }, { ...deterministicRuntime(), maxSteps: 4 });
+    }, deterministicRuntime());
     const application = new ApplicationFacade({
       sessions,
       agent: createWishAgent({
@@ -568,7 +568,7 @@ test("recovers one Context overflow by appending a Session checkpoint", async ()
       reservedOutputTokens: 10,
       keepRecentTokens: 10,
       summaryMaxOutputTokens: 8,
-    }, { ...deterministicRuntime(), maxSteps: 2 });
+    }, deterministicRuntime());
     const application = new ApplicationFacade({
       sessions,
       agent: createWishAgent({

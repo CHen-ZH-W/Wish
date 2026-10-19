@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { formatModelReference } from "../models/config.js";
@@ -59,6 +59,14 @@ export class FileSubagentExchange implements SubagentResultReader {
 
   async removeTask(id: string): Promise<void> {
     await unlink(this.taskPath(id)).catch((error: unknown) => {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    });
+  }
+
+  async purgeChild(id: string): Promise<void> {
+    await rm(this.childDataDirectory(id), { recursive: true, force: true });
+    await this.removeTask(id);
+    await unlink(this.resultPath(id)).catch((error: unknown) => {
       if (!isNodeError(error, "ENOENT")) throw error;
     });
   }

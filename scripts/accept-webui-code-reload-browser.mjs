@@ -64,7 +64,8 @@ test("real module builds hot-replace Browser plugins without losing Session, dra
     const sessions = await booted.surfaceContext.get("sessions").manager.list();
     assert.equal(sessions.length, 1);
     assert.equal(typeof sessions[0].sessionId, "string");
-    assert.equal(resources.some(url => url.includes("/modules/MemoryClientUi-")), false, "disabled business UI code is not imported");
+    assert.equal(before.modules.some(item => item.id === "MemoryClientUi"), false, "the removed Memory workspace page is not shipped");
+    assert.equal(resources.some(url => url.includes("/modules/MemoryClientUi-")), false, "the removed Memory workspace page is not imported");
 
     const moduleFile = join(directory, "src/skills/consumers/webui/index.tsx"), original = await readFile(moduleFile, "utf8");
     const updated = original.replace('View: () => <SkillsPage model={model} />', 'View: () => <section><h1>Skills 界面已更新</h1></section>');
@@ -112,7 +113,7 @@ test("real module builds hot-replace Browser plugins without losing Session, dra
     };
     await change("disabled"); await page.getByRole("button", { name: "Skills", exact: true }).waitFor({ state: "detached" });
     assert.equal(booted.surfaceContext.get("skills"), undefined);
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
     await page.locator("#wish-composer").waitFor(); assert.equal(await page.locator("#wish-composer").inputValue(), "代码更新后仍要保留的草稿");
     await writeFile(moduleFile, updated); await build(); await change("enabled");
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
@@ -130,7 +131,7 @@ test("real module builds hot-replace Browser plugins without losing Session, dra
     await page.getByRole("button", { name: "Skills", exact: true }).click();
     await page.getByRole("heading", { name: "Skills 界面已更新", exact: true }).waitFor();
     await page.getByRole("alert").filter({ hasText: "此视图暂时无法显示" }).waitFor({ state: "detached" });
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
     await page.locator("#wish-composer").waitFor(); assert.equal(await page.locator("#wish-composer").inputValue(), "代码更新后仍要保留的草稿");
 
     // A core edit is deliberately not an automatic page reload.

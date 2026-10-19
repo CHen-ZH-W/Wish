@@ -103,7 +103,9 @@ function output(value: unknown): MemoryToolOutput {
 
 export const MemoryReadTools = { name: "memory-read-tools", inject: ["memory", "tools"], apply(ctx: Context) {
   const owner = new ManagedToolOwner(ctx, { code: "memory_read_tools", codeReload: true });
-  for (const tool of createMemoryTools(ctx.memory)) owner.register(tool);
+  for (const tool of createMemoryTools(ctx.memory)) owner.register(tool, undefined, {
+    requires: ["memory.snapshot"], requiredCapabilities: ["runtime.read"],
+  });
 } };
 /** The composition root supplies the active Session lease; default storage roots are never guessed. */
 export async function captureCurrentSessionEvidence(context: WishToolExecutionContext, signal?: AbortSignal): Promise<readonly MemoryEvidence[]> {
@@ -118,5 +120,7 @@ export async function captureCurrentSessionEvidence(context: WishToolExecutionCo
 export const MemoryWriteTool = { name: "memory-write-tool", inject: ["memory", "tools"], apply(ctx: Context) {
   const evidence: MemoryProposalEvidenceSource = { capture: captureCurrentSessionEvidence };
   new ManagedToolOwner(ctx, { code: "memory_write_tool", codeReload: true })
-    .register(createMemoryTools(ctx.memory, evidence).find(tool => tool.name === "memory_write")!);
+    .register(createMemoryTools(ctx.memory, evidence).find(tool => tool.name === "memory_write")!, undefined, {
+      requires: ["memory.snapshot"], requiredCapabilities: ["runtime.read", "runtime.control"],
+    });
 } };

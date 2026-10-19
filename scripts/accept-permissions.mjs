@@ -372,7 +372,8 @@ test("read-only denies mutation and native workspace-write allows local writes",
       "network.connect",
     );
     assert.equal(elevated.ok, true);
-    assert.equal(approvalRequests.length, 2);
+    assert.equal(elevated.output.grant.metadata.authorizationSource, "profile");
+    assert.equal(approvalRequests.length, 1);
 
     const fullAccess = root.permissions.resolve({
       agent: { profile: "full-access" },
@@ -388,7 +389,66 @@ test("read-only denies mutation and native workspace-write allows local writes",
     );
     assert.equal(unconfined.ok, true);
     assert.equal(unconfined.output.grant.metadata.authorizationSource, "profile");
-    assert.equal(approvalRequests.length, 2);
+    assert.equal(approvalRequests.length, 1);
+  } finally {
+    await root.fiber.dispose();
+  }
+});
+
+test("workspace-write asks only for Plan mode entry and exit while preserving capability checks", async () => {
+  const root = new Context();
+  await root.plugin(ApprovalHub);
+  await root.plugin(MemoryApprovalRules);
+  await root.plugin(LocalFilesystem);
+  await root.plugin(LinuxNativeShell);
+  await root.plugin(DefaultSandboxPolicy);
+  const approvalRequests = [];
+  root.approval.register({
+    requestApproval(input) {
+      approvalRequests.push(input.call.name);
+      return { status: "approved" };
+    },
+  });
+  await root.plugin(DefaultPermissions);
+  try {
+    const names = ["todo_write", "spawn_agent", "update_plan", "web_search", "web_fetch", "enter_plan_mode", "exit_plan_mode"];
+    const snapshot = root.permissions.resolve({
+      agent: { profile: "workspace-write" }, subject, workspace, registeredTools: names,
+    });
+    for (const [name, capability] of [
+      ["todo_write", "runtime.control"],
+      ["spawn_agent", "runtime.control"],
+      ["update_plan", "runtime.control"],
+      ["web_search", "web.search"],
+      ["web_fetch", "web.fetch"],
+    ]) {
+      const result = await execute(root.permissions, snapshot, name, capability);
+      assert.equal(result.ok, true, `${name} should execute without approval`);
+      assert.equal(result.output.grant.metadata.authorizationSource, "profile");
+    }
+    assert.deepEqual(approvalRequests, []);
+    for (const name of ["enter_plan_mode", "exit_plan_mode"]) {
+      const result = await execute(root.permissions, snapshot, name, "runtime.control");
+      assert.equal(result.ok, true);
+      assert.equal(result.output.grant.metadata.authorizationSource, "approval");
+    }
+    assert.deepEqual(approvalRequests, ["enter_plan_mode", "exit_plan_mode"]);
+
+    const ceiling = root.permissions.resolve({
+      agent: { profile: "workspace-write", allowedCapabilities: ["runtime.read"] },
+      subject, workspace, registeredTools: ["todo_write"],
+    });
+    const denied = await execute(root.permissions, ceiling, "todo_write", "runtime.control");
+    assert.equal(denied.ok, false);
+    assert.equal(denied.error.code, "permission_denied");
+
+    const outside = root.permissions.resolve({
+      agent: { profile: "workspace-write" }, subject, workspace, registeredTools: ["write"],
+    });
+    const outsideWrite = await execute(root.permissions, outside, "write", "filesystem.write", "/etc/passwd");
+    assert.equal(outsideWrite.ok, false);
+    assert.equal(outsideWrite.error.code, "permission_denied");
+    assert.deepEqual(approvalRequests, ["enter_plan_mode", "exit_plan_mode"]);
   } finally {
     await root.fiber.dispose();
   }

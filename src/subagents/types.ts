@@ -45,6 +45,7 @@ export type SubagentStatus =
 export interface SubagentRecord {
   /** Host-committed attachment binding, saved before the child starts. */
   readonly resourceManifestDigest?: string;
+  readonly scopePresetDigest?: string;
   readonly allowedCapabilities?: readonly CapabilityKind[];
   readonly schemaVersion: 1;
   readonly id: string;
@@ -81,6 +82,8 @@ export interface SubagentResult {
 }
 
 export interface SpawnSubagentRequest extends SubagentOwner {
+  /** Host-composed role revision, committed before idempotency and process launch. */
+  readonly scopePresetDigest?: string;
   /** Host-only capability ceiling, in addition to the Tool allow-list. */
   readonly allowedCapabilities?: readonly CapabilityKind[];
   /** Host-owned dispatch identity. Repeating a key never starts a second child. */
@@ -142,6 +145,7 @@ export interface SubagentLaunchIdentity {
 
 export interface SubagentLaunch {
   readonly resourceManifestDigest?: string;
+  readonly scopePresetDigest?: string;
   readonly command: SubagentCommand;
   readonly windowName?: string;
   readonly cleanupOnFailure?: () => Promise<void> | void;
@@ -153,12 +157,15 @@ export interface SubagentResultReader {
 
 /** Host-owned command factory. Model input can never choose an executable. */
 export interface SubagentLauncher {
+  /** Resolve Host-owned role composition before the durable child record is created. */
+  compose?(request: SpawnSubagentRequest): Promise<SpawnSubagentRequest> | SpawnSubagentRequest;
   resolve(
     request: SpawnSubagentRequest,
     identity: SubagentLaunchIdentity,
   ): Promise<SubagentLaunch> | SubagentLaunch;
   /** Idempotent cleanup for one-use launch material after terminal reconciliation. */
   cleanupLaunchSecrets?(identity: SubagentLaunchIdentity): Promise<void> | void;
+  purgeChild?(identity: SubagentLaunchIdentity): Promise<void> | void;
 }
 
 export interface SubagentRecordStore {
@@ -166,6 +173,7 @@ export interface SubagentRecordStore {
   replace(record: SubagentRecord, signal?: AbortSignal): Promise<void>;
   get(id: string, signal?: AbortSignal): Promise<SubagentRecord | undefined>;
   list(signal?: AbortSignal): Promise<readonly SubagentRecord[]>;
+  remove(id: string, signal?: AbortSignal): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -177,6 +185,7 @@ export interface Subagents {
   capture(request: CaptureSubagentRequest): Promise<string>;
   send(request: SendSubagentRequest): Promise<void>;
   stop(request: StopSubagentRequest): Promise<SubagentRecord>;
+  purge(request: StopSubagentRequest): Promise<void>;
   collect(request: CollectSubagentRequest): Promise<CollectedSubagent>;
   subscribe(listener: SubagentEventListener): () => void;
   close(): Promise<void>;

@@ -26,6 +26,7 @@ export interface SessionReasoningPort {
   inspect(sessionId: string, model: ModelRef, signal?: AbortSignal): Promise<SessionReasoningView>;
   select(sessionId: string, model: ModelRef, effort: ModelReasoningEffort | null, signal?: AbortSignal): Promise<SessionReasoningView>;
   forRun(sessionId: string, model: ModelRef, signal?: AbortSignal): Promise<ModelReasoningEffort | undefined>;
+  clear(sessionId: string, signal?: AbortSignal): Promise<void>;
 }
 
 export interface SessionReasoningStore {
@@ -140,6 +141,10 @@ export class SessionReasoningSelections implements SessionReasoningPort {
 
   async forRun(sessionId: string, model: ModelRef, signal?: AbortSignal): Promise<ModelReasoningEffort | undefined> {
     return (await this.inspect(sessionId, model, signal)).selected;
+  }
+  async clear(sessionId: string, signal?: AbortSignal): Promise<void> {
+    const current = await this.store.get(validSessionId(sessionId), signal);
+    if (current) await this.store.delete(sessionId, current.revision, signal);
   }
 }
 

@@ -136,7 +136,8 @@ export default {
     let unsubscribe: (() => void) | undefined;
     const work = new PluginWorkOwner(ctx, { code: "memory_subagent_resources", codeReload: true,
       close: async () => { closed = true; unsubscribe?.(); await resources.close(); } });
-    ctx.subagentLauncher.registerResourceProvider({ id: "memory", prepare: (request, identity) => work.run(() => resources.prepare(request, identity)) });
+    ctx.subagentLauncher.registerResourceProvider({ id: "memory", runtimeFeatures: ["memory.snapshot"],
+      prepare: (request, identity) => work.run(() => resources.prepare(request, identity)) });
     const deletedParentReported = new Set<string>();
     const report = (error: unknown) => { if (!closed) process.stderr.write(`wish: Memory child proposal import failed: ${String(error)}\n`); };
     const reportScan = (error: unknown) => { if (!closed) process.stderr.write(`wish: Memory child recovery scan failed: ${String(error)}\n`); };

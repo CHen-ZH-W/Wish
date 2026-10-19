@@ -7,6 +7,7 @@ import { TaskGraphScheduler } from "../dist/workflow/task-graph-scheduler.js";
 import { TaskRuntime, MemoryTaskStore } from "../dist/tasks/index.js";
 import { PlanRuntime, MemoryPlanStateStore } from "../dist/plan/index.js";
 import { subagentIdForKey } from "../dist/subagents/identity.js";
+import { composeAgentScope } from "../dist/composition/agent-scope.js";
 
 const owner = { parentAgentId: "a", parentSessionId: "s", parentRunId: "r", workspaceRoot: "/workspace" };
 const spec = (id, dependencies = [], readOnly = true) => ({ id, title: id, dependencies, execution: { role: "worker", readOnly, timeoutMs: 1000 } });
@@ -25,6 +26,71 @@ class Children {
   subscribe() { return () => {}; }
   complete(id, status = "completed") { this.records.set(id, { ...this.records.get(id), status: "exited", result: { status, text: "verified" } }); }
 }
+
+test("Workflow composes the execution child before dispatching it", async () => {
+  const workflow = new WorkflowRuntime(new MemoryWorkflowStore());
+  const subagents = new Children();
+  const scheduler = new ChildWorkflowScheduler({ workflow, subagents,
+    composeChild(request) {
+      const scope = composeAgentScope({
+        availableTools: request.availableTools,
+        registeredTools: ["read", "enter_plan_mode"],
+        toolContracts: new Map([["enter_plan_mode", {
+          requires: ["plan.state", "human.review", "session.resume"],
+        }]]),
+        runtimeFeatures: [],
+      });
+      return { ...request, availableTools: scope.availableTools };
+    },
+  });
+  try {
+    const run = await scheduler.submit({
+      key: "assembled-child", kind: "subagent", owner, tasks: [spec("child")],
+      permissionProfile: "read-only", availableTools: ["read", "enter_plan_mode"],
+    });
+    assert.equal(subagents.launches, 1);
+    const child = subagents.records.get(run.steps[0].attempts[0].childId);
+    assert.deepEqual(child.availableTools, ["read"]);
+  } finally {
+    await scheduler.close();
+  }
+});
+test("An aborted parent cancels a live child and a restored pending Workflow", async () => {
+  const workflow = new WorkflowRuntime(new MemoryWorkflowStore());
+  const subagents = new Children();
+  const controller = new AbortController();
+  const scheduler = new ChildWorkflowScheduler({ workflow, subagents });
+  try {
+    const active = await scheduler.submit({
+      key: "parent-abort-live", kind: "subagent", owner, tasks: [spec("child")],
+      permissionProfile: "read-only", availableTools: ["read"],
+    }, controller.signal);
+    assert.equal(subagents.launches, 1);
+    controller.abort();
+    await scheduler.drain();
+    assert.equal((await workflow.get(active.id)).status, "cancelled");
+    assert.equal(subagents.stopped.length, 1);
+  } finally { await scheduler.close(); }
+
+  const prior = new ChildWorkflowScheduler({ workflow, subagents });
+  const liveAtRestart = await prior.submit({
+    key: "parent-abort-restart-active", kind: "subagent", owner, tasks: [spec("active")],
+    permissionProfile: "read-only", availableTools: ["read"],
+  });
+  await prior.close();
+  const orphan = await workflow.create({
+    key: "parent-abort-restored", kind: "subagent", owner, tasks: [spec("orphan")],
+    permissionProfile: "read-only", availableTools: ["read"],
+  });
+  const restored = new ChildWorkflowScheduler({ workflow, subagents, ownerTerminated: async () => true });
+  try {
+    await restored.tick();
+    assert.equal((await workflow.get(orphan.id)).status, "cancelled");
+    assert.equal((await workflow.get(liveAtRestart.id)).status, "cancelled");
+    assert.equal(subagents.stopped.length, 2);
+    assert.equal(subagents.launches, 2);
+  } finally { await restored.close(); }
+});
 test("Approved graph dispatches dependencies, projects results, reconnects without re-launch", async () => {
   const plan = new PlanRuntime({ store: new MemoryPlanStateStore() });
   const tasks = new TaskRuntime(new MemoryTaskStore());

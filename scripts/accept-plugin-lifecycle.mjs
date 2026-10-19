@@ -317,6 +317,7 @@ test("real Workflow Scheduler query reads durable facts without dispatching or r
     let launches = 0;
     root.provide("workflow", { state: workflow });
     root.provide("subagents", { subscribe() { return () => {}; }, async spawn() { launches += 1; throw new Error("unexpected dispatch"); } });
+    root.provide("tools", { registry: { list() { return []; } }, getCompositionContracts() { return new Map(); } });
     for (const key of ["plan", "tasks", "permissions", "workspace", "agents"]) root.provide(key, {});
     await root.loader.create({ id: "scheduler", name: "cordis:schedulers" });
     await nextTick();
@@ -357,6 +358,7 @@ test("a graph start waiting on Plan is visible before it creates any Workflow", 
     const reading = deferred(), finish = deferred();
     root.provide("workflow", { state: new WorkflowRuntime(new MemoryWorkflowStore()) });
     root.provide("subagents", { subscribe() { return () => {}; } });
+    root.provide("tools", { registry: { list() { return []; } }, getCompositionContracts() { return new Map(); } });
     root.provide("plan", { async get() { reading.resolve(); await finish.promise; return undefined; } });
     for (const key of ["tasks", "permissions", "workspace", "agents"]) root.provide(key, {});
     await root.loader.create({ id: "scheduler", name: "cordis:schedulers" });

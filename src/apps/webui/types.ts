@@ -54,6 +54,8 @@ export interface WishWebRunView {
   readonly status: WishWebRunStatus;
   readonly createdAt: string;
   readonly completion?: WishRunCompletion;
+  /** Finalization or derived-state cleanup failed; the owning Session remains retryable. */
+  readonly cleanupError?: string;
 }
 
 export interface WishWebRunAccepted {

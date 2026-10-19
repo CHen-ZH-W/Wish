@@ -12,6 +12,7 @@ import {
 } from "../dist/subagents/index.js";
 import { TmuxSubagentExecutionBackend } from
   "../dist/subagents/providers/tmux-execution.js";
+import { createSubagentSessionFeature } from "../dist/subagents/consumers/session-feature.js";
 import { FileKvStorageBackend } from "../dist/storage/providers/file/kv.js";
 
 function address(id) {
@@ -60,13 +61,16 @@ function fixture(options = {}) {
   const store = options.store ?? new MemorySubagentRecordStore();
   const launches = [];
   const cleanedLaunchSecrets = [];
+  const purged = [];
   const backend = new SubagentRuntime({
     execution: new TmuxSubagentExecutionBackend(tmux),
     store,
     launcher: {
+      ...(options.compose === undefined ? {} : { compose: options.compose }),
       resolve(request, identity) {
         launches.push({ request, identity });
         return {
+          ...(options.scopePresetDigest === undefined ? {} : { scopePresetDigest: options.scopePresetDigest }),
           windowName: request.role,
           command: {
             executable: "/opt/wish-child",
@@ -78,6 +82,7 @@ function fixture(options = {}) {
       cleanupLaunchSecrets(identity) {
         cleanedLaunchSecrets.push(identity);
       },
+      purgeChild(identity) { purged.push(identity); },
     },
     id: options.id ?? (() => "child-1"),
     now: () => new Date("2026-09-12T12:00:00.000Z"),
@@ -85,7 +90,7 @@ function fixture(options = {}) {
     maxConcurrentPerRun: options.maxConcurrentPerRun,
     monitorIntervalMs: options.monitorIntervalMs,
   });
-  return { backend, tmux, store, launches, cleanedLaunchSecrets };
+  return { backend, tmux, store, launches, cleanedLaunchSecrets, purged };
 }
 
 const spawnRequest = Object.freeze({
@@ -97,6 +102,21 @@ const spawnRequest = Object.freeze({
   role: "reviewer",
 });
 
+test("Run cleanup stops only owned children and removes their records", async () => {
+  let sequence = 0;
+  const { backend, store, tmux, purged } = fixture({ id: () => `child-${++sequence}` });
+  const first = await backend.spawn(spawnRequest);
+  const second = await backend.spawn({ ...spawnRequest, parentRunId: "other-run" });
+  await assert.rejects(backend.purge({ ...spawnRequest, id: second.id }), /not found/i);
+  await backend.purge({ ...spawnRequest, id: first.id });
+  assert.equal(await store.get(first.id), undefined);
+  assert.equal((await store.get(second.id)).id, second.id);
+  assert.equal(tmux.stopped.includes(first.id), true);
+  assert.equal(purged.some(identity => identity.id === first.id), true);
+  await backend.purge({ ...spawnRequest, id: first.id });
+  await backend.close();
+});
+
 test("Host dispatch keys are idempotent before concurrency checks", async () => {
   const { backend, launches } = fixture({ maxConcurrent: 1 });
   const request = { ...spawnRequest, idempotencyKey: "workflow/attempt-1" };
@@ -104,6 +124,45 @@ test("Host dispatch keys are idempotent before concurrency checks", async () => 
   assert.equal((await backend.spawn(request)).id, child.id);
   assert.equal(launches.length, 1);
   await assert.rejects(backend.spawn({ ...request, task: "different" }), /idempotency conflict/);
+  await backend.close();
+});
+
+test("Host role composition is committed before launch and idempotency comparison", async () => {
+  let presetDigest = "a".repeat(64);
+  const { backend, launches, store } = fixture({
+    compose: request => ({ ...request, availableTools: ["read"], allowedCapabilities: ["filesystem.read"], scopePresetDigest: presetDigest }),
+  });
+  const request = { ...spawnRequest, idempotencyKey: "scope/reviewer", availableTools: ["read", "write"],
+    allowedCapabilities: ["filesystem.read", "filesystem.write"] };
+  const record = await backend.spawn(request);
+  assert.deepEqual(record.availableTools, ["read"]);
+  assert.deepEqual(record.allowedCapabilities, ["filesystem.read"]);
+  assert.equal(record.scopePresetDigest, presetDigest);
+  assert.deepEqual(launches[0].request.availableTools, ["read"]);
+  assert.deepEqual((await store.get(record.id)).availableTools, ["read"]);
+  assert.equal((await backend.spawn(request)).id, record.id);
+  presetDigest = "b".repeat(64);
+  await assert.rejects(backend.spawn(request), /idempotency conflict/u);
+  await backend.close();
+});
+
+test("the selected Agent Scope preset digest is durable before execution starts", async () => {
+  const digest = "a".repeat(64);
+  const { backend, store } = fixture({ scopePresetDigest: digest });
+  const record = await backend.spawn(spawnRequest);
+  assert.equal(record.scopePresetDigest, digest);
+  assert.equal((await store.get(record.id)).scopePresetDigest, digest);
+  await backend.close();
+});
+
+test("a preset change between child admission and launch prevents execution", async () => {
+  const { backend, tmux, store } = fixture({
+    compose: request => ({ ...request, scopePresetDigest: "a".repeat(64) }),
+    scopePresetDigest: "b".repeat(64),
+  });
+  await assert.rejects(backend.spawn(spawnRequest), /preset changed after child admission/u);
+  assert.equal(tmux.sessions.size, 0);
+  assert.equal((await store.list())[0].status, "failed");
   await backend.close();
 });
 
@@ -175,6 +234,53 @@ test("Subagent Runtime enforces ownership before every read or control operation
   await backend.close();
 });
 
+test("late child launch after parent cancellation is stopped and retains its target", async () => {
+  const controller = new AbortController();
+  const tmux = new FakeTmux();
+  const store = new MemorySubagentRecordStore();
+  const originalStart = tmux.start.bind(tmux);
+  tmux.start = async request => {
+    const result = await originalStart(request);
+    controller.abort("parent stopped");
+    return result;
+  };
+  const { backend } = fixture({ tmux, store });
+  await assert.rejects(backend.spawn({ ...spawnRequest, signal: controller.signal }), /Parent Run was cancelled during child launch/u);
+  assert.deepEqual(tmux.stopped, ["child-1"]);
+  const record = await store.get("child-1");
+  assert.equal(record.status, "failed");
+  assert.equal(record.target.id, "child-1");
+  await backend.close();
+});
+
+test("stopping a parent Run stops its already launched child", async () => {
+  const controller = new AbortController();
+  const { backend, tmux, store } = fixture();
+  const child = await backend.spawn({ ...spawnRequest, signal: controller.signal });
+  assert.equal(child.status, "running");
+  controller.abort("parent stopped");
+  const deadline = Date.now() + 1_000;
+  while ((await store.get(child.id))?.status !== "stopped" && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  assert.equal((await store.get(child.id))?.status, "stopped");
+  assert.deepEqual(tmux.stopped, [child.id]);
+  await backend.close();
+});
+
+test("the owned Session feature can stop a child when its parent tool did not return", async () => {
+  const { backend, tmux } = fixture();
+  const child = await backend.spawn(spawnRequest);
+  const feature = createSubagentSessionFeature(backend,
+    async () => ({ agentId: "wish", scope: "/workspace" }), "wish");
+  const view = await feature.inspect(spawnRequest.parentSessionId);
+  assert.equal(view.actions.some(action => action.name === "stop"), true);
+  await feature.act(spawnRequest.parentSessionId, "stop", {}, child.id);
+  assert.deepEqual(tmux.stopped, [child.id]);
+  assert.equal((await backend.inspect({ ...spawnRequest, id: child.id }))?.status, "stopped");
+  await backend.close();
+});
+
 test("Subagent Runtime publishes completion from its owned execution monitor", async () => {
   const { backend, tmux } = fixture({ monitorIntervalMs: 1 });
   const events = [];
@@ -242,6 +348,36 @@ test("Subagent limits are checked against reconciled live sessions", async () =>
     (error) => error.code === "subagent_limit_exceeded",
   );
   await backend.close();
+});
+
+test("Subagent Runtime defaults allow eight concurrent children per parent Run", async () => {
+  let sequence = 0;
+  const { backend } = fixture({ id: () => `child-${++sequence}` });
+  for (let index = 0; index < 8; index += 1) {
+    await backend.spawn({ ...spawnRequest, task: `task-${index}` });
+  }
+  await assert.rejects(
+    backend.spawn({ ...spawnRequest, task: "ninth" }),
+    (error) => error.code === "subagent_limit_exceeded",
+  );
+  await backend.close();
+});
+
+test("Subagent record stores do not reject history beyond the former record ceiling", async () => {
+  const source = fixture();
+  const base = await source.backend.spawn(spawnRequest);
+  const store = new MemorySubagentRecordStore();
+  for (let index = 0; index <= 4_096; index += 1) {
+    await store.create({
+      ...base,
+      id: `retained-${index}`,
+      childSessionId: `retained-session-${index}`,
+      childRunId: `retained-run-${index}`,
+    });
+  }
+  assert.equal((await store.list()).length, 4_097);
+  await store.close();
+  await source.backend.close();
 });
 
 test("Subagent Domain records survive provider replacement without owning tmux lifetime", async () => {

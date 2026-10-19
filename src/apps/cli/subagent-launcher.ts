@@ -8,6 +8,12 @@ import s from "@deepseek-ai/schemastery";
 import { FileSubagentExchange } from "../../subagents/files.js";
 import { SubagentLauncherService } from "../../subagents/launcher.js";
 import { resolveConfiguredModel } from "../../models/config.js";
+import { composeAgentScope, eligibleCapabilities } from "../../composition/agent-scope.js";
+import type { AgentScopePreset } from "../../composition/agent-preset.js";
+import { resourceDigest as digestResource } from "../../subagents/resources.js";
+import { MEMORY_SNAPSHOT_RESOURCE } from "../../memory/child-resources.js";
+import { TOOL_CAPABILITY_KINDS } from "../../permissions/index.js";
+import { canDelegatePermissionProfile } from "../../permissions/delegation.js";
 import type { SubagentResource } from "../../subagents/resources.js";
 import type {
   SpawnSubagentRequest,
@@ -23,7 +29,7 @@ export interface WishCliSubagentLauncherOptions {
   readonly executable?: string;
   readonly modelsConfigurationPath?: string;
   readonly exchange?: FileSubagentExchange;
-  readonly prepareResources?: (request: SpawnSubagentRequest, identity: SubagentLaunchIdentity) => Promise<readonly SubagentResource[]>;
+  readonly prepareResources?: (request: SpawnSubagentRequest, identity: SubagentLaunchIdentity, scopePreset?: AgentScopePreset) => Promise<readonly SubagentResource[]>;
   /** Host-only resolver; credential values are never part of a spawn request. */
   readonly resolveCredential?: (reference: string) => string | undefined;
 }
@@ -51,6 +57,7 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
   async resolve(
     request: SpawnSubagentRequest,
     identity: SubagentLaunchIdentity,
+    scopePreset?: AgentScopePreset,
   ): Promise<SubagentLaunch> {
     const childDataDirectory = this.exchange.childDataDirectory(identity.id);
     const taskFile = await this.exchange.createTask(identity.id, request.task, request.signal);
@@ -82,7 +89,10 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
         await this.exchange.writeCredentials(identity, Object.freeze(values), request.signal);
         credentialsWritten = true;
       }
-      const resources = await this.prepareResources?.(request, identity) ?? [];
+      const prepared = await this.prepareResources?.(request, identity, scopePreset) ?? [];
+      const resources = scopePreset?.memory === "none"
+        ? prepared.filter(resource => resource.type !== MEMORY_SNAPSHOT_RESOURCE)
+        : prepared;
       if (resources.length) {
         const manifest = await this.exchange.writeInputResources(identity, request, resources, request.signal);
         resourceDigest = manifest.digest;
@@ -138,11 +148,20 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
       WISH_CHILD_CREDENTIALS_FILE: credentialsWritten
         ? this.exchange.credentialsPath(identity.id)
         : "",
+      WISH_AGENT_SCOPE_PRESET: scopePreset === undefined ? "" : JSON.stringify(scopePreset),
+      WISH_AGENT_PRESETS_JSON: "",
     };
+    if (scopePreset?.memory === "none") environment.WISH_MEMORY_ENABLED = "0";
     // The one-use file, not the child process environment, carries these values.
     for (const reference of credentialReferences) environment[reference] = "";
     if (request.permissionProfile !== undefined) {
       environment.WISH_PERMISSION_PROFILE = request.permissionProfile;
+      if (request.permissionProfile !== "full-access") {
+        // A full-access parent may use the unconfined Host Shell. A narrower
+        // child needs the native Shell or its profile cannot be enforced.
+        environment.WISH_SHELL_PROVIDER = "linux-native";
+        environment.WISH_SHELL_HOST_ENABLED = "0";
+      }
     }
     if (request.availableTools !== undefined) {
       if (!request.availableTools.length) throw new Error("Cannot launch a child with an empty Tool scope");
@@ -153,6 +172,7 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
       environment.WISH_ALLOWED_CAPABILITIES = request.allowedCapabilities.join(",");
     }
     return Object.freeze({
+      ...(scopePreset === undefined ? {} : { scopePresetDigest: digestResource(scopePreset) }),
       ...(resourceDigest === undefined ? {} : { resourceManifestDigest: resourceDigest }),
       windowName: request.role ?? "worker",
       command: Object.freeze({
@@ -176,6 +196,9 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
 
   cleanupLaunchSecrets(identity: SubagentLaunchIdentity): Promise<void> {
     return this.exchange.removeCredentials(identity.id);
+  }
+  purgeChild(identity: SubagentLaunchIdentity): Promise<void> {
+    return this.exchange.purgeChild(identity.id);
   }
 }
 
@@ -201,7 +224,9 @@ export class WishCliSubagentLauncher extends SubagentLauncherService {
     this.work = new PluginWorkOwner(ctx, { code: "subagent_launcher", codeReload: true });
     this.backend = new WishCliSubagentLauncherBackend({
       dataDirectory: ctx.sessions.dataDirectory,
-      prepareResources: (request, identity) => this.prepareResources(request, identity),
+      prepareResources: (request, identity, preset) => this.prepareResources(
+        request, identity, preset?.memory === "none" ? ["memory"] : [],
+      ),
       ...(config.childExecutable === undefined
         ? {}
         : { executable: config.childExecutable }),
@@ -222,15 +247,71 @@ export class WishCliSubagentLauncher extends SubagentLauncherService {
 
   resolve(request: SpawnSubagentRequest, identity: SubagentLaunchIdentity) {
     return this.work.run(async () => {
+      const preset = this.ctx.get("agents")?.presetForRole(request.role);
       const modelsConfiguration = request.modelsConfiguration ?? await this.ctx.models.load({
         dataDirectory: this.ctx.sessions.dataDirectory,
       });
-      return this.backend.resolve({ ...request, modelsConfiguration }, identity);
+      return this.backend.resolve({ ...request, modelsConfiguration }, identity, preset);
+    });
+  }
+
+  compose(request: SpawnSubagentRequest): SpawnSubagentRequest {
+    this.work.assertAttached();
+    const preset = this.ctx.get("agents")?.presetForRole(request.role);
+    if (preset?.permissionProfile !== undefined && request.permissionProfile !== undefined &&
+        !canDelegatePermissionProfile(request.permissionProfile, preset.permissionProfile)) {
+      throw new Error(`Agent Scope role ${preset.role} permission profile exceeds the parent ceiling`);
+    }
+    const permissionProfile = preset?.permissionProfile ?? request.permissionProfile;
+    const delegatedCapabilities = preset?.allowedCapabilities === undefined
+      ? request.allowedCapabilities
+      : preset.allowedCapabilities.filter(kind => request.allowedCapabilities === undefined || request.allowedCapabilities.includes(kind));
+    if (delegatedCapabilities?.length === 0) throw new Error("Agent Scope has no delegated capabilities");
+    const tools = this.ctx.get("tools");
+    const applicationTools = tools?.registry.list().map(tool => tool.name) ?? [];
+    const localTools = preset?.localTools ?? [];
+    const registeredTools = [...applicationTools, ...localTools.map(tool => tool.name)];
+    const ceiling = [...(request.availableTools ?? applicationTools), ...localTools.map(tool => tool.name)];
+    const desired = preset?.availableTools === undefined
+      ? (preset === undefined ? request.availableTools : undefined)
+      : preset.availableTools.filter(name => ceiling.includes(name));
+    if (preset?.availableTools !== undefined && desired?.length === 0) {
+      throw new Error(`Agent Scope role ${preset.role} has no Tools within the parent ceiling`);
+    }
+    const runtimeFeatures = preset?.memory === "none"
+      ? this.runtimeFeatures.filter(feature => feature !== "memory.snapshot")
+      : this.runtimeFeatures;
+    const eligible = eligibleCapabilities(new Set(delegatedCapabilities ?? TOOL_CAPABILITY_KINDS),
+      permissionProfile, runtimeFeatures.includes("human.review"));
+    const allowedCapabilities = preset === undefined ? delegatedCapabilities :
+      (delegatedCapabilities ?? TOOL_CAPABILITY_KINDS).filter(kind => eligible.has(kind));
+    if (allowedCapabilities?.length === 0) throw new Error("Agent Scope has no executable capabilities");
+    const composition = composeAgentScope({
+      availableTools: ceiling,
+      ...(desired === undefined ? {} : { requestedTools: desired }),
+      registeredTools,
+      toolContracts: new Map([
+        ...(tools?.getCompositionContracts().entries() ?? []),
+        ...localTools.map(tool => [tool.name, tool] as const),
+      ]),
+      runtimeFeatures,
+      allowedCapabilities: allowedCapabilities ?? TOOL_CAPABILITY_KINDS,
+      ...(permissionProfile === undefined ? {} : { permissionProfile }),
+    });
+    const { scopePresetDigest: _previousDigest, ...base } = request;
+    return Object.freeze({ ...base, availableTools: composition.availableTools,
+      ...(preset === undefined ? {} : { scopePresetDigest: digestResource(preset) }),
+      ...(permissionProfile === undefined ? {} : { permissionProfile }),
+      ...(allowedCapabilities === undefined ? {} : { allowedCapabilities: Object.freeze([...allowedCapabilities]) }),
     });
   }
 
   override cleanupLaunchSecrets(identity: SubagentLaunchIdentity): Promise<void> {
     return this.work.runDuringActivation(this.ctx, () => this.backend.cleanupLaunchSecrets(identity));
+  }
+
+  override purgeChild(identity: SubagentLaunchIdentity): Promise<void> {
+    return this.work.runDuringActivation(this.ctx, () => this.backend.purgeChild(identity));
   }
 
   override readResult(id: string, signal?: AbortSignal): Promise<SubagentResult | undefined> {

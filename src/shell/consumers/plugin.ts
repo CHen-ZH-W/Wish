@@ -12,6 +12,6 @@ export const Bash = {
     owner.register(createBashTool({
       shell: ctx.shell,
       artifacts: ctx.toolOutputArtifacts,
-    }));
+    }), undefined, { requires: [], requiredCapabilities: ["process.exec"] });
   },
 };

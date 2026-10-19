@@ -95,7 +95,6 @@ export function apply(ctx, config) {
     agentDefinition: ctx.agents.definition,
     agentId: ctx.agents.agentId,
     maxParallelCalls: ctx.agentLoop.maxParallelCalls,
-    maxSteps: ctx.runEngine.maxSteps,
     contextReserved: ctx.contextEngine.reservedOutputTokens,
     compactionRecent: ctx.compaction.keepRecentTokens,
     applicationName: ctx.application.name,
@@ -168,7 +167,7 @@ test("two application realms isolate providers, registrations, updates, and disp
         toolName: "cordis:read",
         agentId: "left-agent",
         maxParallelCalls: 2,
-        maxSteps: 3,
+        budgetScale: 3,
       })}\n${applicationGroup({
         id: "right",
         selected: false,
@@ -179,7 +178,7 @@ test("two application realms isolate providers, registrations, updates, and disp
         toolName: "cordis:bash",
         agentId: "right-agent",
         maxParallelCalls: 5,
-        maxSteps: 7,
+        budgetScale: 7,
       })}`,
     );
 
@@ -236,8 +235,6 @@ test("two application realms isolate providers, registrations, updates, and disp
     assert.equal(firstRight.agentId, "right-agent");
     assert.equal(firstLeft.maxParallelCalls, 2);
     assert.equal(firstRight.maxParallelCalls, 5);
-    assert.equal(firstLeft.maxSteps, 3);
-    assert.equal(firstRight.maxSteps, 7);
 
     await firstLeft.modelAttemptLedger.start({
       attemptId: "left-attempt",
@@ -359,7 +356,7 @@ ${businessServices.map((service) => `    ${service}: true`).join("\n")}
     - id: ${options.id}-context
       name: 'cordis:context-engine'
       config:
-        reservedOutputTokens: ${options.maxSteps * 100}
+        reservedOutputTokens: ${options.budgetScale * 100}
     - id: ${options.id}-system-prompt
       name: 'cordis:system-prompt'
     - id: ${options.id}-system-prompt-context
@@ -367,8 +364,8 @@ ${businessServices.map((service) => `    ${service}: true`).join("\n")}
     - id: ${options.id}-compaction
       name: 'cordis:compaction'
       config:
-        keepRecentTokens: ${options.maxSteps * 200}
-        summaryMaxOutputTokens: ${options.maxSteps * 50}
+        keepRecentTokens: ${options.budgetScale * 200}
+        summaryMaxOutputTokens: ${options.budgetScale * 50}
     - id: ${options.id}-tools
       name: 'cordis:tools'
     - id: ${options.id}-tool-${options.tool}
@@ -379,8 +376,6 @@ ${businessServices.map((service) => `    ${service}: true`).join("\n")}
         maxParallelCalls: ${options.maxParallelCalls}
     - id: ${options.id}-runtime
       name: 'cordis:runtime'
-      config:
-        maxSteps: ${options.maxSteps}
     - id: ${options.id}-agents
       name: 'cordis:agents'
       config:

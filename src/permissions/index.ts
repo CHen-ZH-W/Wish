@@ -1,4 +1,5 @@
 export * from "./authorization.js";
+export { canDelegatePermissionProfile } from "./delegation.js";
 export {
   PermissionConfigurationError,
   PermissionError,

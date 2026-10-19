@@ -127,12 +127,10 @@ test("capability, Application and WebUI plugins validate only their own settings
   });
   assert.deepEqual(SubagentsConfig({
     backendId: "file",
-    maxRecords: 100,
     maxConcurrent: 4,
     maxConcurrentPerRun: 2,
   }), {
     backendId: "file",
-    maxRecords: 100,
     maxConcurrent: 4,
     maxConcurrentPerRun: 2,
   });
@@ -153,10 +151,8 @@ test("capability, Application and WebUI plugins validate only their own settings
     maxRetries: 2,
   });
   assert.deepEqual(RuntimeConfig({
-    maxSteps: 4,
     generationDrainTimeoutMs: 2_000,
   }), {
-    maxSteps: 4,
     generationDrainTimeoutMs: 2_000,
   });
   assert.deepEqual(ContextEngineConfig({ reservedOutputTokens: 1_024 }), {
@@ -216,7 +212,6 @@ test("capability, Application and WebUI plugins validate only their own settings
     () => FileStorage.Config({ journalTornTailRecovery: "guess" }),
     /expected/u,
   );
-  assert.throws(() => RuntimeConfig({ maxSteps: 0 }), /expected number >= 1/u);
   assert.throws(
     () => RuntimeConfig({ generationDrainTimeoutMs: 0 }),
     /expected number >= 1/u,
@@ -360,7 +355,6 @@ test("the built-in profile translates compatibility environment at Loader", asyn
     WISH_CONTEXT_RESERVED_OUTPUT_TOKENS: "1024",
     WISH_COMPACTION_KEEP_RECENT_TOKENS: "2048",
     WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS: "512",
-    WISH_MAX_STEPS: "4",
     WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS: "2000",
     DEEPSEEK_API_KEY: "runtime-only",
   };
@@ -434,12 +428,10 @@ test("the built-in profile translates compatibility environment at Loader", asyn
       workspace.instructions.map((instruction) => instruction.source),
       [join(repositoryRoot, "package.json")],
     );
-    assert.equal(application.surfaceContext.get("runEngine").maxSteps, 4);
     assert.equal(
       application.surfaceContext.get("runEngine").generationDrainTimeoutMs,
       2_000,
     );
-    assert.equal("maxSteps" in configuration, false);
     assert.equal(configuration.modelEnvironment, environment);
     assert.equal(await application.completion, 0);
   } finally {
@@ -511,7 +503,7 @@ try { process.exitCode = await booted.completion; } finally { await booted.dispo
     await replaceProfile(profile, webProfile({
       port: firstPort,
       dataDirectory: "./profile-state",
-      maxSteps: 0,
+      generationDrainTimeoutMs: 0,
     }));
     await waitFor(
       () => stderr.includes("Cordis config reload failed at"),
@@ -532,7 +524,7 @@ try { process.exitCode = await booted.completion; } finally { await booted.dispo
     await replaceProfile(profile, webProfile({
       port: secondPort,
       dataDirectory: "./profile-state",
-      maxSteps: 8,
+      generationDrainTimeoutMs: 2_000,
     }));
     await waitForHealthy(secondPort, () => `updated configured port did not start:\n${stderr}`);
     await waitForUnavailable(
@@ -561,7 +553,7 @@ try { process.exitCode = await booted.completion; } finally { await booted.dispo
   }
 });
 
-function webProfile({ port, dataDirectory, maxSteps = 32 }) {
+function webProfile({ port, dataDirectory, generationDrainTimeoutMs = 30_000 }) {
   return `- id: timer
   name: 'cordis:timer'
 
@@ -667,7 +659,7 @@ function webProfile({ port, dataDirectory, maxSteps = 32 }) {
     - id: runtime
       name: 'cordis:runtime'
       config:
-        maxSteps: ${maxSteps}
+        generationDrainTimeoutMs: ${generationDrainTimeoutMs}
 
     - id: agents
       name: 'cordis:agents'

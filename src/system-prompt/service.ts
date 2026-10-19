@@ -1,5 +1,6 @@
 import { Service, type Context } from "@deepseek-ai/cordis";
 import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
+import { AgentScope } from "../composition/agent-scope.js";
 
 import type { ModelInstruction } from "../core/model/model.js";
 
@@ -13,6 +14,7 @@ import type {
 /** Process-local registry and deterministic assembler for System Prompt sections. */
 export class SystemPrompt extends Service {
   private readonly sections = new Map<string, RegisteredSystemPromptSection>();
+  private readonly scoped = new Map<AgentScope, Map<string, RegisteredSystemPromptSection>>();
   private readonly work: PluginWorkOwner;
 
   constructor(ctx: Context) {
@@ -55,7 +57,51 @@ export class SystemPrompt extends Service {
     return registration;
   }
 
+  /** Register a Prompt section visible only to this Agent and its descendants. */
+  registerScoped(owner: Context, scope: AgentScope, section: SystemPromptSection): SystemPromptRegistration {
+    this.work.assertAttached();
+    const normalized = normalizeSection(section);
+    if (this.scoped.get(scope)?.has(normalized.id)) {
+      throw new Error(`System Prompt section ${JSON.stringify(normalized.id)} is already registered in this Agent Scope`);
+    }
+    const entries = this.scoped.get(scope) ?? new Map<string, RegisteredSystemPromptSection>();
+    entries.set(normalized.id, normalized);
+    this.scoped.set(scope, entries);
+    let active = true;
+    const unregister = (): boolean => {
+      if (!active) return false;
+      active = false;
+      if (entries.get(normalized.id) === normalized) entries.delete(normalized.id);
+      if (entries.size === 0 && this.scoped.get(scope) === entries) this.scoped.delete(scope);
+      return true;
+    };
+    let detach = () => {};
+    try {
+      detach = scope.own(() => { unregister(); });
+      owner.effect(() => () => { unregister(); detach(); },
+        `systemPrompt.registerScoped(${JSON.stringify(normalized.id)})`);
+    } catch (error: unknown) {
+      unregister();
+      detach();
+      throw error;
+    }
+    return Object.freeze({ section: normalized, unregister: () => {
+      const removed = unregister();
+      detach();
+      return removed;
+    } });
+  }
+
   /** Resolve the exact ordered sections visible to one immutable Step. */
+  capture(agentScope?: AgentScope): readonly RegisteredSystemPromptSection[] {
+    this.work.assertOpen();
+    const visible = new Map(this.sections);
+    for (const scope of agentScope?.chain() ?? []) {
+      for (const section of this.scoped.get(scope)?.values() ?? []) visible.set(section.id, section);
+    }
+    return Object.freeze([...visible.values()].sort(compareSections));
+  }
+
   assemble(
     input: SystemPromptAssemblyInput,
   ): readonly RegisteredSystemPromptSection[] {
@@ -64,7 +110,7 @@ export class SystemPrompt extends Service {
       input.availableTools.map((name) => requireIdentifier(name, "Tool name")),
     );
     return Object.freeze(
-      [...this.sections.values()]
+      [...(input.sections ?? this.capture(input.agentScope))]
         .filter((section) =>
           section.requiredTools.every((name) => availableTools.has(name))
         )

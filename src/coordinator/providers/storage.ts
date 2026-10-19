@@ -33,7 +33,7 @@ export class StorageCoordinatorService extends CoordinatorService {
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
     const backendId = config.backendId ?? ctx.storageBackend.id;
-    this.lease = ctx.storageBackend.acquire(backendId, { kv: { list: false } });
+    this.lease = ctx.storageBackend.acquire(backendId, { kv: { list: true } });
     try {
       this.backend = new CoordinatorRuntime({
         store: new DomainCoordinatorStateStore({ storage: this.lease, backendId }),
@@ -47,6 +47,12 @@ export class StorageCoordinatorService extends CoordinatorService {
 
   get(request: CoordinatorRunRequest): Promise<CoordinatorState | undefined> {
     return this.work.run(() => this.backend.get(request));
+  }
+  clear(request: CoordinatorRunRequest & { readonly sessionId: string }): Promise<void> {
+    return this.work.run(() => this.backend.clear(request));
+  }
+  clearSession(sessionId: string): Promise<void> {
+    return this.work.run(() => this.backend.clearSession(sessionId));
   }
 
   enter(request: EnterCoordinatorRequest): Promise<CoordinatorState> {

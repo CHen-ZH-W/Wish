@@ -36,6 +36,16 @@ async function createDefaultSession(page, booted, directory) {
   // Other browser scenarios need a settled Session, not an unconfigured model Run.
   await booted.surfaceContext.get("sessions").manager.create({ sessionId: randomUUID(), agentId: booted.surfaceContext.get("agents").agentId, scope: directory });
   await page.reload();
+  await openFirstSession(page);
+}
+
+async function openFirstSession(page) {
+  const link = page.getByRole("navigation", { name: "会话列表", exact: true }).locator(".session-link").first();
+  if (!await link.isVisible()) {
+    const expand = page.getByRole("button", { name: "展开侧栏", exact: true });
+    if (await expand.isVisible()) await expand.click();
+  }
+  await link.click();
   await page.locator("#wish-composer").waitFor();
 }
 
@@ -44,7 +54,7 @@ function modelConfiguration(port) {
     providers: [{ id: "fixture", protocol: "openai-chat-completions", baseUrl: `http://127.0.0.1:${port}/v1`, auth: { type: "none" }, developerRoleMode: "native", models: [{ id: "primary", status: "active", contextWindowTokens: 65536, maxOutputTokens: 4096, input: { text: true, image: false }, reasoning: false, toolCalling: true, developerRole: true }] }] };
 }
 
-test("new Session chooses a Host Workspace before creation and stays outside the execution ledger", { timeout: 60000 }, async () => {
+test("new Session chooses a Host Workspace before creation and stays outside the conversation transcript", { timeout: 60000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "a-wish-workspace-choice-browser-"));
   let booted, browser;
   try {
@@ -81,10 +91,10 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     assert.equal((await manager.list()).length, 0, "changing first-run effort does not create a Session");
     const center = await page.locator(".new-session-center").boundingBox(), main = await page.locator(".workspace-content").boundingBox();
     assert.ok(center && main && Math.abs(center.x + center.width / 2 - (main.x + main.width / 2)) < 2, "composer is centered in the content area");
-    assert.equal(await page.locator("#wish-composer").count(), 0, "the create view is not an execution ledger");
+    assert.equal(await page.locator("#wish-composer").count(), 0, "the create view is not an existing conversation");
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
     assert.equal((await manager.list()).length, 0, "leaving the center composer creates no Host Session");
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
     await page.getByRole("heading", { name: "许个愿吧", exact: true }).waitFor();
     assert.equal(await page.locator(".new-session-workspace-list").count(), 0, "no configured root is offered as a default choice");
     await page.locator(".new-session-workspace-call").click();
@@ -121,8 +131,28 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     await page.waitForFunction(() => document.querySelector("#wish-permission-profile")?.value === "read-only");
     await page.getByRole("button", { name: "新建会话", exact: true }).click();
     await page.getByRole("heading", { name: "许个愿吧", exact: true }).waitFor();
-    assert.equal(await page.getByRole("navigation", { name: "可用视图" }).getByRole("button", { name: "新建会话" }).count(), 0);
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
+    assert.equal(await page.getByRole("navigation", { name: "可用视图", exact: true }).count(), 0);
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
+    await page.getByRole("heading", { name: "许个愿吧", exact: true }).waitFor();
+    assert.equal(await page.locator(".session-link[aria-current=page]").count(), 0, "the landing view does not select the latest Session");
+    await page.reload();
+    await page.getByRole("heading", { name: "许个愿吧", exact: true }).waitFor();
+    assert.equal(await page.locator(".session-link[aria-current=page]").count(), 0, "refresh returns to a fresh intent even when Sessions exist");
+    await page.getByRole("navigation", { name: "会话列表", exact: true }).locator(".session-link").first().click();
+    await page.locator("#wish-composer").waitFor();
+    assert.equal(await page.getByRole("complementary", { name: "会话侧栏", exact: true }).isHidden(), true, "an explicitly opened Session keeps the right sidebar collapsed");
+    assert.equal(await page.getByRole("button", { name: "打开会话侧栏", exact: true }).isVisible(), true);
+    const contentViews = page.getByRole("navigation", { name: "会话内容", exact: true });
+    assert.equal(await contentViews.getByRole("button", { name: "主会话", exact: true }).getAttribute("aria-current"), "page", "the main Session shows both content views and marks itself current");
+    await page.getByRole("button", { name: "工具调用", exact: true }).click();
+    await page.locator(".tool-calls-page").waitFor();
+    assert.equal(await contentViews.getByRole("button", { name: "工具调用", exact: true }).getAttribute("aria-current"), "page", "the same paired navigation marks Tool calls current");
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mainTab = contentViews.getByRole("button", { name: "主会话", exact: true });
+    const toolTab = contentViews.getByRole("button", { name: "工具调用", exact: true });
+    const [mainTabBox, toolTabBox] = await Promise.all([mainTab.boundingBox(), toolTab.boundingBox()]);
+    assert.ok(mainTabBox && toolTabBox && mainTabBox.x >= 0 && toolTabBox.x + toolTabBox.width <= 390, "both conversation content tabs remain visible at mobile width");
+    await mainTab.click();
     await page.locator("#wish-composer").waitFor();
     assert.equal((await manager.list()).length, 1, "leaving a new intent keeps only the original Session");
   } finally { await browser?.close(); await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
@@ -171,7 +201,7 @@ test("compact Session menu renames inline, separates archives and confirms delet
     await navigation.locator(".session-link").waitFor({ state: "detached" });
     await page.getByRole("button", { name: "归档", exact: true }).click();
     assert.equal(await page.getByRole("button", { name: "归档", exact: true }).getAttribute("aria-current"), "page");
-    assert.equal(await page.getByRole("button", { name: "执行工作区", exact: true }).getAttribute("aria-current"), null);
+    assert.equal(await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).getAttribute("aria-current"), null);
     const archives = page.getByRole("navigation", { name: "归档会话列表", exact: true });
     await archives.locator(".session-link").waitFor();
     await capture(page, "desktop-archives");
@@ -180,10 +210,10 @@ test("compact Session menu renames inline, separates archives and confirms delet
     assert.equal(await page.locator("#wish-composer").count(), 0);
     await page.getByRole("button", { name: "取消归档", exact: true }).click();
     await page.getByRole("heading", { name: "还没有归档会话", exact: true }).waitFor();
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
     await page.locator("#wish-composer").waitFor();
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这份草稿");
-    await page.reload(); await more().waitFor();
+    await page.reload(); await openFirstSession(page); await more().waitFor();
     await more().click(); page.once("dialog", dialog => dialog.accept());
     await page.getByRole("menuitem", { name: "删除会话", exact: true }).click();
     await navigation.locator(".session-link").waitFor({ state: "detached" });
@@ -256,13 +286,18 @@ test("global Archive navigation and active/archived workspace grouping work on d
     assert.equal(await page.locator(".panel-navigation").count(), 0, "active business navigation must not remain in Archive");
     await page.locator(".ledger-header h1").filter({ hasText: "旧版界面" }).waitFor();
     await page.locator(".message-text").filter({ hasText: "旧版界面的独立历史记录" }).waitFor();
+    await page.getByRole("button", { name: "工具调用", exact: true }).click();
+    await page.locator(".tool-calls-page").waitFor();
+    assert.equal(await page.getByRole("navigation", { name: "会话内容", exact: true }).getByRole("button", { name: "工具调用", exact: true }).getAttribute("aria-current"), "page");
+    await page.getByRole("button", { name: "主会话", exact: true }).click();
+    await page.locator(".ledger-header h1").filter({ hasText: "旧版界面" }).waitFor();
     assert.equal(await page.locator(".message-text").filter({ hasText: "检查文档" }).count(), 0);
     assert.equal(await page.locator("#wish-composer").count(), 0);
     assert.deepEqual(await archived.locator(".workspace-session-group").evaluateAll(nodes => nodes.map(node => ({ scope: node.dataset.workspace, count: node.querySelectorAll(".session-link").length }))), [{ scope: wish, count: 1 }, { scope: docs, count: 1 }]);
     assert.equal(await page.locator(".panel-navigation").getByRole("button", { name: "归档", exact: true }).count(), 0);
     await capture(page, "desktop-archive-groups");
     await archived.getByRole("button", { name: "发布记录", exact: true }).click();
-    await rail.getByRole("button", { name: "执行工作区", exact: true }).click();
+    await rail.getByRole("button", { name: "会话", exact: true }).click();
     await page.locator(".ledger-header h1").filter({ hasText: "检查文档" }).waitFor();
     assert.equal(await page.locator("#wish-composer").inputValue(), "普通会话草稿");
     await rail.getByRole("button", { name: "归档", exact: true }).click();
@@ -327,7 +362,7 @@ test("global Archive navigation and active/archived workspace grouping work on d
     await mobile.getByRole("button", { name: "展开侧栏", exact: true }).tap();
     await mobile.getByRole("navigation", { name: "归档会话列表", exact: true }).getByRole("button", { name: /^发布记录/ }).waitFor();
     await capture(mobile, "mobile-archive-groups");
-    await mobileRail.getByRole("button", { name: "执行工作区", exact: true }).tap();
+    await mobileRail.getByRole("button", { name: "会话", exact: true }).tap();
     await mobile.getByRole("button", { name: "展开侧栏", exact: true }).tap();
     await mobile.getByRole("navigation", { name: "会话列表", exact: true }).getByRole("button", { name: "整理界面", exact: true }).waitFor();
     await capture(mobile, "mobile-workspace-groups");
@@ -465,7 +500,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     await rail.getByRole("button", { name: "Skills", exact: true }).waitFor();
     assert.equal(await rail.getByRole("button", { name: "Skills", exact: true }).locator("path").getAttribute("d"), originalSkillsIcon, "Skills rail icon returns with its plugin after remount");
     assert.ok(booted.surfaceContext.get("skills"));
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
     await createDefaultSession(page, booted, directory);
     await rail.getByRole("button", { name: "Skills", exact: true }).click();
     const skillNavigation = page.getByRole("navigation", { name: "Skill 列表", exact: true });
@@ -478,38 +513,35 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     const plan = booted.surfaceContext.get("plan");
     await plan.enter({ sessionId: session.sessionId }); await plan.update({ sessionId: session.sessionId, markdown: "# 浏览器验收计划\n先验证，再实施。" });
     await plan.review({ sessionId: session.sessionId, markdown: "# 浏览器验收计划\n先验证，再实施。", expectedPlanVersion: 1 });
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
-    await page.getByRole("button", { name: "Plan", exact: true }).click();
-    await page.getByRole("button", { name: "刷新状态", exact: true }).click();
-    await page.getByLabel("补充说明或要求", { exact: true }).fill("补充失败恢复检查");
-    await page.getByRole("button", { name: "继续规划", exact: true }).click();
-    await page.getByRole("button", { name: "确认操作", exact: true }).click();
-    await page.locator(".feature-document").filter({ hasText: "补充失败恢复检查" }).waitFor();
-    assert.equal((await plan.get({ sessionId: session.sessionId })).active, true);
     const todo = booted.surfaceContext.get("todo");
     await todo.openTurn({ sessionId: session.sessionId, runId: "browser-run", userTurnId: "browser-turn" });
     await todo.replace({ sessionId: session.sessionId, runId: "browser-run", userTurnId: "browser-turn", items: [
       { id: "inspect", content: "检查 UserTurn reset 接缝", status: "in_progress" },
       { id: "report", content: "记录浏览器验收", status: "pending" },
     ] });
-    await page.getByRole("button", { name: "Todo", exact: true }).click();
-    await page.getByRole("button", { name: "刷新状态", exact: true }).click();
-    await page.locator(".feature-document").filter({ hasText: "检查 UserTurn reset 接缝" }).waitFor();
     const goal = booted.surfaceContext.get("goal");
     const browserGoal = await goal.create({ sessionId: session.sessionId, objective: "完成 Goal 浏览器验收", maxGoalRounds: 3 });
-    await page.getByRole("button", { name: "Goal", exact: true }).click();
-    await page.getByRole("button", { name: "刷新状态", exact: true }).click();
-    await page.locator(".feature-document").filter({ hasText: "完成 Goal 浏览器验收" }).waitFor();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
+    await page.reload();
+    await openFirstSession(page);
+    assert.equal(await page.locator(".session-index").getByRole("navigation", { name: "可用视图", exact: true }).count(), 0, "the conversation sidebar contains no redundant page switcher");
+    await page.locator(".conversation-tool-calls").getByText("工具调用", { exact: true }).waitFor();
+    for (const removed of ["执行轨迹", "Plan", "任务图", "Workflow", "Memory", "Context", "Subagents"]) {
+      assert.equal(await page.locator(".session-index").getByRole("button", { name: removed, exact: true }).count(), 0, `${removed} is not a Session sidebar page`);
+    }
+    await page.locator(".todo-card").filter({ hasText: "检查 UserTurn reset 接缝" }).waitFor();
+    await page.locator(".goal-card").filter({ hasText: "完成 Goal 浏览器验收" }).waitFor();
     await page.getByRole("button", { name: "暂停", exact: true }).click();
-    await page.getByRole("button", { name: "确认操作", exact: true }).click();
-    await page.getByRole("heading", { name: "目标 · paused", exact: true }).waitFor();
+    await page.getByRole("button", { name: "确认", exact: true }).click();
+    await page.locator(".goal-phase").filter({ hasText: "已暂停" }).waitFor();
     assert.equal((await goal.get({ sessionId: session.sessionId })).revision, browserGoal.revision + 1, "Goal browser action uses exact revision CAS");
+    assert.equal((await plan.get({ sessionId: session.sessionId })).active, true, "removing the Plan page does not remove Plan state");
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
     await page.getByRole("button", { name: "通用设置", exact: true }).click();
     await page.locator("select#webui-appearance-theme").selectOption("dark");
     await page.locator("html[data-theme=dark]").waitFor();
     await page.locator("select#webui-composer-busy-delivery").selectOption("steer");
-    await page.locator(".setting-commit-status").filter({ hasText: "已应用" }).waitFor();
+    await page.locator(".settings-section").filter({ has: page.locator("#webui-composer-busy-delivery") }).locator(".setting-commit-status").filter({ hasText: "已应用" }).waitFor();
     await page.locator("select#permissions-default-profile").selectOption("workspace-write");
     await page.locator(".setting-commit-status").filter({ hasText: "已保存，将用于新会话" }).waitFor();
     const unchangedSessionPermission = await page.evaluate(async id => (await (await fetch(`/api/sessions/${encodeURIComponent(id)}/controls/permission-profile`)).json()).value, session.sessionId);
@@ -560,7 +592,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
   } finally { await browser?.close(); await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("real child Agent renders inline with owned identity, snapshot, attachment and presentation-only filtering", { timeout: 60000 }, async () => {
+test("real child Agent renders inside the live process with owned identity, snapshot and attachment", { timeout: 60000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-inline-child-"));
   let booted, browser, releaseChild, childRequests = 0;
   const childGate = new Promise(resolve => { releaseChild = resolve; });
@@ -576,7 +608,7 @@ test("real child Agent renders inline with owned identity, snapshot, attachment 
       }
       if (JSON.stringify(payload.messages).includes("UI_CHILD_RESULT_OK")) { response.end(delta("已收到子任务结果，父任务继续完成核对。", "stop") + "data: [DONE]\n\n"); return; }
       if (payload.messages.some(message => message.role === "tool")) { response.end(delta("子任务已启动；你可以展开执行证据，或继续补充要求。", "stop") + "data: [DONE]\n\n"); return; }
-      response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "inline-child-call", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ task: "检查执行记录的父子关联，并报告结果。", role: "reviewer", permissionProfile: "read-only", availableTools: ["read"] }) } }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+      response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "inline-child-call", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ task: "检查工具调用的父子关联，并报告结果。", role: "reviewer", permissionProfile: "read-only", availableTools: ["read"] }) } }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
     })(); });
   });
   try {
@@ -592,26 +624,35 @@ test("real child Agent renders inline with owned identity, snapshot, attachment 
     await createDefaultSession(page, booted, directory);
     await page.locator("#wish-composer").fill("委派一次模块边界检查，让我查看透明执行过程。");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    await page.locator(".ledger-tool").getByText("spawn_agent", { exact: true }).waitFor();
-    await page.locator(".ledger-tool > .event-body > details > summary").click();
+    const childTool = page.locator(".tool-activity").filter({ hasText: "spawn_agent" });
+    await childTool.waitFor();
+    await page.getByRole("button", { name: "工具调用", exact: true }).click();
+    await page.locator(".tool-call-row").filter({ hasText: "spawn_agent" }).locator(".tool-call-details > summary").click();
     await page.locator(".child-evidence").waitFor({ timeout: 10000 });
-    await page.locator(".child-evidence").getByRole("button", { name: "立即同步", exact: true }).click();
-    await page.locator(".terminal-output").filter({ hasText: "透明子任务" }).waitFor();
-    await page.locator(".child-evidence").getByRole("button", { name: "复制 tmux 连接命令", exact: true }).click();
+    const childEvidence = page.locator(".child-evidence"), childOutput = childEvidence.locator(".terminal-output");
+    for (let attempt = 0; attempt < 10 && !(await childOutput.textContent()).includes("透明子任务"); attempt++) {
+      await childEvidence.getByRole("button", { name: "立即同步", exact: true }).click();
+      await childEvidence.getByRole("button", { name: "立即同步", exact: true }).waitFor();
+      if (!(await childOutput.textContent()).includes("透明子任务")) await page.waitForTimeout(150);
+    }
+    assert.match(await childOutput.textContent(), /透明子任务/u);
+    await page.locator(".child-evidence").getByRole("button", { name: "复制连接命令", exact: true }).click();
     assert.ok((await page.evaluate(() => navigator.clipboard.readText())).includes("attach-session"));
+    await page.getByRole("button", { name: "主会话", exact: true }).click();
+    await page.locator("#wish-composer").waitFor();
     await page.locator("#wish-composer").fill("继续核对异常退出的记录");
     await page.getByRole("button", { name: "引导", exact: true }).waitFor();
     await capture(page, "desktop-inline-subagent");
     await page.setViewportSize({ width: 1586, height: 992 });
     await capture(page, "hero-repro");
-    await page.getByRole("button", { name: "子 Agent", exact: true }).click();
-    assert.equal(await page.locator(".ledger-user").count(), 0);
-    assert.equal(await page.locator(".child-evidence").count(), 1);
-    await page.getByRole("button", { name: "全部", exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     await capture(page, "mobile-inline-subagent");
     releaseChild();
     await page.getByRole("button", { name: "发送消息", exact: true }).waitFor({ timeout: 10000 });
+    await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
+    await page.locator(".session-link[aria-current=page]").click();
+    await page.getByRole("button", { name: "工具调用", exact: true }).click();
+    await page.locator(".tool-call-row").filter({ hasText: "spawn_agent" }).locator(".tool-call-details > summary").click();
     await page.locator(".child-result").filter({ hasText: "UI_CHILD_RESULT_OK" }).waitFor({ timeout: 10000 });
     assert.equal(childRequests, 1); assert.deepEqual(errors, []);
   } finally {
@@ -623,7 +664,7 @@ test("real child Agent renders inline with owned identity, snapshot, attachment 
   }
 });
 
-test("new ledger sends through the selected model and HTTP Provider adapter, reloads canonical transcript and preserves IME draft", { timeout: 60000 }, async () => {
+test("conversation workbench streams live output, reloads the canonical answer and preserves IME draft", { timeout: 60000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-ledger-browser-"));
   let booted, browser, tmuxTarget, requests = 0, release; const selectedModels = [];
   const gate = new Promise(resolve => { release = resolve; });
@@ -662,24 +703,24 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     await page.getByRole("button", { name: "模型配置", exact: true }).click();
     await page.locator("select#models-default-model").selectOption("fixture/secondary");
     await page.locator(".setting-commit-status").filter({ hasText: "已应用于新运行" }).waitFor();
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
     await createDefaultSession(page, booted, directory);
     const composer = page.getByLabel("消息", { exact: true });
-    await composer.fill("检查新版执行记录");
+    await composer.fill("检查新版会话界面");
     await composer.dispatchEvent("compositionstart");
     await composer.press("Enter"); assert.equal(requests, 0);
     await composer.dispatchEvent("compositionend");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
-    await page.locator(".message-text").filter({ hasText: "已收到请求。" }).waitFor({ timeout: 6000 }).catch(async error => { throw new Error(JSON.stringify({ errors, requests, streamed, body: await page.locator("body").innerText() }), { cause: error }); });
+    await page.locator(".live-stream-text").filter({ hasText: "已收到请求。" }).waitFor({ timeout: 6000 }).catch(async error => { throw new Error(JSON.stringify({ errors, requests, streamed, body: await page.locator("body").innerText() }), { cause: error }); });
     assert.equal(selectedModels[0], "secondary", "the next new Run samples the saved model setting");
     await page.locator("#wish-composer").fill("保留这段草稿");
     await page.getByRole("button", { name: "引导", exact: true }).waitFor();
     await capture(page, "desktop-busy-composer");
     release();
     await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
-    await page.locator(".ledger-assistant .message-markdown h2").filter({ hasText: "Markdown 验收" }).waitFor();
-    await page.locator(".ledger-assistant .message-markdown li").filter({ hasText: "会话列表项" }).waitFor();
-    await page.locator(".ledger-assistant .message-code-block code").filter({ hasText: "const rendered = true;" }).waitFor();
+    await page.locator(".final-answer .message-markdown h2").filter({ hasText: "Markdown 验收" }).waitFor();
+    await page.locator(".final-answer .message-markdown li").filter({ hasText: "会话列表项" }).waitFor();
+    await page.locator(".final-answer .message-code-block code").filter({ hasText: "const rendered = true;" }).waitFor();
     const cache = page.locator(".model-usage-trigger");
     await cache.filter({ hasText: "缓存命中 75%" }).waitFor();
     const composerBox = await page.locator(".composer-card").boundingBox(), cacheBox = await cache.boundingBox();
@@ -693,36 +734,35 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
     await page.reload();
+    await openFirstSession(page);
     await page.locator(".message-text").filter({ hasText: "这是一条本地验收回复。" }).waitFor();
-    await page.locator(".ledger-assistant .message-markdown h2").filter({ hasText: "Markdown 验收" }).waitFor();
-    assert.equal(await page.locator(".ledger-assistant").count(), 1); assert.equal(requests, 1); assert.deepEqual(errors, []);
+    await page.locator(".final-answer .message-markdown h2").filter({ hasText: "Markdown 验收" }).waitFor();
+    assert.equal(await page.locator(".final-answer").count(), 1); assert.equal(requests, 1); assert.deepEqual(errors, []);
     await page.locator("#wish-composer").fill("将验收正文写入 approved.txt");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await page.getByRole("region", { name: "工具审批 write", exact: true }).waitFor({ timeout: 6000 }).catch(async error => { throw new Error(JSON.stringify({ errors, requests, body: await page.locator("body").innerText() }), { cause: error }); });
     await capture(page, "desktop-approval");
     await page.getByRole("button", { name: "批准工具调用", exact: true }).click();
     await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
-    await page.locator(".ledger-tool summary").click();
-    await page.locator(".ledger-tool pre").filter({ hasText: "approved.txt" }).first().waitFor();
+    await page.getByRole("button", { name: "工具调用", exact: true }).click();
+    const writeTool = page.locator(".tool-call-row").filter({ hasText: "write" }).last();
+    await writeTool.locator(".tool-call-details > summary").click();
+    await writeTool.locator("pre").filter({ hasText: "approved.txt" }).first().waitFor();
     assert.equal(await readFile(join(directory, "approved.txt"), "utf8"), "本地工具验收正文");
     assert.equal(requests, 3); assert.deepEqual(new Set(selectedModels), new Set(["secondary"])); assert.deepEqual(errors, []);
     assert.equal(await page.locator(".file-tool-details").count(), 1);
-    await page.getByRole("button", { name: "Context", exact: true }).click();
-    await page.getByRole("button", { name: "刷新状态", exact: true }).click();
-    await page.locator(".feature-document").filter({ hasText: '"provider": "fixture"' }).waitFor();
-    assert.equal((await page.locator(".feature-document").innerText()).includes("将验收正文写入"), false);
-    await capture(page, "desktop-context");
-    await page.getByRole("button", { name: "执行轨迹", exact: true }).click();
-    await page.locator(".trajectory-list summary").filter({ hasText: "tool.completed" }).waitFor();
+    await page.getByRole("button", { name: "主会话", exact: true }).click();
+    await page.locator("#wish-composer").waitFor();
     const tmux = booted.surfaceContext.get("tmux");
     const terminal = await tmux.start({ sessionId: "browser-fixture", windowName: "observe", command: { executable: "/bin/cat", cwd: directory }, metadata: { workspaceRoot: directory, label: "Browser acceptance only" } });
     tmuxTarget = terminal.target;
     await tmux.send({ target: tmuxTarget, text: "TMUX_BROWSER_VERIFIED", enter: true });
-    await page.getByRole("button", { name: "执行记录", exact: true }).click();
     const sessionSidebar = page.getByRole("complementary", { name: "会话侧栏", exact: true });
+    assert.equal(await sessionSidebar.isHidden(), true, "the right sidebar never opens just because the viewport is wide");
+    await page.getByRole("button", { name: "打开会话侧栏", exact: true }).click();
     await sessionSidebar.waitFor();
     const rightResize = page.getByRole("separator", { name: "调整右侧栏宽度", exact: true });
     const conversationBox = await page.locator(".conversation").boundingBox();
@@ -740,19 +780,35 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     const rightDefault = Math.round(conversationBox.width * 0.45);
     await dragHorizontal(page, rightResize, -(rightDefault - 300));
     assert.equal(Math.round((await sessionSidebar.boundingBox()).width), rightDefault);
+    const addWindow = sessionSidebar.getByRole("button", { name: "新标签页", exact: true });
+    assert.equal(await addWindow.isVisible(), true, "the add control is present before any work window exists");
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "开始", exact: true }).getAttribute("aria-selected"), "true", "a new pane opens on Start");
     const openTmux = sessionSidebar.getByRole("button", { name: "打开 tmux", exact: true });
     await openTmux.waitFor();
-    assert.equal(await sessionSidebar.getByRole("button", { name: "刷新列表", exact: true }).count(), 0, "tmux stays unmounted until selected from the guide");
+    assert.equal(await sessionSidebar.locator(".tmux-sidebar-view").count(), 0, "tmux stays unmounted until selected from Start");
     await openTmux.click();
-    await sessionSidebar.getByRole("button", { name: "刷新列表", exact: true }).click();
+    await sessionSidebar.getByRole("button", { name: "刷新 tmux 列表", exact: true }).click();
     await page.locator(".terminal-output").filter({ hasText: "TMUX_BROWSER_VERIFIED" }).waitFor();
     await tmux.send({ target: tmuxTarget, text: "TMUX_BROWSER_LIVE", enter: true });
     await page.locator(".terminal-output").filter({ hasText: "TMUX_BROWSER_LIVE" }).waitFor({ timeout: 6000 });
     assert.ok((await page.locator(".terminal-attach").textContent()).includes("attach-session"));
-    await sessionSidebar.getByRole("button", { name: "新标签页", exact: true }).click();
+    await addWindow.click();
     await openTmux.waitFor();
-    assert.equal(await sessionSidebar.getByRole("button", { name: "刷新列表", exact: true }).count(), 0, "the add control returns to the guide and unmounts tmux");
-    await openTmux.click();
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "开始", exact: true }).getAttribute("aria-selected"), "true", "plus switches to Start");
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "tmux", exact: true }).isVisible(), true, "the existing tmux header stays visible beside Start");
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "tmux", exact: true }).getAttribute("aria-selected"), "false");
+    assert.equal(await sessionSidebar.locator(".tmux-sidebar-view").count(), 1, "the tmux work window remains mounted while Start is selected");
+    await sessionSidebar.getByRole("tab", { name: "tmux", exact: true }).click();
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "tmux", exact: true }).getAttribute("aria-selected"), "true", "the existing window can be restored from its header");
+    await addWindow.click();
+    await sessionSidebar.getByRole("button", { name: "打开 文件", exact: true }).click();
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "tmux", exact: true }).count(), 1, "adding Files keeps tmux available");
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "文件", exact: true }).count(), 1);
+    await addWindow.click();
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "文件", exact: true }).isVisible(), true, "Files stays in the top strip while Start is selected");
+    await sessionSidebar.getByRole("button", { name: "打开 文件", exact: true }).click();
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "文件", exact: true }).count(), 2, "Files can be appended from an existing Files window");
+    await sessionSidebar.getByRole("tab", { name: "tmux", exact: true }).click();
     await capture(page, "desktop-tmux");
     const splitPane = sessionSidebar.getByRole("button", { name: "分屏", exact: true });
     await splitPane.waitFor();
@@ -765,12 +821,21 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     assert.equal(await splitPane.isEnabled(), true);
     await splitPane.click();
     assert.equal(await sessionSidebar.locator(".session-dock-pane").count(), 2);
-    assert.equal(await sessionSidebar.getByRole("button", { name: "打开 tmux", exact: true }).count(), 1, "the new pane starts on the feature guide");
+    assert.equal(await sessionSidebar.locator(".session-dock-pane").nth(1).getByRole("tab", { name: "开始", exact: true }).count(), 1, "the new pane opens on Start");
+    assert.equal(await sessionSidebar.getByRole("button", { name: "打开 tmux", exact: true }).count(), 1, "the new pane can add a work window");
     await capture(page, "desktop-tmux-split-fullscreen");
     await sessionSidebar.getByRole("button", { name: "退出全屏", exact: true }).click();
     assert.equal(await sessionSidebar.locator(".session-dock-pane").count(), 2, "exiting fullscreen preserves both resource panes");
+    await page.reload();
+    await openFirstSession(page);
+    assert.equal(await sessionSidebar.isHidden(), true, "refresh keeps the right sidebar collapsed");
+    await page.getByRole("button", { name: "打开会话侧栏", exact: true }).click();
+    await sessionSidebar.waitFor();
+    assert.equal(await sessionSidebar.locator(".session-dock-pane").count(), 1, "reopening starts from the default one-pane layout");
+    assert.equal(await sessionSidebar.getByRole("tab", { name: "开始", exact: true }).count(), 1, "reopening starts on Start");
+    assert.equal(await sessionSidebar.locator(".tmux-sidebar-toolbar").count(), 0, "a closed page does not restore its previously mounted resource UI");
+    await openTmux.waitFor();
     await sessionSidebar.getByRole("button", { name: "打开 tmux", exact: true }).click();
-    await page.locator(".ledger-tool summary").first().click();
     await page.locator("#wish-composer").fill("再检查一下失败恢复的处理");
     await sessionSidebar.locator(".tmux-sidebar-toolbar [role=status]").filter({ hasText: "自动同步 ·" }).waitFor();
     await sessionSidebar.getByRole("button", { name: "收起会话侧栏", exact: true }).click();
@@ -827,9 +892,10 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     await page.locator("#wish-composer").fill("查看 Skill 目录用于历史能力验收");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
-    await page.locator(".ledger-tool strong").filter({ hasText: "list_skills" }).waitFor();
-    // A visible Tool call is not a Run-completion barrier. Stop only after idle.
-    await page.waitForFunction(() => document.querySelector(".run-state")?.textContent === "等待请求");
+    await page.locator(".process-disclosure").last().locator(":scope > summary").click();
+    await page.locator(".tool-activity strong").filter({ hasText: "list_skills" }).waitFor();
+    // A visible Tool call is not a Run-completion barrier. Stop only after the running badge clears.
+    await page.locator(".run-state.running").waitFor({ state: "detached" });
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
     await page.getByRole("button", { name: "插件管理", exact: true }).click();
     const disableResponse = page.waitForResponse(response => response.url().endsWith("/api/management/plugins/change") && response.request().method() === "POST");
@@ -840,9 +906,9 @@ test("new ledger sends through the selected model and HTTP Provider adapter, rel
     assert.equal(disableOperation.operation.kind, "disable", JSON.stringify(disableOperation));
     assert.equal(disableOperation.operation.phase, "queued", JSON.stringify(disableOperation));
     await page.getByRole("button", { name: "Skills", exact: true }).waitFor({ state: "detached" });
-    await page.getByRole("button", { name: "执行工作区", exact: true }).click();
-    await page.getByRole("button", { name: "工具", exact: true }).click();
-    assert.equal(await page.locator(".ledger-user").count(), 0);
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
+    await page.getByRole("button", { name: "工具调用", exact: true }).click();
+    assert.ok(await page.locator(".tool-call-turn").count() > 0);
     await page.locator(".historical-capability").filter({ hasText: "Host 工具入口当前不可用" }).waitFor();
     await capture(page, "desktop-historical-capability");
     await page.locator(".historical-capability").getByRole("button", { name: "查看插件管理", exact: true }).click();

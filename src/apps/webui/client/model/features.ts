@@ -8,6 +8,7 @@ export interface FeaturesSnapshot { readonly sessionId: string | null; readonly 
 export class FeaturesClientModel extends SnapshotStore<FeaturesSnapshot> {
   private readonly queue: RefreshQueue;
   private readonly remove: () => void;
+  private readonly timer: ReturnType<typeof setInterval>;
   private closed = false;
   constructor(private readonly connection: ClientConnection, private readonly sessions: SessionClientModel) {
     super({ sessionId: null, views: [], error: null, available: false, pending: false });
@@ -26,6 +27,7 @@ export class FeaturesClientModel extends SnapshotStore<FeaturesSnapshot> {
     this.remove = sessions.subscribe(() => { const state = sessions.getSnapshot();
       if (state.selectedId !== this.getSnapshot().sessionId || !state.available) this.publish({ ...this.getSnapshot(), sessionId: state.selectedId, views: [], available: false });
       void this.refresh(); });
+    this.timer = setInterval(() => { void this.refresh(); }, 3000);
     void this.refresh();
   }
   refresh = (): Promise<void> => this.queue.request();
@@ -47,5 +49,5 @@ export class FeaturesClientModel extends SnapshotStore<FeaturesSnapshot> {
       throw error;
     }
   };
-  close(): void { this.closed = true; this.queue.close(); this.remove(); }
+  close(): void { this.closed = true; clearInterval(this.timer); this.queue.close(); this.remove(); }
 }

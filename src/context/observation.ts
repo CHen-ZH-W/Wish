@@ -48,5 +48,10 @@ export class ContextObservations {
     while (this.entries.size > 100) this.entries.delete(this.entries.keys().next().value!);
   };
   list(sessionId: string): readonly ContextObservation[] { return Object.freeze([...this.entries.values()].filter(item => item.sessionId === sessionId)); }
+  clear(sessionId: string, runId?: string): void {
+    for (const [key, item] of this.entries) {
+      if (item.sessionId === sessionId && (runId === undefined || item.runId === runId)) this.entries.delete(key);
+    }
+  }
 }
 function freeze<T>(value: T): T { if (value && typeof value === "object") { Object.freeze(value); for (const item of Object.values(value)) freeze(item); } return value; }

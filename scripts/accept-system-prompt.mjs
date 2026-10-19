@@ -13,6 +13,13 @@ import BashToolGuidance from "../dist/shell/consumers/guidance.js";
 import WebToolGuidance from "../dist/web/guidance.js";
 import SubagentToolGuidance from
   "../dist/subagents/consumers/model-tools/guidance.js";
+import PlanToolGuidance from "../dist/plan/consumers/tool-guidance.js";
+import TodoToolGuidance from "../dist/todo/consumers/tool-guidance.js";
+import GoalToolGuidance from "../dist/goal/consumers/tool-guidance.js";
+import CoordinatorToolGuidance from "../dist/coordinator/consumers/tool-guidance.js";
+import TasksToolGuidance from "../dist/tasks/consumers/tool-guidance.js";
+import WorkflowToolGuidance from "../dist/workflow/consumers/tool-guidance.js";
+import MemoryToolGuidance from "../dist/memory/consumers/tool-guidance.js";
 
 test("base sections stay independently owned and assemble into one stable system instruction", async () => {
   const root = new Context();
@@ -85,6 +92,40 @@ test("capability owners contribute guidance only for final visible Tools", async
     ],
   );
 
+  await root.fiber.dispose();
+});
+
+test("entry guidance follows visible control Tools and its owner lifecycle", async () => {
+  const root = new Context();
+  await root.plugin(SystemPrompt);
+  const planFiber = root.plugin(PlanToolGuidance);
+  await planFiber;
+  for (const plugin of [TodoToolGuidance, GoalToolGuidance, CoordinatorToolGuidance,
+    TasksToolGuidance, WorkflowToolGuidance, MemoryToolGuidance]) await root.plugin(plugin);
+
+  const sections = availableTools => root.systemPrompt.assemble({ availableTools });
+  assert.deepEqual(sections([]), []);
+  const visible = sections([
+    "enter_plan_mode", "todo_write", "create_goal", "enter_coordinator_mode",
+    "update_plan", "tasks_update", "workflow_read", "workflow_start", "workflow_retry",
+    "memory_search", "memory_read", "memory_write",
+  ]);
+  assert.deepEqual(visible.map(section => section.id), [
+    "plan.entry", "todo.progress", "goal.entry", "coordinator.entry",
+    "tasks.plan-graph", "workflow.status", "workflow.start", "workflow.retry",
+    "memory.retrieval", "memory.proposal",
+  ]);
+  assert.ok(visible.every(section => section.authority === "developer" && section.placement === "dynamic_tail"));
+  assert.match(visible.find(section => section.id === "plan.entry").content, /deliver the findings directly in your response/u);
+  assert.deepEqual(sections(["update_plan", "tasks_update", "memory_search"])
+    .map(section => section.id), ["tasks.plan-graph"]);
+  assert.deepEqual(sections(["read_plan", "update_plan", "exit_plan_mode", "tasks_update"])
+    .map(section => section.id), ["tasks.plan-graph"]);
+  assert.match(visible.find(section => section.id === "workflow.start").content, /human approves/u);
+  assert.match(visible.find(section => section.id === "goal.entry").content, /direct human request/u);
+
+  await planFiber.dispose();
+  assert.equal(sections(["enter_plan_mode"]).length, 0);
   await root.fiber.dispose();
 });
 

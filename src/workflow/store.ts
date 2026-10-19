@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { StorageDomain, type DomainSpec } from "../storage/domain.js";
 import type { StorageBackendResolver } from "../storage/backend.js";
 import { KV_ABSENT } from "../storage/kv.js";
@@ -5,6 +6,7 @@ import { PERMISSION_PROFILES } from "../permissions/types.js";
 import { normalizeTasks } from "../tasks/graph.js";
 import { fingerprint } from "./transition.js";
 import { snapshotChildCapabilities } from "../subagents/identity.js";
+import type { ModelsConfiguration } from "../models/types.js";
 import type { WorkflowAttempt, WorkflowRun, WorkflowStore } from "./types.js";
 
 /** A complete Run and its event prefix are committed in one CAS, never separately. */
@@ -65,15 +67,52 @@ export class MemoryWorkflowStore implements WorkflowStore {
   async list() { return Object.freeze([...this.runs.values()]); }
   async get(id: string) { return this.runs.get(id); }
   async put(run: WorkflowRun, expected: number) { this.runs.set(run.id, validateCommit(run, this.runs.get(run.id), expected)); }
+  async remove(id: string) { this.runs.delete(id); }
   async close() {}
 }
+function encodeRuns(runs: readonly WorkflowRun[]): Uint8Array {
+  const configurations: Record<string, ModelsConfiguration> = Object.create(null);
+  const storedRuns = runs.map(run => {
+    const { modelsConfiguration, ...rest } = run;
+    if (modelsConfiguration === undefined) return rest;
+    const serialized = JSON.stringify(modelsConfiguration);
+    const ref = createHash("sha256").update(serialized).digest("hex");
+    configurations[ref] ??= modelsConfiguration;
+    return { ...rest, modelsConfigurationRef: ref };
+  });
+  return new TextEncoder().encode(JSON.stringify({ configurations, runs: storedRuns }));
+}
+
+function decodeRuns(bytes: Uint8Array, version: number): unknown {
+  const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (version === 1) return parsed;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid Workflow store");
+  const { configurations, runs } = parsed as Record<string, unknown>;
+  if (!configurations || typeof configurations !== "object" || Array.isArray(configurations) || !Array.isArray(runs)) throw new Error("Invalid Workflow store");
+  return runs.map((entry: unknown) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Invalid Workflow Run");
+    const { modelsConfigurationRef, ...run } = entry as Record<string, unknown>;
+    if (modelsConfigurationRef === undefined) return run;
+    if (typeof modelsConfigurationRef !== "string" || !/^[a-f0-9]{64}$/u.test(modelsConfigurationRef) ||
+        !Object.hasOwn(configurations, modelsConfigurationRef)) throw new Error("Invalid Workflow configuration reference");
+    const configuration = (configurations as Record<string, unknown>)[modelsConfigurationRef];
+    if (!configuration || typeof configuration !== "object" || Array.isArray(configuration) ||
+        createHash("sha256").update(JSON.stringify(configuration)).digest("hex") !== modelsConfigurationRef) throw new Error("Invalid Workflow configuration");
+    return { ...run, modelsConfiguration: configuration };
+  });
+}
+
 const workflowDomain: DomainSpec<void, readonly WorkflowRun[]> = {
-  id: "workflow/runs", schemaVersion: 1, shape: "global", requirements: { kv: { list: false } },
+  id: "workflow/runs", schemaVersion: 2, shape: "global", requirements: { kv: { list: false } },
   resolve: () => ({ default: { kind: "value", value: [] } }),
-  encode: runs => new TextEncoder().encode(JSON.stringify(runs)),
-  decode: bytes => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+  encode: encodeRuns,
+  decode: decodeRuns,
+  migrate: ({ value, fromVersion }) => {
+    if (fromVersion !== 1) throw new Error("Unsupported Workflow store version");
+    return value;
+  },
   validate: value => {
-    if (!Array.isArray(value) || value.length > 4096) throw new Error("Workflow store capacity exceeded");
+    if (!Array.isArray(value)) throw new Error("Invalid Workflow store");
     const runs = value.map(snapshotWorkflow);
     if (new Set(runs.map(run => run.id)).size !== runs.length) throw new Error("Duplicate Workflow Run");
     return Object.freeze(runs);
@@ -89,6 +128,11 @@ export class DomainWorkflowStore implements WorkflowStore {
     const stable = validateCommit(run, current.value.find(r => r.id === run.id), expected);
     const runs = current.value.filter(r => r.id !== run.id);
     await this.domain.save([...runs, stable], current.revision === undefined ? KV_ABSENT : { kind: "revision", revision: current.revision });
+  }
+  async remove(id: string) {
+    const current = (await this.domain.load())!;
+    if (!current.value.some(run => run.id === id)) return;
+    await this.domain.save(current.value.filter(run => run.id !== id), current.revision === undefined ? KV_ABSENT : { kind: "revision", revision: current.revision });
   }
   async close() {}
 }

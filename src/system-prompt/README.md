@@ -11,10 +11,12 @@
   行为、通用 Tool 调用规则和输出风格。
 - 部署级和 Agent 级附加指令由 `Agents` 配置拥有，排在基础稳定段之后；没有配置时
   不再复制一份默认身份。
-- Tool 名称、description 和参数约束只进入结构化 Tool schema，不在这里生成工具
-  目录。
+- 完整 Tool 目录、description 和参数约束由结构化 Tool schema 提供；这里不生成工具
+  目录，只在跨调用 guidance 中点名必要的 Tool。
 - 需要跨多次调用才能表达的能力规则由能力模块自己注册。例如 filesystem、shell、
-  web 和 subagents 分别拥有自己的 guidance，并通过 `requiredTools` 绑定最终可见能力。
+  web、subagents、Plan、Goal、Todo、Coordinator、Tasks、Workflow 和 Memory 分别拥有
+  自己的 guidance，并通过 `requiredTools` 绑定最终可见能力。入口引导说明何时选择
+  能力及其跨工具边界；工具参数和完整状态仍由各自的 Tool schema 与 Context Provider 提供。
 - Mode、Plan、Coordinator、权限、Sandbox、Workspace、Memory 和 Skills 等变化事实仍由
   各自的 Context Provider 投影；本模块不复制这些状态。
 

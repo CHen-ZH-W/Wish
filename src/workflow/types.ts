@@ -82,6 +82,7 @@ export interface WorkflowStore {
   list(): Promise<readonly WorkflowRun[]>;
   get(id: string): Promise<WorkflowRun | undefined>;
   put(run: WorkflowRun, expectedRevision: number): Promise<void>;
+  remove(id: string): Promise<void>;
   close(): Promise<void>;
 }
 export interface BeginAttemptRequest { readonly runId: string; readonly stepId: string; readonly strategy: string; readonly edge?: string; readonly recoveryPolicy?: ToolRecoveryPolicy }
@@ -90,6 +91,7 @@ export interface Workflow {
   create(request: CreateWorkflowRequest): Promise<WorkflowRun>;
   get(id: string): Promise<WorkflowRun | undefined>;
   list(): Promise<readonly WorkflowRun[]>;
+  remove(id: string): Promise<void>;
   beginAttempt(request: BeginAttemptRequest): Promise<WorkflowAttempt>;
   markDispatched(target: AttemptTarget): Promise<void>;
   bindChild(target: AttemptTarget, childId: string): Promise<void>;

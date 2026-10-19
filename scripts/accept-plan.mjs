@@ -96,6 +96,9 @@ test("Plan state is Session-scoped, exact-version approved, and durably reloadab
     assert.equal(approved.active, false);
     assert.equal(approved.document.approvalSummary, "Reviewed");
     assert.equal(approved.exitedAt, "2026-09-12T12:00:01.000Z");
+    await second.clear({ sessionId: "session-1" });
+    assert.equal(await second.get({ sessionId: "session-1" }), undefined);
+    assert.equal((await second.enter({ sessionId: "session-1" })).version, 1);
     await second.close();
   } finally {
     await kv.close();
@@ -130,12 +133,20 @@ test("Plan Context appears only while the durable mode is active", async () => {
   const active = await provider.provide(input);
   assert.equal(active.length, 1);
   assert.match(active[0].message.content, /does not start a Workflow/u);
-  await plan.update({ sessionId: "session-plan", markdown: "# Plan" });
-  await plan.approve({
+  assert.match(active[0].message.content, /Deliver completed read-only analysis and evidence directly in your response/u);
+  assert.match(active[0].message.content, /Never call exit_plan_mode merely to finish a response/u);
+  assert.doesNotMatch(active[0].message.content, /awaiting human review/u);
+  const saved = await plan.update({ sessionId: "session-plan", markdown: "# Plan" });
+  const submitted = await plan.review({
     sessionId: "session-plan",
     markdown: "# Plan",
-    expectedPlanVersion: 1,
+    expectedPlanVersion: saved.document.version,
   });
+  const waiting = await provider.provide(input);
+  assert.match(waiting[0].message.content, /awaiting human review/u);
+  await plan.decide({ sessionId: "session-plan", reviewId: submitted.review.id,
+    expectedPlanVersion: saved.document.version, digest: saved.document.digest,
+    decision: "approve", actor: "test-user" });
   assert.deepEqual(await provider.provide(input), []);
   await plan.close();
 });

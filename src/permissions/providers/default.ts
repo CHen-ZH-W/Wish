@@ -33,7 +33,7 @@ import {
 export const DEFAULT_PERMISSION_PROFILE: PermissionProfile =
   "approval-required";
 export const DEFAULT_PERMISSION_POLICY_VERSION =
-  "wish-permissions-default-v1";
+  "wish-permissions-default-v2";
 export const DEFAULT_MAX_PENDING_AUTHORIZATIONS = 1024;
 
 /** Loader-owned defaults for the built-in policy provider. */
@@ -517,13 +517,10 @@ function evaluate(
     return readOnly && !elevatedEffect ? "allow" : "ask";
   }
   if (permissions.profile === "workspace-write") {
-    const localCapability = capabilities.every((capability) =>
-      capability === "filesystem.read" ||
-      capability === "filesystem.write" ||
-      capability === "process.exec" ||
-      capability === "runtime.read"
-    );
-    return localCapability && !elevatedEffect ? "allow" : "ask";
+    return input.call.name === "enter_plan_mode" ||
+        input.call.name === "exit_plan_mode"
+      ? "ask"
+      : "allow";
   }
   return "allow";
 }

@@ -27,6 +27,7 @@ export abstract class PlanService extends Service implements Plan {
   }
 
   abstract get(request: PlanSessionRequest): Promise<PlanState | undefined>;
+  abstract clear(request: PlanSessionRequest): Promise<void>;
   abstract enter(request: EnterPlanRequest): Promise<PlanState>;
   abstract update(request: UpdatePlanRequest): Promise<PlanState>;
   abstract approve(request: ApprovePlanRequest): Promise<PlanState>;

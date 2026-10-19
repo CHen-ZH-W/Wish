@@ -2,6 +2,8 @@ import { registerManagedSessionFeature } from "../../apps/session-feature-owner.
 import type { Context } from "@deepseek-ai/cordis";
 export default { name: "tasks-session-feature", inject: ["application", "tasks", "plan"], apply(ctx: Context) {
   registerManagedSessionFeature(ctx, "tasks", {
+    purgeOrder: 50,
+    purgeSession(sessionId) { return ctx.tasks.clear(sessionId); },
     async inspect(sessionId) {
       const plan = await ctx.plan.get({ sessionId });
       const artifact = plan?.document?.artifacts?.find(ref => ref.kind === "tasks" && ref.id === sessionId);

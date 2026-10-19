@@ -39,8 +39,8 @@ import type {
   Subagents,
 } from "./types.js";
 
-const DEFAULT_MAX_CONCURRENT = 4;
-const DEFAULT_MAX_CONCURRENT_PER_RUN = 2;
+const DEFAULT_MAX_CONCURRENT = 8;
+const DEFAULT_MAX_CONCURRENT_PER_RUN = 8;
 
 export interface SubagentRuntimeOptions {
   readonly execution: SubagentExecutionProvider;
@@ -72,6 +72,7 @@ export class SubagentRuntime implements Subagents {
   private readonly listeners = new Set<SubagentEventListener>();
   private readonly monitorAbort = new AbortController();
   private readonly monitors = new Map<string, Promise<void>>();
+  private readonly cancellationListeners = new Map<string, () => void>();
   private tail = Promise.resolve();
   private closed = false;
   private observationPaused = false;
@@ -103,16 +104,19 @@ export class SubagentRuntime implements Subagents {
   }
 
   spawn(request: SpawnSubagentRequest): Promise<SubagentRecord> {
-    const input = normalizeSpawn(request);
+    const normalized = normalizeSpawn(request);
     return this.serial(async () => {
+      const input = normalizeSpawn(await this.launcher.compose?.(normalized) ?? normalized);
       const records = await this.refreshAll(input.signal);
       const id = input.idempotencyKey === undefined ? identifier(this.nextId(), "Subagent id factory") : subagentIdForKey(input.idempotencyKey);
       const existing = records.find(record => record.id === id);
       if (existing) {
         if (!input.idempotencyKey || !ownedBy(existing, input) || existing.task !== input.task || existing.role !== input.role ||
             existing.model !== input.model || existing.permissionProfile !== input.permissionProfile ||
+            existing.scopePresetDigest !== input.scopePresetDigest ||
             JSON.stringify(existing.availableTools) !== JSON.stringify(input.availableTools) ||
             JSON.stringify(existing.allowedCapabilities) !== JSON.stringify(input.allowedCapabilities)) throw new Error("Subagent idempotency conflict");
+        this.watchParentCancellation(existing, input.signal);
         return existing;
       }
       const running = records.filter(isLive);
@@ -148,6 +152,7 @@ export class SubagentRuntime implements Subagents {
         workspaceRoot: input.workspaceRoot,
         role: input.role,
         task: input.task,
+        ...(input.scopePresetDigest === undefined ? {} : { scopePresetDigest: input.scopePresetDigest }),
         ...(input.allowedCapabilities === undefined ? {} : { allowedCapabilities: input.allowedCapabilities }),
         ...(input.model === undefined ? {} : { model: input.model }),
         ...(input.permissionProfile === undefined
@@ -161,6 +166,7 @@ export class SubagentRuntime implements Subagents {
         updatedAt: timestamp,
       });
       await this.store.create(record, input.signal);
+      let launchStopped = false;
       try {
         const identity: SubagentLaunchIdentity = Object.freeze({
           id,
@@ -175,6 +181,12 @@ export class SubagentRuntime implements Subagents {
             record = Object.freeze({ ...record, resourceManifestDigest: launch.resourceManifestDigest });
             await this.store.replace(record, input.signal);
           }
+          if (launch.scopePresetDigest !== undefined) {
+            if (!/^[a-f0-9]{64}$/u.test(launch.scopePresetDigest)) throw new Error("Invalid Agent Scope preset digest");
+            if (record.scopePresetDigest !== undefined && record.scopePresetDigest !== launch.scopePresetDigest) throw new Error("Agent Scope preset changed after child admission");
+            record = Object.freeze({ ...record, scopePresetDigest: launch.scopePresetDigest });
+            await this.store.replace(record, input.signal);
+          }
           session = await this.execution.start({
             id,
             role: launch.windowName ?? input.role,
@@ -182,6 +194,17 @@ export class SubagentRuntime implements Subagents {
             command: launch.command,
             ...(input.signal === undefined ? {} : { signal: input.signal }),
           });
+          if (input.signal?.aborted) {
+            // A Provider may complete launch after the parent was cancelled.
+            // Retain the target so a failed stop remains recoverable.
+            record = Object.freeze({ ...record, target: session.target });
+            await this.store.replace(record);
+            await this.execution.stop(session.target);
+            launchStopped = true;
+            throw input.signal.reason instanceof Error
+              ? input.signal.reason
+              : new Error("Parent Run was cancelled during child launch");
+          }
         } catch (error: unknown) {
           await launch.cleanupOnFailure?.();
           throw error;
@@ -197,9 +220,14 @@ export class SubagentRuntime implements Subagents {
         await this.store.replace(record, input.signal);
         if (!session.active) await this.cleanupLaunchSecrets(record);
         this.publish(record);
+        this.watchParentCancellation(record, input.signal);
         if (isLive(record)) this.monitor(record.id);
         return record;
       } catch (error: unknown) {
+        if (input.signal?.aborted && record.target !== undefined && !launchStopped) {
+          // A cancelled persistence write can fail after launch succeeded.
+          await this.execution.stop(record.target).catch(() => undefined);
+        }
         const failed = Object.freeze({
           ...record,
           status: "failed" as const,
@@ -308,6 +336,25 @@ export class SubagentRuntime implements Subagents {
     });
   }
 
+  purge(request: StopSubagentRequest): Promise<void> {
+    const id = identifier(request.id, "Subagent id");
+    return this.serial(async () => {
+      const record = await this.store.get(id);
+      if (!record) return;
+      if (!ownedBy(record, normalizeOwner(request))) throw new SubagentNotFoundError(id);
+      if (record.target) {
+        await this.execution.stop(record.target);
+      } else if (!record.target && ["starting", "running", "lost"].includes(record.status)) {
+        throw new Error(`Cannot prove Subagent ${id} has stopped`);
+      }
+      await this.cleanupLaunchSecrets(record);
+      await this.launcher.purgeChild?.({ id, childSessionId: record.childSessionId, childRunId: record.childRunId });
+      await this.store.remove(id);
+      this.cancellationListeners.get(id)?.();
+      this.cancellationListeners.delete(id);
+    });
+  }
+
   async collect(request: CollectSubagentRequest): Promise<CollectedSubagent> {
     return this.serial(async () => {
       const record = await this.required(request);
@@ -329,6 +376,8 @@ export class SubagentRuntime implements Subagents {
   }
 
   close(): Promise<void> {
+    for (const remove of this.cancellationListeners.values()) remove();
+    this.cancellationListeners.clear();
     if (this.closing) return this.closing;
     this.closed = true;
     this.listeners.clear();
@@ -455,6 +504,10 @@ export class SubagentRuntime implements Subagents {
   }
 
   private publish(record: SubagentRecord): void {
+    if (!isLive(record)) {
+      this.cancellationListeners.get(record.id)?.();
+      this.cancellationListeners.delete(record.id);
+    }
     if (this.closed) return;
     const event: SubagentEvent = Object.freeze({
       type: "subagent.updated" as const,
@@ -468,6 +521,22 @@ export class SubagentRuntime implements Subagents {
         // Diagnostic observers never change lifecycle decisions.
       }
     }
+  }
+
+  private watchParentCancellation(record: SubagentRecord, signal?: AbortSignal): void {
+    if (this.closed || signal === undefined || !isLive(record)) return;
+    this.cancellationListeners.get(record.id)?.();
+    const stop = () => {
+      this.cancellationListeners.get(record.id)?.();
+      this.cancellationListeners.delete(record.id);
+      // The parent signal is already cancelled; cleanup needs fresh authority.
+      void this.stop({ id: record.id, parentAgentId: record.parentAgentId,
+        parentSessionId: record.parentSessionId, parentRunId: record.parentRunId,
+        workspaceRoot: record.workspaceRoot }).catch(() => undefined);
+    };
+    signal.addEventListener("abort", stop, { once: true });
+    this.cancellationListeners.set(record.id, () => signal.removeEventListener("abort", stop));
+    if (signal.aborted) stop();
   }
 
   private cleanupLaunchSecrets(record: SubagentRecord): Promise<void> {
@@ -544,6 +613,11 @@ function reconcile(
   });
 }
 
+function scopePresetDigest(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) throw new TypeError("Invalid Agent Scope preset digest");
+  return value;
+}
+
 function isLive(record: SubagentRecord): boolean {
   return record.status === "starting" || record.status === "running";
 }
@@ -553,6 +627,7 @@ function normalizeSpawn(request: SpawnSubagentRequest): SpawnSubagentRequest & {
     throw new TypeError("Spawn Subagent request must be an object");
   }
   return Object.freeze({
+    ...(request.scopePresetDigest === undefined ? {} : { scopePresetDigest: scopePresetDigest(request.scopePresetDigest) }),
     ...(request.allowedCapabilities === undefined ? {} : { allowedCapabilities: snapshotChildCapabilities(request.allowedCapabilities) }),
     ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: identifier(request.idempotencyKey, "Subagent dispatch key") }),
     parentAgentId: identifier(request.parentAgentId, "Subagent parent Agent id"),
@@ -665,14 +740,12 @@ function errorMessage(error: unknown): string {
 
 export interface Config {
   readonly backendId?: string;
-  readonly maxRecords?: number;
   readonly maxConcurrent?: number;
   readonly maxConcurrentPerRun?: number;
 }
 
 export const Config: s<Config> = s.object({
   backendId: s.string(),
-  maxRecords: s.number().step(1).min(1),
   maxConcurrent: s.number().step(1).min(1),
   maxConcurrentPerRun: s.number().step(1).min(1),
 });
@@ -701,7 +774,6 @@ export class SubagentsRuntimeService extends SubagentsService {
         store: new DomainSubagentRecordStore({
           storage: this.lease,
           backendId,
-          ...(config.maxRecords === undefined ? {} : { maxRecords: config.maxRecords }),
         }),
         launcher: {
           resolve: (request, identity) => {
@@ -715,6 +787,11 @@ export class SubagentsRuntimeService extends SubagentsService {
             return typeof cleanup === "function"
               ? cleanup.call(launcher, identity)
               : undefined;
+          },
+          purgeChild: (identity) => {
+            const launcher = ctx.get("subagentLauncher");
+            if (!launcher) throw new Error("Subagent launcher is unavailable for cleanup");
+            return launcher.purgeChild(identity);
           },
         },
         results: {
@@ -782,6 +859,7 @@ export class SubagentsRuntimeService extends SubagentsService {
   capture(request: CaptureSubagentRequest): Promise<string> { return this.track(() => this.backend.capture(request)); }
   send(request: SendSubagentRequest): Promise<void> { return this.track(() => this.backend.send(request)); }
   stop(request: StopSubagentRequest): Promise<SubagentRecord> { return this.track(() => this.backend.stop(request)); }
+  purge(request: StopSubagentRequest): Promise<void> { return this.track(() => this.backend.purge(request)); }
   collect(request: CollectSubagentRequest): Promise<CollectedSubagent> { return this.track(() => this.backend.collect(request)); }
   subscribe(listener: SubagentEventListener): () => void {
     if (this.suspended || this.closing) throw new SubagentClosedError();

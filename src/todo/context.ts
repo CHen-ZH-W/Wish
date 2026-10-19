@@ -30,7 +30,7 @@ export class TodoContextProvider implements ContextProvider<ContextInput> {
         content: [
           "Current UserTurn Todo list (host state, not a durable task graph):",
           JSON.stringify({ revision: state.revision, items: state.items }, null, 2),
-          "Keep this list current with todo_write. Replace the whole list; mark completed work promptly and keep at most one item in_progress.",
+          "Keep this list current with todo_write. Replace the whole list and mark completed work promptly. Pass the matching todoId to spawn_agent so Host can follow child progress; parallel items may be in_progress together.",
           "This list resets when the next UserTurn opens.",
         ].join("\n"),
       }),

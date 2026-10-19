@@ -7,6 +7,8 @@ import type {
   OpenTodoTurnRequest,
   ReplaceTodoRequest,
   Todo,
+  TodoChildWorkRequest,
+  TodoChildWorkUpdate,
   TodoState,
 } from "./types.js";
 
@@ -49,6 +51,18 @@ export class TodoService extends Service implements Todo {
 
   replace(request: ReplaceTodoRequest): Promise<TodoState> {
     return this.work.run(() => this.backend.replace(request));
+  }
+
+  bindChild(request: TodoChildWorkRequest): Promise<TodoState | undefined> {
+    return this.work.run(() => this.backend.bindChild(request));
+  }
+
+  updateChild(request: TodoChildWorkUpdate): Promise<TodoState | undefined> {
+    return this.work.run(() => this.backend.updateChild(request));
+  }
+
+  clear(sessionId: string, runId?: string): Promise<void> {
+    return this.work.run(() => this.backend.clear(sessionId, runId));
   }
 
   close(): Promise<void> {

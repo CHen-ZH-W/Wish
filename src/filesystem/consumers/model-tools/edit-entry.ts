@@ -8,6 +8,7 @@ export default {
   inject: ["tools", "filesystem"],
   apply(ctx: Context): void {
     const owner = new ManagedToolOwner(ctx, { code: "edit_consumer", codeReload: true });
-    owner.register(createEditTool({ filesystem: ctx.filesystem }));
+    owner.register(createEditTool({ filesystem: ctx.filesystem }), undefined,
+      { requires: [], requiredCapabilities: ["filesystem.write"] });
   },
 };

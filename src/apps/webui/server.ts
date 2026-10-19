@@ -519,8 +519,13 @@ async function routeRequest(
           }));
           pruneRuns(state);
         },
-        () => {
-          state.runs.delete(handle.runId);
+        (error) => {
+          state.runs.set(handle.runId, Object.freeze({
+            ...accepted.run,
+            status: "failed",
+            cleanupError: error instanceof Error ? error.message : String(error),
+          }));
+          pruneRuns(state);
         },
       ).finally(() => {
         state.runCompletions.delete(handle.runId);

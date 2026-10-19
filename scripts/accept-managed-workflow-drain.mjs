@@ -60,7 +60,7 @@ test("managed Workflow Scheduler disable drains a tick and hands the same Attemp
     subagents.inspect = async () => { inspections += 1; inspectEntered.resolve(); await inspectRelease.promise; return child; };
     subagents.stop = async () => { stops += 1; };
 
-    const parent = { holds: 0, releases: 0, messages: [], deferCompletion() {
+    const parent = { holds: 0, releases: 0, messages: [], deferUserTurnCompletion() {
       this.holds += 1; return { release: () => { this.releases += 1; } };
     }, resume(message) { this.messages.push(message); return { accepted: true }; } };
     previous.children.watch(run.id, parent, undefined, "parent-run");

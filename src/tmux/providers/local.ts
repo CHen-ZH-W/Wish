@@ -133,8 +133,11 @@ export class LocalTmuxBackend implements Tmux {
       if (this.options.socketPath !== undefined) {
         await mkdir(dirname(this.options.socketPath), { recursive: true, mode: 0o700 });
       }
-      await this.run(args, request.signal);
+      // Let the tmux CLI report whether it created this session before honoring
+      // cancellation. Otherwise an aborted new-session may leave an unowned child.
+      await this.run(args);
       started = true;
+      throwIfAborted(request.signal);
       await this.run([
         ...this.connectionArgs(),
         "set-option",

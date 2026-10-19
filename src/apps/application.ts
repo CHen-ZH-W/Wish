@@ -66,7 +66,8 @@ type WishRunSelection = Pick<WishRunPayloadWithSelectedModel, "model" | "reasoni
 // Session manager must not delete between start validation and Run registration.
 const sessionAdmissions = new WeakMap<SessionManager, {
   tails: Map<string, Promise<void>>;
-  active: Map<string, Set<Promise<unknown>>>;
+  active: Map<string, Set<WishRunHandle>>;
+  pendingCleanup: Map<string, Set<string>>;
 }>();
 
 interface DefaultWishApplicationOptions {
@@ -160,7 +161,7 @@ export class ApplicationFacade implements WishApplication {
 
   async archiveSession(input: ArchiveSessionInput): Promise<Session> {
     return this.serialSession(input.sessionId, async () => {
-      await this.requireRemovable(input);
+      await this.requireRemovable(input, "archive");
       return this.options.sessions.archive(input);
     });
   }
@@ -174,14 +175,41 @@ export class ApplicationFacade implements WishApplication {
 
   async deleteSession(input: DeleteSessionInput): Promise<void> {
     return this.serialSession(input.sessionId, async () => {
-      await this.requireRemovable(input);
+      await this.getSession(input);
+      await this.stopSessionRuns(input);
+      await this.requireRemovable(input, "delete");
+      await this.sessionFeatures?.purgeSession?.(input.sessionId);
+      await this.sessionReasoning?.clear?.(input.sessionId);
+      await this.sessionPermissions?.clear?.(input.sessionId);
       await this.options.sessions.delete(input);
+      this.admissions().pendingCleanup.delete(input.sessionId);
     });
+  }
+
+  private async stopSessionRuns(input: DeleteSessionInput): Promise<void> {
+    const active = [...this.admissions().active.get(input.sessionId) ?? []];
+    const runIds = new Set(active.map(handle => handle.runId));
+    for (const run of this.runGeneration?.snapshot().activeRuns ?? []) {
+      if (run.scope === input.sessionId) runIds.add(run.runId);
+    }
+    for (const runId of runIds) {
+      let receipt: ReturnType<WishApplication["controlRun"]>;
+      try {
+        receipt = this.controlRun(runId, { type: "abort", source: "wish-session-delete", reason: "Owner Session deleted" });
+      } catch (cause) {
+        throw Object.assign(new Error(`无法确认运行 ${runId} 已停止，请稍后重试删除。`, { cause }), { code: "session_busy" });
+      }
+      if (!receipt.accepted && receipt.reason !== "already_cancelled" && receipt.reason !== "run_already_terminal") {
+        throw Object.assign(new Error(`无法停止运行 ${runId}：${receipt.reason ?? "状态已变化"}`), { code: "session_busy" });
+      }
+    }
+    if (active.length) await waitForRunDrain(active, input.signal);
+    throwIfAborted(input.signal);
   }
 
   private admissions() {
     let value = sessionAdmissions.get(this.options.sessions);
-    if (!value) { value = { tails: new Map(), active: new Map() }; sessionAdmissions.set(this.options.sessions, value); }
+    if (!value) { value = { tails: new Map(), active: new Map(), pendingCleanup: new Map() }; sessionAdmissions.set(this.options.sessions, value); }
     return value;
   }
 
@@ -193,16 +221,16 @@ export class ApplicationFacade implements WishApplication {
     return result.finally(() => { if (tails.get(id) === tail) tails.delete(id); });
   }
 
-  private async requireRemovable(input: GetSessionInput): Promise<void> {
+  private async requireRemovable(input: GetSessionInput, operation: "archive" | "delete"): Promise<void> {
     await this.getSession(input);
     if (this.admissions().active.get(input.sessionId)?.size || this.runGeneration?.snapshot().activeRuns.some(run => run.scope === input.sessionId)) {
       throw Object.assign(new Error("会话仍有运行，请停止并等待运行结束后再操作。"), { code: "session_busy" });
     }
     const recovery = await this.runtimeRecovery?.snapshot(input.signal);
-    if (recovery?.pendingReconciliations.some(item => item.scope === input.sessionId)) {
+    if (operation === "archive" && recovery?.pendingReconciliations.some(item => item.scope === input.sessionId)) {
       throw Object.assign(new Error("会话有待核对的执行结果，请先完成恢复核对。"), { code: "session_busy" });
     }
-    await this.sessionFeatures?.beforeRemoval?.(input.sessionId);
+    await this.sessionFeatures?.beforeRemoval?.(input.sessionId, operation);
     throwIfAborted(input.signal);
   }
 
@@ -225,6 +253,9 @@ export class ApplicationFacade implements WishApplication {
       input.signal,
     );
     throwIfAborted(input.signal);
+    for (const runId of [...this.admissions().pendingCleanup.get(input.sessionId) ?? []]) {
+      await this.purgeRun(input.sessionId, runId);
+    }
     let basePayload: ReturnType<typeof normalizeRunPayload>;
     let selectedEffort: WishRunPayload["reasoningEffort"];
     let selectedPermission: WishRunPayload["permissionProfile"];
@@ -247,12 +278,19 @@ export class ApplicationFacade implements WishApplication {
       ...(selectedPermission === undefined ? {} : { permissionProfile: selectedPermission }),
     });
     await this.sessionFeatures?.beforeInput(input.sessionId, payload.text);
-    const handle = this.options.agent.startRun({
+    const started = this.options.agent.startRun({
       scope: session.sessionId,
       payload,
       ...(input.inputSource === undefined ? {} : { inputSource: input.inputSource }),
       ...(input.runId === undefined ? {} : { runId: input.runId }),
       ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+    });
+    const handle: WishRunHandle = Object.freeze({
+      ...started,
+      completion: started.completion.then(
+        async completion => { await this.purgeRun(input.sessionId, started.runId); return completion; },
+        async error => { await this.purgeRun(input.sessionId, started.runId); throw error; },
+      ),
     });
     this.selectionByRun.set(handle.runId, Object.freeze({
       model: payload.model,
@@ -260,15 +298,29 @@ export class ApplicationFacade implements WishApplication {
       ...(payload.permissionProfile === undefined ? {} : { permissionProfile: payload.permissionProfile }),
     }));
     const active = this.admissions().active;
-    const pending = active.get(input.sessionId) ?? new Set<Promise<unknown>>();
-    active.set(input.sessionId, pending); pending.add(handle.completion);
+    const pending = active.get(input.sessionId) ?? new Set<WishRunHandle>();
+    active.set(input.sessionId, pending); pending.add(handle);
     const settled = () => {
       this.selectionByRun.delete(handle.runId);
-      pending.delete(handle.completion);
+      pending.delete(handle);
       if (!pending.size && active.get(input.sessionId) === pending) active.delete(input.sessionId);
     };
     void handle.completion.then(settled, settled);
     return handle;
+  }
+
+  private async purgeRun(sessionId: string, runId: string): Promise<void> {
+    try {
+      await this.sessionFeatures?.purgeRun?.(sessionId, runId);
+      const pending = this.admissions().pendingCleanup.get(sessionId);
+      pending?.delete(runId);
+      if (pending?.size === 0) this.admissions().pendingCleanup.delete(sessionId);
+    } catch (error) {
+      const pending = this.admissions().pendingCleanup.get(sessionId) ?? new Set<string>();
+      pending.add(runId);
+      this.admissions().pendingCleanup.set(sessionId, pending);
+      throw error;
+    }
   }
 
   controlRun(
@@ -311,6 +363,26 @@ export class ApplicationFacade implements WishApplication {
     options?: Parameters<WishApplication["observeRun"]>[1],
   ): AsyncIterable<WishOutputEvent> {
     return this.options.agent.observe(runId, options);
+  }
+}
+
+async function waitForRunDrain(handles: readonly WishRunHandle[], signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abort: (() => void) | undefined;
+  try {
+    await Promise.race([
+      Promise.allSettled(handles.map(handle => handle.completion)),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(Object.assign(new Error("运行已请求停止，但尚未结束；请稍后重试删除。"), { code: "session_busy" })), 30_000);
+        abort = () => reject(signal?.reason ?? new Error("删除请求已取消"));
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) abort();
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (abort) signal?.removeEventListener("abort", abort);
   }
 }
 

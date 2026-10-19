@@ -141,6 +141,10 @@ export class FileToolResultArchive implements ToolResultArchivePort {
     throwIfAborted(input.signal);
     return reference;
   }
+
+  async purgeSession(sessionId: string): Promise<void> {
+    await rm(join(this.directory, `session-${sha256(requireIdentifier(sessionId, "Tool Result sessionId"))}`), { recursive: true, force: true });
+  }
 }
 
 interface ToolResultArchiveSnapshot {

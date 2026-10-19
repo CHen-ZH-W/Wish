@@ -75,6 +75,7 @@ export interface ApprovePlanRequest extends PlanSessionRequest {
 
 export interface Plan {
   get(request: PlanSessionRequest): Promise<PlanState | undefined>;
+  clear(request: PlanSessionRequest): Promise<void>;
   enter(request: EnterPlanRequest): Promise<PlanState>;
   update(request: UpdatePlanRequest): Promise<PlanState>;
   approve(request: ApprovePlanRequest): Promise<PlanState>;
@@ -86,6 +87,7 @@ export interface Plan {
 
 export interface PlanStateStore {
   get(sessionId: string, signal?: AbortSignal): Promise<PlanState | undefined>;
+  delete(sessionId: string, signal?: AbortSignal): Promise<void>;
   /** expectedVersion undefined means the Session must not exist yet. */
   put(
     state: PlanState,

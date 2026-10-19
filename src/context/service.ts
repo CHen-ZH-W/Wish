@@ -15,6 +15,8 @@ import {
   type ContextBundleConfigurationInput,
 } from "./context.js";
 import type { ContextInput } from "./types.js";
+import { AgentScope } from "../composition/agent-scope.js";
+import type { RegisteredSystemPromptSection } from "../system-prompt/types.js";
 import { ContextObservations, type ContextObservationListener } from "./observation.js";
 
 /** Loader-owned Context budget settings. */
@@ -27,6 +29,8 @@ export const Config: s<Config> = s.object({
 });
 
 export interface OpenContextInput {
+  readonly agentScope?: AgentScope;
+  readonly systemPromptSections?: readonly RegisteredSystemPromptSection[];
   readonly observe?: ContextObservationListener;
   readonly dataDirectory: string;
   readonly models: ModelDependencies;
@@ -63,6 +67,10 @@ export function createContextResources(
   input: ContextResourcesOptions,
 ): ContextBundle {
   return createContextBundle({
+    ...(input.agentScope === undefined ? {} : { agentScope: input.agentScope }),
+    ...(input.systemPromptSections === undefined ? {} : {
+      systemPromptSections: input.systemPromptSections,
+    }),
     ...(input.observe ? { observe: input.observe } : {}),
     history: input.sessions.history.context,
     archive: input.archive,
@@ -90,6 +98,10 @@ export class ContextEngine extends Service {
     string,
     ContextProvider<ContextInput>
   >();
+  private readonly scopedProviders = new Map<
+    AgentScope,
+    Map<string, ContextProvider<ContextInput>>
+  >();
   private readonly observers = new Map<string, ContextObservationListener>();
 
   constructor(ctx: CordisContext, config: Config = {}) {
@@ -101,6 +113,8 @@ export class ContextEngine extends Service {
   /** Register a Context source for exactly the lifetime of the calling Fiber. */
   registerProvider(
     provider: ContextProvider<ContextInput>,
+    scope?: AgentScope,
+    owner: CordisContext = this.ctx,
   ): ContextProviderRegistration {
     this.work.assertAttached();
     if (provider === null || typeof provider !== "object") {
@@ -110,7 +124,9 @@ export class ContextEngine extends Service {
     if (typeof provider.provide !== "function") {
       throw new TypeError(`Context Provider ${JSON.stringify(id)} must implement provide()`);
     }
-    if (this.additionalProviders.has(id)) {
+    const entries = scope === undefined ? this.additionalProviders :
+      this.scopedProviders.get(scope) ?? new Map<string, ContextProvider<ContextInput>>();
+    if (entries.has(id)) {
       throw new Error(`Context Provider ${JSON.stringify(id)} is already registered`);
     }
     let active = true;
@@ -134,31 +150,50 @@ export class ContextEngine extends Service {
         } finally { reads.delete(pending); }
       },
     };
-    this.additionalProviders.set(id, tracked);
+    entries.set(id, tracked);
+    if (scope !== undefined) this.scopedProviders.set(scope, entries);
     const registration: ContextProviderRegistration = Object.freeze({
       id,
       unregister: (): boolean => {
         if (!active) return false;
         active = false;
         cancellation.abort(new Error(`Context Provider ${id} was unregistered`));
-        if (this.additionalProviders.get(id) !== tracked) return false;
-        this.additionalProviders.delete(id);
+        if (entries.get(id) !== tracked) return false;
+        entries.delete(id);
+        if (scope !== undefined && entries.size === 0 && this.scopedProviders.get(scope) === entries) {
+          this.scopedProviders.delete(scope);
+        }
         return true;
       },
     });
+    let detach = () => {};
     try {
-      this.ctx.effect(
+      if (scope !== undefined) detach = scope.own(async () => {
+        registration.unregister();
+        await Promise.allSettled([...reads]);
+      });
+      owner.effect(
         () => async () => {
           registration.unregister();
+          detach();
           await Promise.allSettled([...reads]);
         },
         `contextEngine.registerProvider(${JSON.stringify(id)})`,
       );
     } catch (error: unknown) {
       registration.unregister();
+      detach();
       throw error;
     }
     return registration;
+  }
+
+  registerProviderScoped(
+    owner: CordisContext,
+    scope: AgentScope,
+    provider: ContextProvider<ContextInput>,
+  ): ContextProviderRegistration {
+    return this.registerProvider(provider, scope, owner);
   }
 
   /** Observe final projections without teaching Context about a consuming domain. */
@@ -207,10 +242,16 @@ export class ContextEngine extends Service {
             ...(input.observe === undefined ? [] : [Promise.resolve(input.observe(facts, projection))]),
           ]);
         },
-        additionalProviderSource: () => Object.freeze([
-          ...this.additionalProviders.values(),
-          ...(input.additionalProviderSource?.() ?? []),
-        ]),
+        additionalProviderSource: () => {
+          const visible = new Map(this.additionalProviders);
+          for (const scope of input.agentScope?.chain() ?? []) {
+            for (const provider of this.scopedProviders.get(scope)?.values() ?? []) {
+              visible.set(provider.id, provider);
+            }
+          }
+          for (const provider of input.additionalProviderSource?.() ?? []) visible.set(provider.id, provider);
+          return Object.freeze([...visible.values()]);
+        },
         sessions: this.ctx.sessions.open(input.dataDirectory),
         archive,
       }), archive, this.work);

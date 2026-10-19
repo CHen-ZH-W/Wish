@@ -222,11 +222,9 @@ const compactionConfig = CompactionConfigSchema({
 const agentLoopFiber: Fiber = ctx.plugin(AgentLoop, { maxParallelCalls: 4 });
 const agentLoopConfig = AgentLoopConfigSchema({ maxParallelCalls: 4 });
 const runtimeFiber: Fiber = ctx.plugin(RuntimeService, {
-  maxSteps: 32,
   generationDrainTimeoutMs: 30_000,
 });
 const runtimeConfig = RuntimeConfigSchema({
-  maxSteps: 32,
   generationDrainTimeoutMs: 30_000,
 });
 const agentsFiber: Fiber = ctx.plugin(Agents, {

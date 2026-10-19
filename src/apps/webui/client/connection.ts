@@ -85,7 +85,7 @@ export class ClientConnection extends SnapshotStore<ConnectionSnapshot> {
     if (this.closed) throw new ClientApiError("connection_closed", 503);
     if (!path.startsWith("/api/") || path.startsWith("//")) throw new ClientApiError("invalid_api_path", 400);
     const abort = new AbortController(); this.requests.add(abort);
-    const deadline = setTimeout(() => abort.abort(), 20000);
+    const deadline = setTimeout(() => abort.abort(), method === "DELETE" && /^\/api\/sessions\/[^/]+$/u.test(path) ? 60000 : 20000);
     try {
       const response = await this.fetcher(path, { method, credentials: "same-origin", signal: abort.signal,
         headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }),

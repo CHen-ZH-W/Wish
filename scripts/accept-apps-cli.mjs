@@ -1069,7 +1069,7 @@ test("CLI controls drive the real Runtime Step and UserTurn queues", async () =>
               compaction,
               tools: { approval: input.approval },
             }),
-          }, { maxSteps: 4 }),
+          }),
         };
         return new ApplicationFacade({
           sessions,

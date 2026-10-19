@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { readFile, rm } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
@@ -212,6 +212,24 @@ export class BlobToolResultArchive implements ToolResultArchive {
       return Object.freeze({ ...record, createdAt: index.createdAt });
     }
     return this.readLegacy(normalized, signal);
+  }
+
+  async purgeSession(sessionId: string): Promise<void> {
+    const owner = requireIdentifier(sessionId, "Tool Result sessionId");
+    if (!this.kv.list) throw new Error("Tool Result index listing is unavailable for cleanup");
+    for (const entry of await this.kv.list({ namespace: INDEX_NAMESPACE })) {
+      await this.serial(entry.key, async () => {
+        const stored = await this.kv.get({ namespace: INDEX_NAMESPACE, key: entry.key });
+        if (!stored) return;
+        const index = validateIndex(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(stored.value)), this.backendContext());
+        if (index.identity.sessionId !== owner) return;
+        if (sha256(stableJson(index.identity)) !== entry.key) throw new StorageCorruptionError("Tool Result index key is invalid", this.backendContext());
+        if (!this.blob.delete) throw new Error("Tool Result Blob deletion is unavailable");
+        await this.blob.delete({ reference: index.blob });
+        await this.kv.delete({ namespace: INDEX_NAMESPACE, key: entry.key,
+          precondition: { kind: "revision", revision: stored.revision } });
+      });
+    }
   }
 
   private async readLegacy(
@@ -689,6 +707,19 @@ export class BlobToolResultArchiveProvider extends ToolResultArchiveService {
       lease.release();
       throw error;
     }
+  }
+
+  purgeSession(sessionId: string): Promise<void> {
+    return this.work.run(async () => {
+      const lease = this.ctx.storageBackend.acquire(this.backendId, { kv: { list: true }, blob: { contentAddressed: true } });
+      try {
+        await new BlobToolResultArchive({ storage: lease, backendId: this.backendId }).purgeSession(sessionId);
+      } finally {
+        lease.release();
+      }
+      const dataDirectory = this.ctx.get("sessions")?.dataDirectory;
+      if (dataDirectory) await rm(join(dataDirectory, "tool-results", `session-${sha256(sessionId)}`), { recursive: true, force: true });
+    });
   }
 }
 

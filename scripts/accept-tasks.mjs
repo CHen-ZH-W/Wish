@@ -19,4 +19,7 @@ test("Task DAG rejects cycles and stale drafts; frozen execution enforces depend
   await tasks.replace("s", [spec("a")], 1);
   assert.equal((await tasks.get("s", 1)).tasks[0].status, "completed");
   assert.equal((await tasks.get("s")).tasks[0].status, "pending");
+  await tasks.clear("s");
+  assert.equal(await tasks.get("s"), undefined);
+  assert.equal((await tasks.replace("s", [spec("new")], 0)).version, 1);
 });

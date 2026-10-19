@@ -6,7 +6,7 @@ import { ChildWorkflowScheduler } from "../dist/workflow/child-scheduler.js";
 const terminal = { id: "workflow", status: "completed", steps: [] };
 function parent(accepted = true) {
   const view = { holds: 0, releases: 0, messages: [] };
-  return { view, deferCompletion() { view.holds++; return { release() { view.releases++; } }; },
+  return { view, deferUserTurnCompletion() { view.holds++; return { release() { view.releases++; } }; },
     resume(message) { assert.equal(view.releases, 0); view.messages.push(message); return { accepted }; } };
 }
 const options = continuations => ({ continuations,
@@ -20,6 +20,7 @@ test("replacing observers keeps the original parent hold and delivers once witho
   const next = new ChildWorkflowScheduler(options(continuations));
   await next.tick(); await next.tick();
   assert.equal(p.view.holds, 1); assert.equal(p.view.releases, 1); assert.equal(p.view.messages.length, 1);
+  assert.equal(p.view.messages[0].withinUserTurn, true);
   await next.close(); continuations.close(); assert.equal(p.view.releases, 1);
 });
 
@@ -39,4 +40,14 @@ test("duplicate watch shares a hold; rejected continuation is not silently disca
   continuations.publish(terminal);
   assert.equal(p.view.holds, 1); assert.equal(p.view.releases, 0); assert.equal(continuations.size, 1);
   continuations.close(); assert.equal(p.view.releases, 1);
+});
+
+test("a terminal parent releases its Workflow wait after delivery is rejected", () => {
+  const continuations = new WorkflowContinuations(), p = parent(false);
+  p.resume = message => { p.view.messages.push(message); return { accepted: false, reason: "run_already_terminal" }; };
+  continuations.watch(terminal.id, p);
+  continuations.publish(terminal);
+  assert.equal(continuations.size, 0);
+  assert.equal(p.view.releases, 1);
+  continuations.close();
 });

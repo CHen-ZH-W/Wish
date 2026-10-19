@@ -123,8 +123,7 @@ export function decideAfterStep(input: {
   readonly continuationReason?: string;
   readonly error?: RuntimeFailure;
   readonly pendingSteering: boolean;
-  readonly hasRemainingStepBudget: boolean;
-  readonly maxSteps: number;
+  readonly pendingUserTurnResult?: boolean;
 }): StepRuntimeDecision {
   if (input.outcome === "aborted") return { type: "abort" };
   if (input.outcome === "failed") {
@@ -138,16 +137,6 @@ export function decideAfterStep(input: {
     };
   }
   if (input.outcome === "continue") {
-    if (!input.hasRemainingStepBudget) {
-      return {
-        type: "fail",
-        error: runtimeFailure(
-          "max_steps_exceeded",
-          `UserTurn stopped after reaching maxSteps=${input.maxSteps}`,
-          false,
-        ),
-      };
-    }
     return {
       type: "continue",
       reason: input.pendingSteering
@@ -156,16 +145,10 @@ export function decideAfterStep(input: {
     };
   }
   if (input.pendingSteering) {
-    return input.hasRemainingStepBudget
-      ? { type: "continue", reason: "steering" }
-      : {
-          type: "fail",
-          error: runtimeFailure(
-            "max_steps_exceeded",
-            `UserTurn cannot deliver accepted steering after reaching maxSteps=${input.maxSteps}`,
-            false,
-          ),
-        };
+    return { type: "continue", reason: "steering" };
+  }
+  if (input.pendingUserTurnResult) {
+    return { type: "continue", reason: "awaiting_child_result" };
   }
   return { type: "complete" };
 }

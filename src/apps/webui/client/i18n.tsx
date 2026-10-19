@@ -9,7 +9,7 @@ const english = (_zh: string, en: string) => en;
 /** UI copy follows Settings without owning another preference or changing Host data. */
 export function LanguageProvider({ model, children }: { model: SettingsClientModel; children: ReactNode }) {
   const language = useSyncExternalStore<WishLanguage>(model.subscribe, () => selectedLanguage(model), () => "zh-CN");
-  useEffect(() => { document.title = language === "en-US" ? "Wish · Workspace" : "Wish · 执行工作区"; }, [language]);
+  useEffect(() => { document.title = language === "en-US" ? "Wish · Conversations" : "Wish · 会话"; }, [language]);
   return <LanguageContext.Provider value={language}>{children}</LanguageContext.Provider>;
 }
 

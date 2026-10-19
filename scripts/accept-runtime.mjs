@@ -50,7 +50,6 @@ test("outer Run loop starts follow-up UserTurns while inner Step ordinals reset"
   let handle;
   const runtime = new Runtime({
     ...services,
-    maxSteps: 4,
     stepPipeline: {
       async execute(input) {
         executions.push({
@@ -295,7 +294,6 @@ test("in-flight steering is ordered, delivered once, and forces the next Step", 
   const snapshots = [];
   const runtime = new Runtime({
     ...services,
-    maxSteps: 3,
     snapshotProvider: {
       capture() {
         return { authority: { version: 7 } };
@@ -396,39 +394,29 @@ test("abort preserves the first cause and rejects repeated or late control", asy
   );
 });
 
-test("Step budget failure terminates the Run before a queued follow-up", async () => {
+test("a UserTurn can complete beyond the former fixed Step ceiling", async () => {
   const services = deterministicServices();
-  let agent;
-  let handle;
   const runtime = new Runtime({
     ...services,
-    maxSteps: 2,
     stepPipeline: {
       async execute(input) {
-        if (input.snapshot.step.ordinal === 1) {
-          assert.equal(agent.control(handle.runId, {
-            type: "follow_up",
-            id: "never-run",
-            payload: "queued",
-          }).accepted, true);
-        }
-        return {
-          status: "continue",
-          reason: "tool_calls",
-          memory: input.snapshot.step.ordinal,
-        };
+        return input.snapshot.step.ordinal <= 40
+          ? {
+              status: "continue",
+              reason: "tool_calls",
+              memory: input.snapshot.step.ordinal,
+            }
+          : { status: "completed", result: "done" };
       },
     },
   });
-  agent = new Agent({ id: "coding-agent" }, runtime);
-  handle = agent.startRun({ scope: "conversation:budget", payload: "initial" });
+  const agent = new Agent({ id: "coding-agent" }, runtime);
+  const handle = agent.startRun({ scope: "conversation:unbounded", payload: "initial" });
 
   const completion = await handle.completion;
-  assert.equal(completion.status, "failed");
-  assert.equal(completion.error.code, "max_steps_exceeded");
+  assert.equal(completion.status, "completed");
   assert.equal(completion.snapshot.userTurns.length, 1);
-  assert.equal(completion.snapshot.userTurns[0].steps.length, 2);
-  assert.equal(completion.snapshot.queuedFollowUps, 0);
+  assert.equal(completion.snapshot.userTurns[0].steps.length, 41);
 });
 
 test("a completion hold keeps the Run active without keeping a UserTurn open", async () => {
@@ -456,6 +444,105 @@ test("a completion hold keeps the Run active without keeping a UserTurn open", a
   const completion = await handle.completion;
   assert.equal(completion.status, "completed");
   assert.equal(runtime.activeRuns().length, 0);
+});
+
+test("an awaited child result keeps the UserTurn open and enters its next Step", async () => {
+  const services = deterministicServices();
+  const entered = deferred();
+  let hold;
+  const runtime = new Runtime({
+    ...services,
+    stepPipeline: {
+      async execute(input) {
+        if (input.snapshot.step.ordinal === 1) {
+          hold = runtime.deferUserTurnCompletion(input.snapshot.run.runId, "child result");
+          assert.ok(hold);
+          entered.resolve();
+          return { status: "completed", result: "premature final" };
+        }
+        assert.deepEqual(input.snapshot.steering.map(item => item.text), ["child answer"]);
+        assert.equal(input.snapshot.steering[0].inputSource, "continuation");
+        return { status: "completed", result: "final synthesis" };
+      },
+    },
+  });
+  const agent = new Agent({ id: "coding-agent" }, runtime);
+  const handle = agent.startRun({ scope: "conversation:await-child", payload: "task" });
+  await entered.promise;
+  await flushWork();
+  assert.equal(runtime.activeRuns()[0].snapshot.userTurns.length, 1);
+  assert.equal(runtime.activeRuns()[0].snapshot.userTurns[0].status, "running");
+  assert.equal(runtime.activeRuns()[0].snapshot.userTurns[0].steps.length, 1);
+
+  const receipt = runtime.resume("coding-agent", handle.runId, {
+    payload: "child answer", text: "child answer", source: "wish-subagent-result",
+    reserveCapacity: true, withinUserTurn: true,
+  });
+  assert.equal(receipt.accepted, true);
+  assert.equal(receipt.kind, "steer");
+  hold.release();
+  const completion = await handle.completion;
+  assert.equal(completion.status, "completed");
+  assert.equal(completion.result, "final synthesis");
+  assert.equal(completion.snapshot.userTurns.length, 1);
+  assert.equal(completion.snapshot.userTurns[0].steps.length, 2);
+});
+
+test("parallel child holds release only after both results, and cancellation breaks the wait", async () => {
+  const services = deterministicServices();
+  const entered = deferred();
+  const holds = [];
+  let steps = 0;
+  const runtime = new Runtime({
+    ...services,
+    stepPipeline: {
+      async execute(input) {
+        steps++;
+        if (steps === 1) {
+          holds.push(runtime.deferUserTurnCompletion(input.snapshot.run.runId, "first child"));
+          holds.push(runtime.deferUserTurnCompletion(input.snapshot.run.runId, "second child"));
+          entered.resolve();
+          return { status: "continue", reason: "tool_calls", memory: "waiting" };
+        }
+        assert.equal(input.snapshot.steering[0].text, "first");
+        assert.match(input.snapshot.steering[1].text, /^second/u);
+        assert.match(input.snapshot.steering[1].text, /Internal result truncated/u);
+        assert.ok(input.snapshot.steering[1].text.length < 17_000);
+        return { status: "completed", result: "both reviewed" };
+      },
+    },
+  });
+  const agent = new Agent({ id: "coding-agent" }, runtime);
+  const handle = agent.startRun({ scope: "conversation:parallel-children", payload: "task" });
+  await entered.promise;
+  for (const text of ["first", `second${"x".repeat(50_000)}`]) {
+    const receipt = runtime.resume("coding-agent", handle.runId, {
+      payload: text, text, source: "wish-subagent-result", withinUserTurn: true,
+      reserveCapacity: true,
+    });
+    assert.equal(receipt.accepted, true, JSON.stringify({ receipt, steps, snapshot: runtime.run(handle.runId) }));
+    holds[text === "first" ? 0 : 1].release();
+    if (text === "first") { await flushWork(); assert.equal(steps, 1); }
+  }
+  assert.equal((await handle.completion).result, "both reviewed");
+  assert.equal(steps, 2);
+
+  const blocked = deferred();
+  const cancelling = new Runtime({
+    ...services,
+    stepPipeline: { async execute(input) {
+      cancelling.deferUserTurnCompletion(input.snapshot.run.runId, "child result");
+      blocked.resolve();
+      return { status: "continue", reason: "tool_calls", memory: "waiting" };
+    } },
+  });
+  const cancelled = new Agent({ id: "cancelling-agent" }, cancelling)
+    .startRun({ scope: "conversation:cancel-child-wait", payload: "task" });
+  await blocked.promise;
+  assert.equal(cancelling.control("cancelling-agent", cancelled.runId, {
+    type: "abort", reason: "stop", source: "user",
+  }).accepted, true);
+  assert.equal((await cancelled.completion).status, "aborted");
 });
 
 test("scope is exclusive only while active and terminal events remain observable", async () => {
@@ -812,27 +899,31 @@ test("invalid Step Pipeline results fail through an explicit Runtime contract", 
   assert.equal(completion.snapshot.userTurns[0].steps[0].status, "failed");
 });
 
-test("accepted steering at the Step limit fails instead of being dropped", async () => {
+test("accepted steering always receives a subsequent Step", async () => {
   const services = deterministicServices();
   const entered = deferred();
   const release = deferred();
   const runtime = new Runtime({
     ...services,
-    maxSteps: 1,
     stepPipeline: {
-      async execute() {
-        entered.resolve();
-        await release.promise;
-        return { status: "completed", result: "stale answer" };
+      async execute(input) {
+        if (input.snapshot.step.ordinal === 1) {
+          entered.resolve();
+          await release.promise;
+          return { status: "completed", result: "stale answer" };
+        }
+        assert.equal(input.snapshot.steering.length, 1);
+        assert.equal(input.snapshot.steering[0].text, "must be considered");
+        return { status: "completed", result: "updated answer" };
       },
     },
   });
   const handle = runtime.startRun(
-    { id: "budget-agent" },
-    { scope: "steer-at-limit", payload: "task" },
+    { id: "steering-agent" },
+    { scope: "steer-next-step", payload: "task" },
   );
   await entered.promise;
-  assert.equal(runtime.control("budget-agent", handle.runId, {
+  assert.equal(runtime.control("steering-agent", handle.runId, {
     type: "steer",
     id: "last-step-steer",
     text: "must be considered",
@@ -840,9 +931,9 @@ test("accepted steering at the Step limit fails instead of being dropped", async
   release.resolve();
 
   const completion = await handle.completion;
-  assert.equal(completion.status, "failed");
-  assert.equal(completion.error.code, "max_steps_exceeded");
-  assert.equal(completion.snapshot.userTurns[0].steps[0].status, "completed");
+  assert.equal(completion.status, "completed");
+  assert.equal(completion.result, "updated answer");
+  assert.equal(completion.snapshot.userTurns[0].steps.length, 2);
 });
 
 test("abort reaches Step snapshot capture before pipeline execution", async () => {

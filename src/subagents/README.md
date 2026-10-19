@@ -14,7 +14,8 @@ Storage Backend ─────────────────────�
 ## Contracts
 
 - `SubagentRuntime` is the concrete domain implementation. It owns record transitions,
-  global/per-parent limits, reconciliation monitors and event publication.
+  global/per-parent limits, reconciliation monitors and event publication. Both concurrency
+  limits default to 8. Durable records have no count-based admission limit.
 - `SubagentsRuntimeService` owns the Storage lease and requires the selected
   `SubagentExecution` Provider. It resolves `SubagentLauncher` only for spawn/result access:
   without a Launcher, existing records and list/capture/send/stop/collect remain available,
@@ -35,6 +36,9 @@ Storage Backend ─────────────────────�
   adapter subscribes to these events; it does not own another polling loop.
 - Closing or replacing the domain service leaves the independently hosted terminal alive.
   Explicit `stop` is the child execution termination boundary.
+- When the owning Run finishes or its Session is deleted, the Session Feature calls `purge`:
+  it stops the child target, removes child exchange/data files, and deletes the durable record.
+  An unresolved launch without a recorded target blocks cleanup until its outcome is known.
 - Host `idempotencyKey` requests derive a stable child address and return an existing
   matching record before checking capacity. A conflicting task/owner/authority is rejected;
   a lost or failed record is never silently relaunched under the same key. Workflow owns
@@ -94,6 +98,9 @@ The CLI child uses a separate data directory and Storage root under
 permission profile and available Tool ceiling are inherited or narrowed explicitly.
 An explicit host capability ceiling is also passed to the child environment. Empty
 explicit Tool/capability scopes fail closed rather than becoming unrestricted defaults.
+`WISH_AGENT_PRESETS_JSON` selects optional role-specific Tool, Prompt, Compaction and Memory
+composition; the resolved Tool list is committed before launch and the preset digest is
+retained in the child record. See `src/composition/README.md` for the contract and example.
 
 Model credentials use a separate one-use handoff. The launcher resolves only the API-key
 references required by the selected child model and configured fallbacks, writes those values
