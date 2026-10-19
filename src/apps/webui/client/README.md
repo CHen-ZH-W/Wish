@@ -17,7 +17,7 @@ Host API / events -> connection -> React-free Client Models
   窗口过期明确展示缺口并重读规范历史，不自动执行工作。选中 Session 每 3 秒重新核对。
 - `projection/ledger.ts` 先将规范 transcript 与 live 输出连接，规范结果优先，Tool 用 callId
   连接输入/输出；再投影为请求、过程与最终回答。运行时过程保持展开并更新同一 Tool 行，完成后
-  最终回答成为主内容，过程就地折叠；工具参数和结果进入当前会话的只读“工具调用”子页面，不生成第二份可写任务状态，也不恢复聚合“执行记录”或原始事件流“执行轨迹”页。
+  最终回答成为主内容，过程就地折叠；工具参数和结果进入当前会话的只读“工具调用”子页面，不生成第二份可写任务状态，不提供聚合“执行记录”或原始事件流“执行轨迹”页。
 - `slots.ts` 只管注册身份与 disposer：工作区/设置面板、导航、交互区域、通知、会话底部状态位、通用会话 ledger 贡献、按 Tool name keyed
   renderer、模块分类元数据及面板导航请求。未知或已卸载的 renderer 回退通用文本，保留
   历史。Host Tool Entry 可用状态独立绑定，未注册 renderer 不等于能力停用；断线时状态未知。
@@ -67,7 +67,7 @@ Models/Pricing 另以独立 Host gate 向会话右下角贡献累计缓存命中
 通用 `sessionStatus` seat，不导入或解释 Models DTO。没有已完成 attempt 时该 seat 不占空间；
 详情中的“部分”表示 Provider 字段覆盖不完整，而不是把未知缓存量计为零。
 System Prompt 历史同样使用独立 Host gate，并通过通用 ledger contribution 提供请求时只读快照；
-Conversation 不导入提示词 DTO，只把该贡献的最新快照放在主会话顶部；提示词历史仍保留在 Host 数据中，但当前 UI 不再把它混进聚合记录页。
+Conversation 不导入提示词 DTO，只把该贡献的最新快照放在主会话顶部；完整提示词历史保留在 Host 数据中。
 首次有效快照和内容变化分别显示折叠行，正文只在展开时挂载；禁用 UI Consumer 只撤销展示，不删除后端历史。
 `theme.ts` 只把 Host Settings 快照投影为根元素的主题、语言和字号，不另存一份偏好事实。
 各模块 UI Consumer 提供自己的英文文案，Shell 不按模块 ID 翻译；会话正文和工作区文件保持原文。需要操作 Session Feature 的专用界面
@@ -128,8 +128,8 @@ Host 代码替换仍使用自己的受控生命周期，不能把 UI 重挂载�
 验证入口：`npm run test:webui-next`、`npm run test:webui-next:browser`、
 `npm run test:module-boundaries`、`npm run test:webui-code-reload:browser`。
 代码更新测试在临时副本修改真实 Skills UI 源码并重新构建，覆盖同页替换、草稿/选择保留、
-编译/导入/激活/渲染失败、修复、真实 Skills 启停和 core 刷新提示。Host 尚未声明安全停用
-的模块仍会拒绝停用，不通过前端隐藏绕过（例如当前 Plan Provider/Consumers）。
+编译/导入/激活/渲染失败、修复、真实 Skills 启停和 core 刷新提示。Host 未声明安全停用
+的模块会拒绝停用，不通过前端隐藏绕过。
 浏览器验收使用隔离临时目录、随机本地端口、本地 HTTP
 模拟 Provider 与真实 tmux；可设置 `WISH_WEBUI_CAPTURE_DIR` 保存截图与布局测量。
 需要预装 Chromium（`npx playwright install chromium`）及所在系统的浏览器运行库/中文字体。

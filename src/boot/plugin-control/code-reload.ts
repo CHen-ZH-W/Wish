@@ -1,5 +1,6 @@
 import { FiberState, type Context, type Plugin } from "@deepseek-ai/cordis";
 import Hmr from "@deepseek-ai/cordis-plugin-hmr";
+import { verifyPluginContracts } from "../../plugin-admission/runtime.js";
 import type { PluginInspection, PluginInspectionSnapshot } from "./types.js";
 import {
   getOrInstallPluginOwnerRegistry,
@@ -175,7 +176,13 @@ class CodeReloadCoordinator implements CodeReloadInspection {
     catch (error) {
       if (committed || options.uncertain() || boundaries.some(boundary => boundary.snapshot().phase === "failed")) {
         this.set("recovery-required", "code_reload_configuration_failed");
-      } else this.configurationApplying = false;
+      } else {
+        this.configurationApplying = false;
+        // A configuration transaction can rebuild the committed generation
+        // before rejecting the candidate. Its Owners waited for that proof.
+        const starts = [...this.starts.values()].flatMap(starts => [...starts]); this.starts.clear();
+        for (const start of starts) start();
+      }
       throw error;
     } finally { this.busy = false; }
   }
@@ -198,6 +205,8 @@ class CodeReloadCoordinator implements CodeReloadInspection {
       const affected = this.affected(batch, before);
       const records = new Map<number, PluginOwnerRecord>();
       const entries = before.fibers.filter(fiber => affected.has(fiber.id) && fiber.entryId).map(fiber => fiber.entryId!);
+      const statefulEntries = new Set(before.entries.filter(entry => entry.fiberId !== null &&
+        this.root.get("pluginState")?.hasWriter(entry.fiberId)).map(entry => entry.id));
       await scope.target([...new Set(entries)].sort());
       this.set("draining", null, [...new Set(entries)].sort());
       for (const id of affected) {
@@ -252,14 +261,28 @@ class CodeReloadCoordinator implements CodeReloadInspection {
               (current.managementClass === "managed" && !owner?.canonical)) {
               throw Error("code_reload_owner_not_restored");
             }
+            if (current.manifest?.state.mode === "versioned" ?
+              !this.root.get("pluginState")?.conforms(current.fiberId, current.manifest.state, current.manifest.id) :
+              statefulEntries.has(entryId) && !this.root.get("pluginState")?.hasWriter(current.fiberId)) {
+              throw Error("code_reload_state_owner_not_restored");
+            }
+            if (current.manifest?.contracts && owner) verifyPluginContracts(this.root, owner.fiber, current.manifest);
           }
         };
         // The durable success receipt must land before the Step barrier reopens.
         const prepared: PluginChangeGuard[] = [];
         try {
+          await this.root.get("pluginState")?.begin(scope.change.requestId ?? `hmr:${Date.now()}`, [...new Set(entries)].sort());
           await scope.phase("fencing");
           await scope.phase("draining");
-          for (const id of this.consumerOrder(affected, before)) {
+          const order = this.consumerOrder(affected, before);
+          // Runtime retirement needs its dependent cleanup adapters. Ordinary
+          // Providers retain consumer-first fencing and are never reordered.
+          const preparationOrder = [
+            ...order.filter(id => records.get(id)!.prepareBeforeDependents),
+            ...order.filter(id => !records.get(id)!.prepareBeforeDependents),
+          ];
+          for (const id of preparationOrder) {
             combined.throwIfAborted();
             const record = records.get(id)!;
             const fence = this.owners.prepare(record, { kind: "replace", source: "hmr" }); prepared.push(fence);
@@ -273,6 +296,7 @@ class CodeReloadCoordinator implements CodeReloadInspection {
           await scope.phase("staging");
           if (this.permit) await this.permit.apply([...new Set(entries)].sort(), update);
           else await update();
+          await this.root.get("pluginState")?.finish(true);
           const starts = [...this.starts.values()].flatMap(starts => [...starts]); this.starts.clear();
           for (const start of starts) start();
         } finally {
@@ -287,6 +311,7 @@ class CodeReloadCoordinator implements CodeReloadInspection {
       const fenced = [...this.boundaries.values()].some(boundary => boundary.snapshot().phase === "failed");
       const code = error instanceof Error && /^code_reload_[a-z_]+$/.test(error.message) ? error.message : "code_reload_failed";
       const restored = code === "code_reload_candidate_rolled_back";
+      if (restored || !applying) await this.root.get("pluginState")?.finish(false);
       if (restored) {
         const starts = [...this.starts.values()].flatMap(starts => [...starts]); this.starts.clear();
         for (const start of starts) start();

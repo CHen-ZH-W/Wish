@@ -102,6 +102,33 @@ test("failed cleanup is retried before another Run; rejected Run completion stil
   assert.equal(calls.at(-1), `purge:${second.runId}`);
 });
 
+test("replacement drain joins every admitted cleanup even when one Run fails cleanup", async () => {
+  const { application, features, completions } = fixture();
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  features.register("join", {
+    inspect: async () => undefined, act: async () => {},
+    async purgeRun(sessionId) {
+      if (sessionId === "failed") throw Error("one cleanup failed");
+      entered.resolve(); await release.promise;
+    },
+  });
+  await application.createSession({ sessionId: "failed", workspaceRoot: "/tmp" });
+  await application.createSession({ sessionId: "waiting", workspaceRoot: "/tmp" });
+  const first = await application.startRun({ sessionId: "failed", payload: { text: "one" } });
+  const second = await application.startRun({ sessionId: "waiting", payload: { text: "two" } });
+  void first.completion.catch(() => {});
+  let settled = false;
+  const drain = application.drainRunCleanup().finally(() => { settled = true; });
+  const rejected = assert.rejects(drain, /one cleanup failed/);
+  try {
+    completions.get(first.runId)({ status: "aborted", snapshot: {} });
+    completions.get(second.runId)({ status: "aborted", snapshot: {} });
+    await entered.promise; await Promise.resolve(); await Promise.resolve();
+    assert.equal(settled, false, "a failed sibling cannot release another Run's cleanup");
+  } finally { release.resolve(); await rejected; await second.completion; }
+  await assert.rejects(application.drainRunCleanup(), /one cleanup failed/, "a later replacement still sees the pending obligation");
+});
+
 test("Session deletion retries failed cleanup and leaves unrelated Session intact", async () => {
   const { application, sessions, features, calls } = fixture();
   let fail = true;

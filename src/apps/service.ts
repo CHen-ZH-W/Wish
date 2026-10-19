@@ -12,6 +12,7 @@ import {
 import type { WishApplication, WishRuntimeRecovery } from "./types.js";
 import type { SessionPermissionProfilesPort } from "../permissions/index.js";
 import type { ModelCredentialResolver } from "../models/types.js";
+import type { ApplicationExecutionProfileProvider } from "./execution-profile.js";
 
 /** Application owns no Loader row settings; its inputs come from its services. */
 export interface Config {}
@@ -33,6 +34,9 @@ export interface ApplicationConfigurationOverrides {
 }
 
 export interface ApplicationOpenInput extends ApplicationConfigurationOverrides {
+  readonly agentProfile?: string;
+  /** Host-owned experiment budget; does not change the AgentLoop's scheduling. */
+  readonly maxRunSteps?: number;
   /** Host-only, generation-scoped resolver used by internal child processes. */
   readonly modelCredential?: ModelCredentialResolver;
 }
@@ -41,6 +45,12 @@ const EXECUTION_READY_TIMEOUT_MS = 30_000;
 
 /** Cordis owner of the transport-neutral Wish Application facade. */
 export class Application extends Service {
+  private executionProfiles: ApplicationExecutionProfileProvider | undefined;
+  registerExecutionProfiles(provider: ApplicationExecutionProfileProvider): () => void {
+    if (this.executionProfiles) throw new Error("Application execution Profile provider already registered");
+    this.executionProfiles = provider;
+    return () => { if (this.executionProfiles === provider) this.executionProfiles = undefined; };
+  }
   private readonly features = new SessionFeatureRegistry();
   private readonly work: PluginWorkOwner;
   private readonly closing = new AbortController();
@@ -107,24 +117,43 @@ export class Application extends Service {
     return this.work.runAttached(async () => {
       await this.waitForExecution();
       const configuration = await this.resolveConfiguration(input, false);
+      const profileSelection = input.agentProfile ?? this.ctx.launch.environment.WISH_AGENT_PROFILE;
+      if (profileSelection && !this.executionProfiles) throw new Error("Application execution Profile provider unavailable");
+      const profile = profileSelection ? await this.executionProfiles!.open(profileSelection, configuration, input.modelCredential) : undefined;
       const lifecycle = this.ctx.runtimeLifecycle;
       const recovery: WishRuntimeRecovery = Object.freeze({
         snapshot: (signal?: AbortSignal) => lifecycle.recoverySnapshot(signal),
         resolve: (request: Parameters<WishRuntimeRecovery["resolve"]>[0]) =>
           lifecycle.resolveReconciliation(request),
       });
-      const resources = this.ctx.agents.open({
+      let resources: ReturnType<Context["agents"]["open"]>;
+      let facade: ApplicationFacade | undefined;
+      try { resources = this.ctx.agents.open({
         dataDirectory: configuration.dataDirectory,
-        modelsConfiguration: configuration.models,
-        reservedOutputTokens: configuration.reservedOutputTokens,
-        keepRecentTokens: configuration.keepRecentTokens,
-        summaryMaxOutputTokens: configuration.summaryMaxOutputTokens,
+        drainRunCleanup: () => facade?.drainRunCleanup() ?? Promise.resolve(),
+        ...(input.maxRunSteps === undefined ? {} : { maxRunSteps: input.maxRunSteps }),
+        modelsConfiguration: profile?.models ?? configuration.models,
+        reservedOutputTokens: profile?.reservedOutputTokens ?? configuration.reservedOutputTokens,
+        keepRecentTokens: profile?.keepRecentTokens ?? configuration.keepRecentTokens,
+        summaryMaxOutputTokens: profile?.summaryMaxOutputTokens ?? configuration.summaryMaxOutputTokens,
+        ...(profile === undefined ? {} : {
+          composition: { scope: profile.scope, instructions: profile.instructions, permissions: profile.permissions },
+          promptSections: profile.promptSections,
+          excludedContextProviders: profile.excludedContextProviders,
+          fixedConfiguration: true,
+          boundCompactor: profile.compactor,
+          maxParallelCalls: profile.maxParallelCalls,
+          ...(profile.request === undefined ? {} : { request: profile.request }),
+          beforeStep: () => profile.assertCurrent(),
+          releaseExecution: () => profile.release(),
+        }),
         ...(input.modelCredential === undefined
           ? {}
           : { modelCredential: input.modelCredential }),
-      });
+      }); } catch (error) { await profile?.release(); throw error; }
+      profile?.attachRuntime(() => resources.generation.retire({ reason: "Agent Profile owner released" }));
       const sessionPermissions = dynamicSessionPermissions(this.ctx);
-      return guardApplication(new ApplicationFacade({
+      facade = new ApplicationFacade({
         sessionFeatures: this.features,
         sessions: resources.sessions,
         models: resources.models,
@@ -132,7 +161,9 @@ export class Application extends Service {
         agent: resources.agent,
         runGeneration: resources.generation,
         recovery,
-      }), this.work);
+        ...(profile === undefined ? {} : { executionProfile: profile }),
+      });
+      return guardApplication(facade, this.work);
     });
   }
 

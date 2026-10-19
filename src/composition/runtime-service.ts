@@ -99,6 +99,11 @@ export function createWishRuntime(
 }
 
 export interface OpenRuntimeInput extends OpenAgentLoopInput {
+  readonly maxRunSteps?: number;
+  readonly beforeStep?: () => Promise<void>;
+  readonly releaseExecution?: () => Promise<void>;
+  /** Capture Application completion promises before the Runtime aborts its Runs. */
+  readonly drainRunCleanup?: () => Promise<void>;
   readonly runtime?: WishRuntimeOptions;
 }
 
@@ -118,6 +123,7 @@ export class Runtime extends Service {
   /** Host-only Step boundary. Does not unload plugins or own their configuration. */
   readonly execution = new StepExecutionCoordinator();
   private readonly generations = new Set<WishRunGeneration>();
+  private readonly completionDrains = new Map<WishRunGeneration, () => Promise<void>>();
   private readonly continuationPolicies = new Set<WishUserTurnContinuationPolicy>();
   private suspended = false;
   private closed = false;
@@ -135,6 +141,7 @@ export class Runtime extends Service {
     ctx.effect(() => () => this.close(), "runtime admission");
     registerPluginOwner(ctx, {
       replacement: "generation",
+      prepareBeforeDependents: true,
       status: () => {
         const snapshot = this.lifecycleSnapshot();
         return {
@@ -143,15 +150,16 @@ export class Runtime extends Service {
           counts: { generations: snapshot.generations, active_runs: snapshot.activeRuns, retiring: snapshot.retiring },
         };
       },
-      prepare: () => {
+      prepare: change => {
         if (this.suspended || this.closed) throw new Error("Runtime admission is closed");
         this.suspended = true;
         const generations = [...this.generations];
         const release = generations.map(generation => generation.suspendAdmission());
         return {
-          // Runs are explicit generations. Native teardown or disable retires
-          // them deterministically; no JavaScript stack is migrated.
-          drained: Promise.resolve(),
+          // Only HMR retires an active generation here. Controlled stop keeps
+          // its existing busy-state preflight and never aborts to force success.
+          drained: change.kind === "replace" && change.source === "hmr"
+            ? this.drainForReplacement(generations) : Promise.resolve(),
           deactivate: () => this.close(),
           release: () => {
             if (this.closing || this.closed) return;
@@ -190,6 +198,16 @@ export class Runtime extends Service {
     this.closed = true;
     return this.closing ??= Promise.all([...this.generations].map(generation => generation.retire()))
       .then(() => { this.execution.close(); });
+  }
+
+  private async drainForReplacement(generations: readonly WishRunGeneration[]): Promise<void> {
+    // Capture facade completion before cancellation. Core terminal state alone
+    // does not include Run-owned Todo, Workflow or child resource cleanup.
+    const cleanup = generations.map(generation => this.completionDrains.get(generation)?.());
+    const results = await Promise.allSettled([...cleanup, ...generations.map(generation =>
+      generation.abortAndDrain("Runtime implementation is being replaced"))]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed) throw failed.reason;
   }
 
   /** Stable Run owner; only execution resources are acquired anew per Step. */
@@ -234,12 +252,18 @@ export class Runtime extends Service {
       runContinuations: _continuations,
       modelCredential,
       agentScope,
+      beforeStep,
+      releaseExecution,
+      drainRunCleanup,
+      maxRunSteps,
+      boundCompactor,
       ...configuration
     } = input;
     const pipelineInput = Object.freeze({
       ...structuredClone(configuration),
       ...(agentScope === undefined ? {} : { agentScope }),
       runContinuations,
+      ...(boundCompactor === undefined ? {} : { boundCompactor }),
       ...(modelCredential === undefined ? {} : { modelCredential }),
     });
     // Session storage and Application-facing model resources have stable owners;
@@ -248,15 +272,33 @@ export class Runtime extends Service {
     const generations = this.generations;
     try {
       const models = this.ctx.models.open(input.modelsConfiguration, {
+        ...(input.fixedConfiguration ? { fixedConfiguration: true } : {}),
         ...(modelCredential === undefined ? {} : { credential: modelCredential }),
       });
+      if (maxRunSteps !== undefined) positiveInteger(maxRunSteps, "Run Step limit");
+      const stepCounts = new Map<string, number>();
       const stepPipeline = this.execution.source(() => {
         const resources = this.requireAgentLoop().open(pipelineInput);
-        return { pipeline: resources.stepPipeline, release: () => { resources.release(); } };
+        const pipeline = resources.stepPipeline;
+        return { pipeline: beforeStep === undefined && maxRunSteps === undefined ? pipeline : {
+          async execute(step) {
+            if (maxRunSteps !== undefined) {
+              const runId = step.snapshot.run.runId;
+              const count = (stepCounts.get(runId) ?? 0) + 1;
+              if (count > maxRunSteps) throw new StepExecutionError("run_step_limit_exceeded");
+              stepCounts.set(runId, count);
+            }
+            await beforeStep?.(); return pipeline.execute(step);
+          },
+        }, release: () => { resources.release(); } };
       });
+      const continuationPolicy = this.compositeContinuationPolicy();
       coreRuntime = createWishRuntime({ stepPipeline }, {
         ...(input.runtime ?? {}),
-        continuationPolicy: this.compositeContinuationPolicy(),
+        continuationPolicy: maxRunSteps === undefined ? continuationPolicy : { ...continuationPolicy, async finishRun(event) {
+          try { await continuationPolicy.finishRun?.(event); }
+          finally { stepCounts.delete(event.run.runId); }
+        } },
       }, this.ctx.runtimeLifecycle);
       const generation = new RunGeneration<WishAgentProtocol>(coreRuntime, {
         id: `${input.agentId}:${randomUUID()}`,
@@ -271,9 +313,11 @@ export class Runtime extends Service {
           source: "wish-run-generation",
           reason,
         }),
-        release: () => {
+        release: async () => {
           sessions.release();
           generations.delete(generation);
+          this.completionDrains.delete(generation);
+          await releaseExecution?.();
         },
       });
       const launch = this.ctx.get("launch");
@@ -286,6 +330,7 @@ export class Runtime extends Service {
         },
       }), `Run generation ${generation.id}`);
       generations.add(generation);
+      if (drainRunCleanup) this.completionDrains.set(generation, drainRunCleanup);
       return Object.freeze({
         sessions,
         models,

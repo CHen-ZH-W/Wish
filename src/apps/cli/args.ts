@@ -20,6 +20,7 @@ export type WishCliReconciliationArguments = Omit<
 >;
 
 export interface WishCliArguments {
+  readonly agentProfile?: string;
   readonly command: WishCliCommand;
   readonly modelsConfigurationPath?: string;
   readonly dataDirectory?: string;
@@ -49,18 +50,24 @@ export const WISH_CLI_HELP = `Usage:
   wish child [options]
   wish recovery list [options]
   wish recovery resolve [options]
+  wish profile <register|list|capture|inspect|bindings> [argument]
+  wish experiment <dataset|datasets|run|list|show> [argument]
+  wish candidate <submit|list|history|validate|evaluate|review|promote|rollback|reconcile> [argument]
 
 Commands:
   run                     Run one prompt and exit; reads stdin when omitted
   child                   Internal tmux Subagent worker
   recovery list           List pending and resolved Tool reconciliations
   recovery resolve        Persist one operator reconciliation decision
+  profile                 Register, freeze and inspect Agent Profiles
+  experiment              Register datasets and run snapshot comparisons
 
 Options:
   --session <id>          Continue an existing Session
   --cwd <path>, -C <path> Workspace for a new Session
   --title <text>          Title for a new Session
   --model <provider/name> Select the model for each new Run
+  --agent-profile <id@v|digest>  Bind an immutable Agent Profile
   --models-config <path>  Models configuration JSON
   --data-dir <path>       Session and Tool Result data root
   --help, -h              Show this help
@@ -104,6 +111,7 @@ export function parseWishCliArguments(
   let sessionId: string | undefined;
   let title: string | undefined;
   let model: ModelRef | undefined;
+  let agentProfile: string | undefined;
   let childId: string | undefined;
   let childSessionId: string | undefined;
   let childRunId: string | undefined;
@@ -134,6 +142,10 @@ export function parseWishCliArguments(
     if (!positionalsOnly && argument.startsWith("-")) {
       const option = splitOption(argument);
       switch (option.name) {
+        case "--agent-profile":
+          agentProfile = assignOnce(agentProfile, readOptionValue(argv, index, option), option.name);
+          index += option.consumedNext ? 1 : 0;
+          break;
         case "--models-config":
           modelsConfigurationPath = assignOnce(
             modelsConfigurationPath,
@@ -276,6 +288,7 @@ export function parseWishCliArguments(
 
   return Object.freeze({
     command: resolvedCommand,
+    ...(agentProfile === undefined ? {} : { agentProfile }),
     ...(modelsConfigurationPath === undefined
       ? {}
       : { modelsConfigurationPath }),

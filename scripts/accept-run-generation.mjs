@@ -33,6 +33,40 @@ class StubRuntimeLifecycle extends Service {
   finishStep() {}
 }
 
+test("replacement drain aborts originals once and permits a later explicit admission resume", async () => {
+  const pending = new Map(), controls = [];
+  let releases = 0;
+  const runtime = {
+    startRun(definition, input) {
+      const settled = deferred(); pending.set(input.runId, settled);
+      return { agentId: definition.id, runId: input.runId, scope: input.scope, completion: settled.promise };
+    },
+    control(_agentId, runId) { controls.push(runId); return { accepted: true }; },
+    async *observe() {},
+  };
+  const generation = new RunGeneration(runtime, { id: "reversible", drainTimeoutMs: 1000,
+    abortControl: ({ reason }) => ({ type: "abort", source: "test", reason }), release: () => { releases++; } });
+  generation.startRun({ id: "agent" }, { runId: "one", scope: "session", payload: {} });
+  generation.startRun({ id: "agent" }, { runId: "two", scope: "other", payload: {} });
+  const resume = generation.suspendAdmission();
+  let drained = false;
+  const draining = generation.abortAndDrain("replace").then(() => { drained = true; });
+  const repeated = generation.abortAndDrain("replace again");
+  assert.deepEqual(controls, ["one", "two"]);
+  assert.ok(generation.snapshot().activeRuns.every(run => run.abortRequested));
+  assert.equal(generation.state, "accepting");
+  assert.throws(() => generation.startRun({ id: "agent" }, { runId: "blocked", scope: "s", payload: {} }), /suspended/);
+  pending.get("one").resolve({ status: "aborted" }); await Promise.resolve();
+  assert.equal(drained, false);
+  pending.get("two").reject(Error("terminal Runtime failure"));
+  await Promise.all([draining, repeated]); assert.equal(releases, 0);
+  resume();
+  generation.startRun({ id: "agent" }, { runId: "new", scope: "session", payload: {} });
+  pending.get("new").resolve({ status: "completed" }); await generation.retire();
+  assert.equal(releases, 1);
+  assert.deepEqual([...pending.keys()], ["one", "two", "new"]);
+});
+
 test("retirement closes admission, aborts once, drains originals, and never replays", async () => {
   const completions = new Map();
   const starts = [];

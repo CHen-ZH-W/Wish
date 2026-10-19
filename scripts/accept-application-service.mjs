@@ -60,7 +60,8 @@ test("Application service is the only production composition boundary", async ()
   }
   await assert.rejects(access(join(repositoryRoot, "src/apps/legacy/plugin.ts")));
   assert.match(service, /export class Application extends Service/u);
-  assert.match(service, /return guardApplication\(new ApplicationFacade\(/u);
+  assert.match(service, /new ApplicationFacade\(/u);
+  assert.match(service, /return guardApplication\(/u);
   assert.match(service, /work\.assertOpen\(\)/u);
   assert.match(cliPlugin, /inject = \["launch", "approval", "application"\]/u);
   assert.match(

@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { applyEntryPatches, entryListSchema, type Include } from "@deepseek-ai/cordis-plugin-include";
 import type { EntryOptions } from "@deepseek-ai/cordis-plugin-loader";
+import { parseDeploymentOverlay } from "./deployment-overlay.js";
 
 const yaml = createRequire(import.meta.url)("js-yaml") as { load(text: string, options: { schema: unknown }): unknown };
 const includes = new Set(["cordis:include", "@deepseek-ai/cordis-plugin-include"]);
@@ -12,7 +13,7 @@ const includes = new Set(["cordis:include", "@deepseek-ai/cordis-plugin-include"
  * native Groups, revision and watches; Include's independent writer never mounts.
  * Entry IDs remain unique across the complete managed profile, as with Groups.
  */
-export function readManagedProfile(filename: string): {
+export function readManagedProfile(filename: string, overlayFilename?: string, overlayContent?: string): {
   entries: EntryOptions[]; digest: string; files: ReadonlyMap<string, string>; entrySources: ReadonlyMap<string, string>;
 } {
   const files = new Map<string, string>(), entrySources = new Map<string, string>(), stack = new Set<string>();
@@ -53,6 +54,24 @@ export function readManagedProfile(filename: string): {
     } finally { stack.delete(canonical); }
   };
   const entries = read(filename);
+  if (overlayFilename) {
+    const content = overlayContent ?? readFileSync(overlayFilename, "utf8");
+    files.set(overlayFilename, hash(content));
+    for (const patch of parseDeploymentOverlay(content).entries) {
+      let parent: EntryOptions | undefined, existing: EntryOptions | undefined;
+      const visit = (items: EntryOptions[]) => { for (const row of items) {
+        if (row.id === patch.parentId) parent = row;
+        if (row.id === patch.entry.id) existing = row;
+        if (row.group && Array.isArray(row.config)) visit(row.config as EntryOptions[]);
+      } };
+      visit(entries);
+      if (!parent?.group || !Array.isArray(parent.config) || (existing && !(parent.config as EntryOptions[]).includes(existing))) throw new Error("management_overlay_parent_invalid");
+      const replacement = structuredClone(patch.entry) as unknown as EntryOptions;
+      if (existing) (parent.config as EntryOptions[]).splice((parent.config as EntryOptions[]).indexOf(existing), 1, replacement);
+      else parent.config.push(replacement);
+      entrySources.set(replacement.id, overlayFilename);
+    }
+  }
   // Keep the existing digest for single-file profiles and persisted recovery intents.
   const digest = files.size === 1 ? files.get(filename)! : hash(JSON.stringify([...files]));
   return { entries, digest, files, entrySources };

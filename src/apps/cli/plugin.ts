@@ -1,5 +1,6 @@
 import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
+import type {} from "./commands.js";
 
 import {
   createWishCli,
@@ -33,11 +34,12 @@ export function apply(ctx: Context): void {
   let finished = false;
   let running: Promise<void> = Promise.resolve();
   let closeSurface: () => Promise<void> = async () => {};
+  const commandController = new AbortController();
   const work = new PluginWorkOwner(ctx, {
     code: "cli_surface",
     codeReload: true,
     replacement: "generation",
-    beforeDrain: () => { if (!finished) cli.interrupt("SIGTERM"); },
+    beforeDrain: () => { commandController.abort(); if (!finished) cli.interrupt("SIGTERM"); },
     close: () => closeSurface(),
   });
 
@@ -46,7 +48,8 @@ export function apply(ctx: Context): void {
     const start = () => {
       running = work.run(async () => {
         try {
-          ctx.launch.complete(await cli.run(ctx.launch.argv));
+          const command = ctx.bail("cli/command", ctx.launch.argv, terminal, commandController.signal);
+          ctx.launch.complete(await (command ?? cli.run(ctx.launch.argv)));
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error);
           await terminal.writeError(`wish: ${message}\n`);
@@ -66,6 +69,7 @@ export function apply(ctx: Context): void {
     let closing: Promise<void> | undefined;
     closeSurface = () => closing ??= (async () => {
       stopSignals();
+      commandController.abort();
       if (!finished) cli.interrupt("SIGTERM");
       const retirement = cli.retire({
         reason: "Cordis released the CLI Run generation",

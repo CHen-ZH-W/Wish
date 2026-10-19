@@ -71,6 +71,8 @@ export interface LoadModelsInput {
 }
 
 export interface OpenModelsInput {
+  /** Immutable experiment configurations bypass live user selection and token overrides. */
+  readonly fixedConfiguration?: boolean;
   readonly environment?: ModelEnvironment | (() => ModelEnvironment);
   readonly credential?: (reference: string) => string | undefined;
   readonly fetch?: ModelFetch;
@@ -188,7 +190,7 @@ export class Models extends Service {
     input: OpenModelsInput = {},
   ): ConfiguredModelResources {
     this.work.assertAttached();
-    const preferences = this.modelPreferences(configuration);
+    const preferences = input.fixedConfiguration ? undefined : this.modelPreferences(configuration);
     const credentials = this.ctx.get("credentials");
     const resources = createConfiguredModelResources({
       configuration,

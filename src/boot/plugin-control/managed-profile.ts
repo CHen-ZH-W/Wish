@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { FiberState, Service, type Context } from "@deepseek-ai/cordis";
 import { EntryGroup, EntryTree, Group, isJsExpr, type Entry, type EntryOptions, type JsExpr } from "@deepseek-ai/cordis-plugin-loader";
 import { readManagedProfile } from "./profile-input.js";
+import { checkContractTopology } from "../../plugin-admission/contracts.js";
 import type { ManagedPluginEntryDeclaration, PluginManagementClassifier } from "./classification.js";
 import { readWishPluginManifest, type WishPluginManifestView } from "./manifest.js";
 import type { ManagedEntryChange, ManagedPluginActivationControl, ManagedPluginPreference, ManagedPluginState } from "./managed-types.js";
@@ -34,8 +35,9 @@ export class ManagedProfileSource {
   private readonly children = new Map<string, readonly string[]>();
   private readonly classifier: PluginManagementClassifier | undefined;
   constructor(readonly filename: string, readonly rootId: string, readonly state: ManagedPluginState,
-    previous?: ManagedProfileSource, classifier?: PluginManagementClassifier) {
-    const parsed = readManagedProfile(filename);
+    previous?: ManagedProfileSource, classifier?: PluginManagementClassifier,
+    readonly overlayFilename: string | undefined = previous?.overlayFilename, overlayContent?: string, restorePreviousState = false) {
+    const parsed = readManagedProfile(filename, overlayFilename, overlayContent);
     this.classifier = classifier ?? previous?.classifier;
     const fileDigests = new Map(parsed.files);
     const input = parsed.entries;
@@ -81,12 +83,24 @@ export class ManagedProfileSource {
       return normalized;
     };
     const entries = collect(structuredClone(input) as ManagedEntryInput[]);
+    const ancestry = (id: string): EntryOptions[] => {
+      const parent = this.parents.get(id), entry = this.originals.get(id);
+      return [...(parent && parent !== rootId ? ancestry(parent) : []), ...(entry ? [entry] : [])];
+    };
+    checkContractTopology([...this.classifications].filter(([id]) => !ancestry(id).some(entry => entry.disabled === true)).map(([id, value]) => {
+      const isolation: Record<string, string> = {};
+      for (const entry of ancestry(id)) for (const [name, label] of Object.entries(entry.isolate ?? {})) {
+        isolation[name] = label === true ? `entry:${rootId}:${entry.id}` : label ? `label:${label}` : "root";
+      }
+      return { id, isolation, ...(value.manifest?.contracts ? { contracts: value.manifest.contracts } : {}) };
+    }));
     if (previous) for (const [id, declaration] of this.classifications) {
       const current = declaration.manifest, prior = previous.classifications.get(id)?.manifest;
       if (!current || !prior || current.id !== prior.id) continue;
       if (current.state.mode !== prior.state.mode ||
-        (current.state.mode === "versioned" && prior.state.mode === "versioned" &&
-          !current.state.readableVersions.includes(prior.state.schemaVersion))) {
+        (!restorePreviousState && current.state.mode === "versioned" && prior.state.mode === "versioned" &&
+          !current.state.readableVersions.includes(prior.state.schemaVersion) &&
+          !current.state.migratableVersions?.includes(prior.state.schemaVersion))) {
         throw new ManagedProfileError("plugin_manifest_state_incompatible");
       }
     }
@@ -145,9 +159,15 @@ export class ManagedProfileSource {
     };
     overlay(entries); this.entries = entries;
   }
-  unchanged(): boolean {
-    try { return [...this.fileDigests].every(([file, digest]) => hash(readFileSync(file, "utf8")) === digest); }
+  unchanged(exceptOverlay = false): boolean {
+    try { return [...this.fileDigests].every(([file, digest]) => (exceptOverlay && file === this.overlayFilename) || hash(readFileSync(file, "utf8")) === digest); }
     catch { return false; }
+  }
+  deploymentEntry(id: string): Readonly<Record<string, unknown>> | null {
+    const entry = this.originals.get(id);
+    if (!entry) return null;
+    const declaration = this.classifications.get(id);
+    return { ...structuredClone(entry), ...(declaration?.manifest ? { manifest: declaration.manifest } : {}) } as unknown as Readonly<Record<string, unknown>>;
   }
   /** Include inherited scope changes; ordering alone does not stop live owners. */
   changes(next: ManagedProfileSource): readonly ManagedEntryChange[] {

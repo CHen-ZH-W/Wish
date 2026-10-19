@@ -29,6 +29,7 @@ export const Config: s<Config> = s.object({
 });
 
 export interface OpenContextInput {
+  readonly excludedProviderIds?: readonly string[];
   readonly agentScope?: AgentScope;
   readonly systemPromptSections?: readonly RegisteredSystemPromptSection[];
   readonly observe?: ContextObservationListener;
@@ -88,6 +89,8 @@ export function createContextResources(
 
 /** Cordis owner of the Context projection and Tool Result admission graph. */
 export class ContextEngine extends Service {
+  private currentProviderVersion = 0;
+  get providerVersion(): number { return this.currentProviderVersion; }
   static readonly inject = ["sessions", "models", "toolResultArchive"];
   static readonly Config = Config;
 
@@ -151,6 +154,7 @@ export class ContextEngine extends Service {
       },
     };
     entries.set(id, tracked);
+    this.currentProviderVersion++;
     if (scope !== undefined) this.scopedProviders.set(scope, entries);
     const registration: ContextProviderRegistration = Object.freeze({
       id,
@@ -160,6 +164,7 @@ export class ContextEngine extends Service {
         cancellation.abort(new Error(`Context Provider ${id} was unregistered`));
         if (entries.get(id) !== tracked) return false;
         entries.delete(id);
+        this.currentProviderVersion++;
         if (scope !== undefined && entries.size === 0 && this.scopedProviders.get(scope) === entries) {
           this.scopedProviders.delete(scope);
         }
@@ -250,7 +255,7 @@ export class ContextEngine extends Service {
             }
           }
           for (const provider of input.additionalProviderSource?.() ?? []) visible.set(provider.id, provider);
-          return Object.freeze([...visible.values()]);
+          return Object.freeze([...visible.values()].filter(provider => !input.excludedProviderIds?.includes(provider.id)));
         },
         sessions: this.ctx.sessions.open(input.dataDirectory),
         archive,

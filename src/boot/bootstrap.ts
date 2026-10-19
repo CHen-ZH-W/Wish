@@ -28,12 +28,19 @@ import type { PluginLifecycleInspection, PluginStopControl } from "./plugin-cont
 import { ManagedPluginStore } from "./plugin-control/managed-store.js";
 import { ManagedPluginControl } from "./plugin-control/managed-control.js";
 import { ManagedProfileSource, managedProfilePlugin } from "./plugin-control/managed-profile.js";
+import { initializeDeploymentOverlay } from "./plugin-control/deployment-overlay.js";
 import { startManagedConfigurationWatch } from "./plugin-control/config-watch.js";
 import { installCodeReload, type CodeReloadInspection } from "./plugin-control/code-reload.js";
+import { PluginStateRegistry } from "../plugin-state/registry.js";
+import { FilePluginStatePersistence } from "../plugin-state/store.js";
+import { verifyPluginContracts } from "../plugin-admission/runtime.js";
+import { pluginManifestView, type WishPluginManifest } from "./plugin-control/manifest.js";
 
 const ROOT_INCLUDE_ID = "include";
 
 export interface BootstrapOptions {
+  /** Trusted embedding metadata for isolated candidate Hosts; never a CLI permission grant. */
+  readonly pluginManifests?: Readonly<Record<string, WishPluginManifest>>;
   readonly surface: Surface;
   readonly argv?: readonly string[];
   readonly cwd?: string;
@@ -106,22 +113,42 @@ export async function bootstrap(
     await root.plugin(Loader);
     installWishPluginCatalog(root);
     const pluginClassifications = createWishPluginManagementClassifier();
+    if (options.pluginManifests) {
+      if (options.management) throw new Error("plugin_manifests_managed_source_required");
+      const declarations = new Map(Object.entries(options.pluginManifests).map(([id, value]) => {
+        if (!/^include:[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new Error("plugin_manifest_entry_invalid");
+        return [id, { managementClass: "managed" as const, manifest: pluginManifestView(value) }] as const;
+      }));
+      pluginClassifications.replaceEntries(options.pluginManifests, declarations);
+      root.effect(() => () => pluginClassifications.removeEntries(options.pluginManifests!), "isolated plugin manifest declarations");
+    }
     const plugins = installPluginInspection(root, pluginClassifications);
     installPluginOwnerRegistry(root);
     installPluginChangeCoordinator(root);
     const codeReload = installCodeReload(root, plugins);
     const pluginLifecycle = installPluginLifecycle(root, plugins);
     let management: ManagedPluginControl | undefined;
+    const stateDirectory = resolve(environment.WISH_DATA_DIR || resolve(launch.homeDirectory, ".wish"), "plugin-state");
+    let stateCommitted = (_requestId: string): boolean => false;
+    const pluginState = new PluginStateRegistry(() => FilePluginStatePersistence.open(stateDirectory), requestId => stateCommitted(requestId));
+    root.provide("pluginState", pluginState);
+    root.effect(() => () => pluginState.close(), "plugin private-state persistence");
     let pluginStops: PluginStopControl;
     if (options.management) {
       const store = await ManagedPluginStore.open(resolve(options.management.directory, "plugins.json"));
+      stateCommitted = requestId => store.snapshot().receipts.some(receipt => receipt.requestId === requestId && receipt.status === "succeeded");
       management = new ManagedPluginControl(root, plugins, store); pluginStops = management.stops;
+      root.provide("managedPlugins", management);
       management.attachCodeReload(codeReload);
       root.codeReload.attachTransaction({ run: (signal, batch) => management!.runCodeReload(signal, batch) });
       root.effect(() => () => management!.close(), "managed plugin persistence");
       const stop = await options.management.start(root, management, pluginLifecycle);
       root.effect(() => stop, "independent management surface");
-      const source = new ManagedProfileSource(fileURLToPath(configuration.url), ROOT_INCLUDE_ID, store.snapshot(), undefined, pluginClassifications);
+      // Keep watched deployment inputs separate from the manager's frequently
+      // renamed journal files; directory watchers must not follow that churn.
+      const overlayFilename = resolve(options.management.directory, "deployment", "overlay.json");
+      await initializeDeploymentOverlay(overlayFilename);
+      const source = new ManagedProfileSource(fileURLToPath(configuration.url), ROOT_INCLUDE_ID, store.snapshot(), undefined, pluginClassifications, overlayFilename);
       root.loader.builtins["wish-managed-profile"] = managedProfilePlugin(source, profile => management!.attach(profile), pluginClassifications);
     } else pluginStops = installPluginStopControl(root, plugins);
 
@@ -130,8 +157,15 @@ export async function bootstrap(
       name: management ? "cordis:wish-managed-profile" : "cordis:include",
       config: { path: configuration.url.href },
     };
+    await pluginState.begin(`startup:${Date.now()}`, ["*"]);
     await root.loader.create(rootInclude);
     await root.loader.await();
+    for (const entry of plugins.inspect().entries) if (entry.enabled === true && entry.manifest?.contracts) {
+      const fiber = entry.fiberId === null ? undefined : root.get("pluginOwners")?.record(entry.fiberId)?.fiber;
+      if (!fiber || entry.phase !== "active") throw new Error("plugin_contract_activation_incomplete");
+      verifyPluginContracts(root, fiber, entry.manifest);
+    }
+    await pluginState.finish(true);
     const surfaceContext = management
       ? [...root.loader.entries()].find(entry => entry.id === `${ROOT_INCLUDE_ID}:${options.surface}`)?.ctx ?? root
       : assertEntriesActivated(root, options.surface);
@@ -153,11 +187,15 @@ export async function bootstrap(
       },
     });
   } catch (cause: unknown) {
-    await root.fiber.dispose();
-    const detail = cause instanceof Error ? cause.message : String(cause);
+    let failure = cause;
+    try { await root.get("pluginState")?.rollback(); await root.get("pluginState")?.finish(false); }
+    catch (error) { failure = new AggregateError([failure, error], "plugin_state_startup_recovery_failed"); }
+    try { await root.fiber.dispose(); }
+    catch (error) { failure = new AggregateError([failure, error], "bootstrap_cleanup_failed"); }
+    const detail = failure instanceof Error ? failure.message : String(failure);
     throw new BootstrapError(
       `${options.surface} bootstrap failed: ${detail}`,
-      { cause },
+      { cause: failure },
     );
   }
 }

@@ -11,6 +11,7 @@
 #include <linux/landlock.h>
 #include <linux/seccomp.h>
 #include <sched.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -72,6 +73,7 @@ struct options {
   rlim_t max_memory_bytes;
   int network_enabled;
   int network_set;
+  int candidate_mode; /* 1: trusted compiler, 2: unknown code (threads only). */
   const char *read_paths[MAX_SCOPED_PATH_ITEMS];
   size_t read_path_count;
   const char *write_paths[MAX_SCOPED_PATH_ITEMS];
@@ -335,7 +337,7 @@ static void add_scoped_path(int ruleset_fd, const char *workspace,
   fail_message("scoped workspace path must be a regular file or directory");
 }
 
-static void add_runtime_rules(int ruleset_fd, int network_enabled) {
+static void add_runtime_rules(int ruleset_fd, int network_enabled, int candidate_mode) {
   static const char *const readonly_directories[] = {
       "/bin",          "/sbin",          "/lib",       "/lib64",
       "/usr/bin",      "/usr/sbin",      "/usr/lib",   "/usr/lib64",
@@ -381,16 +383,19 @@ static void add_runtime_rules(int ruleset_fd, int network_enabled) {
 
   for (index = 0; index < sizeof(device_files) / sizeof(device_files[0]);
        index++) {
+    if (candidate_mode && strcmp(device_files[index], "/dev/ptmx") == 0) continue;
     landlock_add_path_rule(ruleset_fd, device_files[index],
                            LANDLOCK_ACCESS_FS_READ_FILE |
                                LANDLOCK_ACCESS_FS_WRITE_FILE,
                            0);
   }
 
-  landlock_add_path_rule(ruleset_fd, "/dev/pts",
-                         readonly_dir_access |
-                             LANDLOCK_ACCESS_FS_WRITE_FILE,
-                         0);
+  if (!candidate_mode) {
+    landlock_add_path_rule(ruleset_fd, "/dev/pts",
+                           readonly_dir_access |
+                               LANDLOCK_ACCESS_FS_WRITE_FILE,
+                           0);
+  }
 
   if (network_enabled) {
     for (index = 0;
@@ -465,7 +470,7 @@ static void install_landlock(const char *workspace, const char *tmp,
     fail("landlock_create_ruleset");
   }
 
-  add_runtime_rules(ruleset_fd, network_enabled);
+  add_runtime_rules(ruleset_fd, network_enabled, options->candidate_mode);
   for (index = 0; index < options->read_path_count; index++) {
     add_scoped_path(ruleset_fd, workspace, options->read_paths[index], options,
                     readonly_file_access, readonly_dir_access,
@@ -680,6 +685,86 @@ static void install_network_seccomp(void) {
   }
 }
 
+/* Candidate code cannot signal the Host, escape its process group, open local
+ * control sockets, or bypass the syscall filter through io_uring. Evaluation
+ * allows Node threads but no child processes. Shell's existing policy is unchanged. */
+static void install_candidate_seccomp(int mode) {
+  struct sock_filter filter[] = {
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#if defined(__x86_64__)
+      BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000U, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, DENY_ERRNO),
+#endif
+      /* Keep the supervisor's death signal and prevent changing another
+       * same-user process's resource limits through prlimit64. */
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_prctl, 0, 3),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, PR_SET_PDEATHSIG, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, DENY_ERRNO),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#ifdef __NR_prlimit64
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_prlimit64, 0, 3),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+      BPF_STMT(BPF_RET | BPF_K, DENY_ERRNO),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#endif
+      DENY_SYSCALL(__NR_socket),
+      DENY_SYSCALL(__NR_connect),
+      DENY_SYSCALL(__NR_setsid),
+      DENY_SYSCALL(__NR_setpgid),
+      DENY_SYSCALL(__NR_kill),
+      DENY_SYSCALL(__NR_tkill),
+      DENY_SYSCALL(__NR_tgkill),
+      DENY_SYSCALL(__NR_rt_sigqueueinfo),
+      DENY_SYSCALL(__NR_rt_tgsigqueueinfo),
+#ifdef __NR_pidfd_open
+      DENY_SYSCALL(__NR_pidfd_open),
+#endif
+#ifdef __NR_pidfd_send_signal
+      DENY_SYSCALL(__NR_pidfd_send_signal),
+#endif
+#ifdef __NR_io_uring_setup
+      DENY_SYSCALL(__NR_io_uring_setup),
+#endif
+      DENY_SYSCALL(__NR_fchmod),
+      DENY_SYSCALL(__NR_fchmodat),
+#ifdef __NR_fchmodat2
+      DENY_SYSCALL(__NR_fchmodat2),
+#endif
+      DENY_SYSCALL(__NR_fchown),
+      DENY_SYSCALL(__NR_fchownat),
+#ifdef __NR_chmod
+      DENY_SYSCALL(__NR_chmod),
+#endif
+#ifdef __NR_chown
+      DENY_SYSCALL(__NR_chown),
+      DENY_SYSCALL(__NR_lchown),
+#endif
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+  };
+  struct sock_fprog program = { .len = (unsigned short)(sizeof(filter) / sizeof(filter[0])), .filter = filter };
+  if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) < 0) fail("candidate seccomp");
+  if (mode == 2) {
+    struct sock_filter child_filter[] = {
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#ifdef __NR_fork
+      DENY_SYSCALL(__NR_fork),
+#endif
+#ifdef __NR_vfork
+      DENY_SYSCALL(__NR_vfork),
+#endif
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone, 0, 3),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
+      BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, CLONE_THREAD, 1, 0),
+      BPF_STMT(BPF_RET | BPF_K, DENY_ERRNO),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog child_program = { .len = (unsigned short)(sizeof(child_filter) / sizeof(child_filter[0])), .filter = child_filter };
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &child_program) < 0) fail("candidate children seccomp");
+  }
+}
+
 static void set_limit(int resource, rlim_t value, const char *name) {
   struct rlimit existing;
   struct rlimit limit = {
@@ -753,6 +838,11 @@ static void parse_options(int argc, char **argv, struct options *options) {
     } else if (strcmp(argv[index], "--write-path") == 0) {
       add_scoped_path_item(options->write_paths, &options->write_path_count,
                            argv[++index], "invalid write path scope");
+    } else if (strcmp(argv[index], "--candidate-mode") == 0) {
+      const char *value = argv[++index];
+      if (strcmp(value, "build") == 0) options->candidate_mode = 1;
+      else if (strcmp(value, "execute") == 0) options->candidate_mode = 2;
+      else fail_message("invalid candidate mode");
     } else if (strcmp(argv[index], "--network") == 0) {
       const char *value = argv[++index];
       if (strcmp(value, "enabled") == 0) {
@@ -854,11 +944,12 @@ static void clean_environment(const char *tmp) {
   }
 }
 
-static void close_extra_fds(rlim_t max_open_files) {
+static void close_extra_fds(rlim_t max_open_files, int preserve_candidate_ipc) {
   int fd;
+  unsigned int first = preserve_candidate_ipc ? 4U : 3U;
 
 #ifdef __NR_close_range
-  if (syscall(__NR_close_range, 3U, ~0U, 0U) == 0) {
+  if (syscall(__NR_close_range, first, ~0U, 0U) == 0) {
     return;
   }
 
@@ -867,12 +958,13 @@ static void close_extra_fds(rlim_t max_open_files) {
   }
 #endif
 
-  for (fd = 3; fd < (int)max_open_files; fd++) {
+  for (fd = (int)first; fd < (int)max_open_files; fd++) {
     close(fd);
   }
 }
 
 int main(int argc, char **argv) {
+  pid_t initial_parent = getppid();
   struct options options;
   char workspace[PATH_MAX];
   char cwd[PATH_MAX];
@@ -890,13 +982,25 @@ int main(int argc, char **argv) {
 
   install_landlock(workspace, tmp, options.network_enabled, &options);
   clean_environment(tmp);
-  close_extra_fds(options.max_open_files);
+  if (options.candidate_mode) {
+    /* The trusted launcher always supplies exactly one IPC channel at fd 3.
+     * Never forward arbitrary inherited environment variables/descriptors. */
+    if (setenv("NODE_CHANNEL_FD", "3", 1) < 0 || setenv("NODE_CHANNEL_SERIALIZATION_MODE", "json", 1) < 0 ||
+        setenv("WISH_CANDIDATE_WORKER", "1", 1) < 0 || setenv("WISH_EXPERIMENT_WORKER", "1", 1) < 0) fail("candidate environment");
+  }
+  close_extra_fds(options.max_open_files, options.candidate_mode);
 
   if (chdir(cwd) < 0) {
     fail("chdir");
   }
 
   install_seccomp();
+  if (options.candidate_mode) {
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) < 0) fail("candidate parent death signal");
+    if (initial_parent == 1 || getppid() != initial_parent) raise(SIGKILL);
+    if (options.network_enabled) fail_message("candidate network must be disabled");
+    install_candidate_seccomp(options.candidate_mode);
+  }
   if (!options.network_enabled) {
     install_network_seccomp();
   }

@@ -6,6 +6,22 @@ import {
   registerPluginOwner,
 } from "../dist/boot/plugin-control/owner-registry.js";
 
+test("early preparation is an explicit generation-only declaration", async () => {
+  const root = new Context();
+  try {
+    const registry = installPluginOwnerRegistry(root);
+    await root.plugin(ctx => {
+      const declaration = { status: () => ({ disposition: "direct", code: "idle" }),
+        prepare: () => ({ drained: Promise.resolve(), deactivate: async () => {}, release() {} }) };
+      assert.throws(() => registerPluginOwner(ctx, { ...declaration, replacement: "drain", prepareBeforeDependents: true }), /generation owner/);
+      assert.throws(() => registerPluginOwner(ctx, { ...declaration, replacement: "generation", prepareBeforeDependents: "yes" }), /Invalid early preparation/);
+      registerPluginOwner(ctx, { ...declaration, replacement: "generation", prepareBeforeDependents: true });
+      assert.equal(registry.record(ctx.fiber.uid).prepareBeforeDependents, true);
+      assert.equal(registry.record(ctx.fiber.uid).canonical, true);
+    });
+  } finally { await root.fiber.dispose(); }
+});
+
 test("one canonical declaration supplies stop and replacement from the same Fiber generation", async () => {
   const root = new Context();
   try {

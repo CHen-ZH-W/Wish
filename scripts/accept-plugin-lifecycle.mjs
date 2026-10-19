@@ -319,6 +319,7 @@ test("real Workflow Scheduler query reads durable facts without dispatching or r
     root.provide("subagents", { subscribe() { return () => {}; }, async spawn() { launches += 1; throw new Error("unexpected dispatch"); } });
     root.provide("tools", { registry: { list() { return []; } }, getCompositionContracts() { return new Map(); } });
     for (const key of ["plan", "tasks", "permissions", "workspace", "agents"]) root.provide(key, {});
+    root.provide("runtimeLifecycle", { async readEvents() { return []; } });
     await root.loader.create({ id: "scheduler", name: "cordis:schedulers" });
     await nextTick();
     const run = await workflow.create({ key: "private-key", kind: "subagent",
@@ -361,6 +362,7 @@ test("a graph start waiting on Plan is visible before it creates any Workflow", 
     root.provide("tools", { registry: { list() { return []; } }, getCompositionContracts() { return new Map(); } });
     root.provide("plan", { async get() { reading.resolve(); await finish.promise; return undefined; } });
     for (const key of ["tasks", "permissions", "workspace", "agents"]) root.provide(key, {});
+    root.provide("runtimeLifecycle", { async readEvents() { return []; } });
     await root.loader.create({ id: "scheduler", name: "cordis:schedulers" });
     await root.loader.create({ id: "graph-scheduler", name: "cordis:graphScheduler" });
     const starting = root.get("workflowGraphScheduler").graphs.start({ owner: { parentSessionId: "private" } });

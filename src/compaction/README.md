@@ -37,7 +37,8 @@ src/compaction/
 ├── summarizer.ts
 ├── compaction.ts
 ├── recovery.ts
-└── service.ts          # Cordis owner 与 standalone helper
+├── service.ts          # 策略注册、选择与 Agent Scope 解析
+└── providers/model-summary.ts # 默认模型摘要策略与 standalone helper
 ```
 
 - `types.ts`：定义 Session、Summarizer、Compactor 的窄 Port 和结果 DTO。
@@ -45,20 +46,36 @@ src/compaction/
 - `summarizer.ts`：把一份完整 `oldEntries` transcript 发给摘要模型。
 - `compaction.ts`：协调一次 read、plan、summarize 和 append。
 - `recovery.ts`：在 AgentLoop 外层执行至多一次压缩与同 Step 重投影。
-- `service.ts`：注入 Sessions/Models，拥有 summarizer 与 compactor 的生产构造。
+- `service.ts`：注入 Sessions/Models，管理具名策略的注册、选择与生命周期。
+- `providers/model-summary.ts`：提供默认的模型摘要算法，作为独立 Cordis Provider 装配。
 
 ## Cordis 集成
 
-`src/compaction/service.ts` 提供 `compaction` service。它自己的 Schemastery Config
-管理 `keepRecentTokens` 和 `summaryMaxOutputTokens`，通过 Sessions 的 compaction view、
-Models 的请求栈与 request counter 构造 `ModelCompactionSummarizer → SessionCompactor`。
+`src/compaction/service.ts` 提供稳定的 `compaction` service。它的 Schemastery Config
+管理默认 `strategyId`、`keepRecentTokens` 和 `summaryMaxOutputTokens`。策略 Provider
+通过 `registerStrategy(owner, { id, open }, scope?)` 注册实现；同一 Cordis Fiber 可以
+注册多个 ID。默认的 `model-summary-v1` 由独立的 `compaction-model-summary` 插件提供，
+通过 Sessions 的 compaction view、Models 的请求栈与 request counter 构造
+`ModelCompactionSummarizer → SessionCompactor`。
 纯 `CompactionSessionPort`、planner、summarizer、compactor 和 recovery pipeline 都不继承
 或导入 Cordis。
 
 AgentLoop service 消费 `compaction.open()` 返回的 `ContextOverflowCompactor`；
 Application Service 与 facade 都不看见 compactor，也不选择 summary model
 或构造 summarizer/compactor。`createCompactionResources()` 仅是显式 standalone 组合
-helper，产品进程使用 service。
+helper，产品进程使用 Provider。
+
+Agent 通过 `selectScoped(owner, scope, { strategyId, keepRecentTokens,
+summaryMaxOutputTokens })` 绑定选择。解析顺序是 Compaction 配置、父 Agent Scope、
+当前 Agent Scope；子 Scope 覆盖父 Scope 的同名字段。`open()` 在每个 Step 固定所选
+策略，返回的 handle 暴露 `strategyId`。选中的 ID 未注册时立即报错，不自动回退到
+其他算法。Provider 由 Cordis Fiber 拥有；卸载先撤销注册并等待已接纳的调用结束，
+旧 handle 随后拒绝新调用。Managed Control 可单独停用或恢复默认 Provider，
+Compaction Service 无需替换。策略注册与可见性不授予模型或工具执行权限。
+
+部署层可用 `WISH_COMPACTION_STRATEGY_ID` 选择应用默认策略；Agent 子进程的
+`WISH_AGENT_PRESETS_JSON` 可在 `compaction.strategyId` 下单独选择。策略 ID 是稳定
+选择键，当前不构成版本化实验 Profile 或代码产物证明。
 
 ## Session 边界
 
@@ -133,8 +150,6 @@ Session 中；Context 会把 coverage 内的历史 user 原话逐字加入模型
 - 持久化 checkpoint 的 UI 呈现与审计元数据；
 - Provider 已开始响应后的 overflow 协调。
 
-因此当前验证证明的是源码、类型和本地组合行为，不是 live Provider、数据库或部署证明。
-
 ## 验证
 
 ```bash
@@ -143,3 +158,5 @@ npm run test:compaction
 npm run test:cordis-context
 npm test
 ```
+
+这些测试覆盖类型和本地组合行为，不调用外部 Provider 或验证部署实例。

@@ -13,6 +13,7 @@ export type PluginManagementClass = "kernel" | "managed" | "structural" | "nonco
 
 /** Browser-safe manifest facts; config schemas and local paths remain Host-side. */
 export interface WishPluginManifestView {
+  readonly contracts?: import("../../plugin-admission/contracts.js").PluginServiceContracts;
   readonly apiVersion: "wish.plugin/v1";
   readonly id: string;
   readonly displayName: string | null;
@@ -31,7 +32,7 @@ export interface WishPluginManifestView {
   readonly isolation: "trusted-in-process";
   readonly state:
     | { readonly mode: "stateless" }
-    | { readonly mode: "versioned"; readonly schemaVersion: number; readonly readableVersions: readonly number[] };
+    | { readonly mode: "versioned"; readonly schemaVersion: number; readonly readableVersions: readonly number[]; readonly migratableVersions?: readonly number[] };
 }
 
 export interface PluginEntryView {

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { overlayHash, parseDeploymentOverlay, serializeDeploymentOverlay, writeDeploymentOverlay, type DeploymentOverlayEntry } from "./deployment-overlay.js";
 import { FiberState, type Context } from "@deepseek-ai/cordis";
 import { installPluginStopControl, type PluginStopAdapter } from "./stop.js";
 import { previewPluginSelection } from "./selection.js";
@@ -13,6 +15,7 @@ import type { CodeReloadInspection, CodeReloadPermit } from "./code-reload.js";
 import { getOrInstallPluginChangeCoordinator, PluginChangeError, type PluginChangeCoordinator, type PluginChangeHandle,
   type PluginChangeOperationView, type PluginChangeScope } from "./change-coordinator.js";
 import { SafePluginChangeTransaction, type PluginChangeRestoration } from "./safe-change.js";
+import { verifyPluginContracts } from "../../plugin-admission/runtime.js";
 
 export class PluginManagementError extends Error { constructor(readonly code: string) { super(code); } }
 
@@ -76,7 +79,8 @@ export class ManagedPluginControl {
       operation?.source === "management" && operation.requestId !== null).map(operation => Object.freeze({
         operationId: operation.id, requestId: operation.requestId!, phase: requestPhase(operation.phase), cancellable: operation.cancellable,
       }));
-    const protocols = projectPluginProtocols(inspection, owners);
+    const protocols = projectPluginProtocols(inspection, owners, entry => entry.manifest?.state.mode !== "versioned" ||
+      entry.fiberId !== null && !!this.root.get("pluginState")?.conforms(entry.fiberId, entry.manifest.state, entry.manifest.id));
     const controls = projectPluginControls(inspection, protocols, this.profile?.controls() ?? Object.freeze({}), state.preferences);
     return Object.freeze({ owners, protocols, requests: Object.freeze(requests),
       operations: state.operations, codeReload: this.codeReload?.snapshot() ?? null, inspection, revision: state.revision, preferences: state.preferences,
@@ -184,23 +188,84 @@ export class ManagedPluginControl {
     this.active = run; this.emit();
     return run;
   }
-  private async performConfiguration(profile: ManagedProfile, scope: PluginChangeScope, requestId: string): Promise<void> {
+  /** Host-only artifact deployment port. It uses the same queue, Step barriers,
+   * stop protocol, durable intent and compensation as editor configuration. */
+  async deploymentSnapshot(entryId: string): Promise<{ revision: string; deploymentDigest: string; overlayDigest: string; entries: readonly DeploymentOverlayEntry[]; previousEntry: Readonly<Record<string, unknown>> | null }> {
+    const profile = this.requireProfile();
+    if (!profile.source.overlayFilename || !profile.source.unchanged()) throw new PluginManagementError("management_overlay_unavailable");
+    const content = await readFile(profile.source.overlayFilename, "utf8");
+    return { revision: this.store.snapshot().revision, deploymentDigest: profile.source.digest, overlayDigest: overlayHash(content), entries: parseDeploymentOverlay(content).entries, previousEntry: profile.source.deploymentEntry(`${profile.source.rootId}:${entryId}`) };
+  }
+  async applyDeploymentOverlay(input: { requestId: string; revision: string; deploymentDigest: string; overlayDigest: string; entries: readonly DeploymentOverlayEntry[]; restorePreviousState?: true; verifyArtifact?: () => Promise<void> }, signal?: AbortSignal): Promise<string> {
+    const requestId = `configuration:${input.requestId}`;
+    const handle = this.changes.submit({ kind: "reconfigure", source: "configuration", requestId }, async scope => {
+      if (this.closed || !this.recoveryAvailable) throw new PluginManagementError("management_unavailable");
+      if (this.recoveryRequired || this.store.snapshot().pending) throw new PluginManagementError("management_recovery_required");
+      const profile = this.requireProfile(), filename = profile.source.overlayFilename;
+      if (!filename || input.revision !== this.store.snapshot().revision || input.deploymentDigest !== profile.source.digest || !profile.source.unchanged()) throw new PluginManagementError("management_revision_conflict");
+      const previous = await readFile(filename, "utf8");
+      if (overlayHash(previous) !== input.overlayDigest) throw new PluginManagementError("management_revision_conflict");
+      const content = serializeDeploymentOverlay(input.entries);
+      parseDeploymentOverlay(content);
+      await input.verifyArtifact?.();
+      const candidate = new ManagedProfileSource(profile.source.filename, profile.source.rootId, this.store.snapshot(), profile.source, undefined, filename, content, input.restorePreviousState);
+      this.busy = true; this.configurationPhase = "applying"; this.configurationCode = null; this.emit();
+      try {
+        await this.performConfiguration(profile, scope, requestId, { source: candidate,
+          current: () => profile.source.unchanged() && candidate.unchanged(true),
+          verify: async () => { await input.verifyArtifact?.(); },
+          publish: async () => { await input.verifyArtifact?.(); await writeDeploymentOverlay(filename, content); }, restore: () => writeDeploymentOverlay(filename, previous), restorePreviousState: input.restorePreviousState === true });
+        return overlayHash(content);
+      } finally { this.configurationRequest = undefined; this.configurationStop = undefined; this.busy = false; this.emit(); }
+    }, { signal: AbortSignal.any([this.closing.signal, ...(signal ? [signal] : [])]) });
+    await handle.accepted;
+    const completion = handle.completion; this.active = completion; return completion;
+  }
+  private async performConfiguration(profile: ManagedProfile, scope: PluginChangeScope, requestId: string,
+    deployment?: { source: ManagedProfileSource; current: () => boolean; verify: () => Promise<void>; publish: () => Promise<void>; restore: () => Promise<void>; restorePreviousState?: boolean }): Promise<void> {
     let staged = false;
     const transaction = new SafePluginChangeTransaction();
+    let settled = false;
+    const reject = async (error: unknown): Promise<never> => {
+      settled = true;
+      const code = error instanceof ManagedProfileError || error instanceof PluginManagementError || error instanceof ManagedPluginStoreError
+        ? error.code : staged ? "management_configuration_apply_failed" : "management_configuration_invalid";
+      let reported = code;
+      if (this.recoveryRequired) {
+        reported = code;
+      } else if (staged && !(error instanceof ManagedPluginStoreError && error.code === "management_save_uncertain")) {
+        const outcome = await transaction.fail({ rejected: code, rolledBack: "management_configuration_rolled_back",
+          recovery: "management_configuration_recovery_failed" });
+        reported = outcome.code;
+        this.recoveryRequired = outcome.phase === "recovery-required";
+      } else if (staged || (error instanceof ManagedPluginStoreError && error.code === "management_save_uncertain")) {
+        this.recoveryRequired = true;
+      }
+      // A verified compensation must reach the still-held Step boundary as a
+      // known restoration. A pending/uncertain commit keeps its fence closed.
+      if (!this.recoveryRequired) staged = false;
+      if (!this.recoveryRequired) await this.root.get("pluginState")?.finish(false);
+      this.configurationPhase = this.recoveryRequired ? "recovery-required" : "rejected";
+      this.configurationCode = reported;
+      if (this.recoveryRequired) await scope.recovery(reported);
+      else await scope.reject(reported);
+      throw new PluginManagementError(reported);
+    };
     try {
       const before = this.store.snapshot();
       const previousSource = profile.source;
-      const candidate = new ManagedProfileSource(profile.source.filename, profile.source.rootId, before, profile.source);
+      const candidate = deployment?.source ?? new ManagedProfileSource(profile.source.filename, profile.source.rootId, before, profile.source);
       const changed = profile.source.changes(candidate);
       if (!changed.length) {
         await scope.phase("staging");
+        await deployment?.publish();
         await scope.phase("switching");
         await profile.replace(candidate);
         await scope.phase("verifying");
         this.configurationPhase = "idle";
         return;
       }
-      const checkStructure = await profile.prepareStructure(candidate);
+      const preflightStructure = deployment ? undefined : await profile.prepareStructure(candidate);
       const active: string[] = [];
       const dormant: (() => void)[] = [];
       for (const change of changed) {
@@ -235,77 +300,72 @@ export class ManagedPluginControl {
       await scope.target(changed.map(change => change.entryId));
       await scope.phase("waiting-safe-point");
       await this.atSafePoint(affected, async () => {
-        if (!candidate.unchanged()) throw new PluginManagementError("management_configuration_changed");
-        const observation = this.inspection.inspect(), instanceId = observation.instanceId;
-        const runtimeBefore = this.runtimeCheckpoint(profile, observation);
-        // Record both identities so restart can quarantine present entries and
-        // reconcile removed ones without replaying the configuration operation.
-        const request: ManagedPluginIntent = {
-          requestId, revision: before.revision, preference: "inherit",
-          selection: { instanceId, entryIds: changed.map(change => change.entryId) },
-          configuration: { beforeDigest: profile.source.digest, afterDigest: candidate.digest, changes: changed },
-        };
-        this.configurationRequest = request;
-        this.configurationStop = { instanceId, entryIds: Object.freeze(active.sort()) };
-        await this.store.commit(before.revision, { preferences: before.preferences, receipts: before.receipts, pending: request });
-        staged = true; this.emit();
-        if (JSON.stringify(observation) !== JSON.stringify(this.inspection.inspect())) throw new PluginManagementError("management_configuration_changed");
-        if (active.length) {
-          const operation = await this.stops.disableWithin(this.configurationStop, scope);
-          if (operation.state.phase !== "succeeded") {
-            if (operation.state.phase !== "rejected") throw new PluginManagementError("management_recovery_required");
-            const state = this.store.snapshot();
-            await this.store.commit(state.revision, { preferences: state.preferences, pending: null, receipts: [...state.receipts, {
-              requestId: request.requestId, fingerprint: managementFingerprint(request), status: "rejected" as const,
-              code: operation.state.code, operationId: operation.id,
-            }].slice(-100) });
-            staged = false;
-            throw new PluginManagementError(operation.state.code);
+        try {
+          if (!(deployment ? deployment.current() : candidate.unchanged())) throw new PluginManagementError("management_configuration_changed");
+          await deployment?.verify();
+          // Approved new code is first imported while Step admission is fenced.
+          const checkStructure = preflightStructure ?? await profile.prepareStructure(candidate);
+          const observation = this.inspection.inspect(), instanceId = observation.instanceId;
+          const runtimeBefore = this.runtimeCheckpoint(profile, observation);
+          await this.root.get("pluginState")?.begin(requestId, [...new Set([
+            ...changed.map(change => change.entryId),
+            ...observation.fibers.filter(fiber => affected.includes(fiber.id)).flatMap(fiber => fiber.entryId ? [fiber.entryId] : []),
+          ])], deployment?.restorePreviousState);
+          // Record both identities so restart can quarantine present entries and
+          // reconcile removed ones without replaying the configuration operation.
+          const request: ManagedPluginIntent = {
+            requestId, revision: before.revision, preference: "inherit",
+            selection: { instanceId, entryIds: changed.map(change => change.entryId) },
+            configuration: { beforeDigest: profile.source.digest, afterDigest: candidate.digest, changes: changed },
+          };
+          this.configurationRequest = request;
+          this.configurationStop = { instanceId, entryIds: Object.freeze(active.sort()) };
+          await this.store.commit(before.revision, { preferences: before.preferences, receipts: before.receipts, pending: request });
+          staged = true; this.emit();
+          if (JSON.stringify(observation) !== JSON.stringify(this.inspection.inspect())) throw new PluginManagementError("management_configuration_changed");
+          if (active.length) {
+            const operation = await this.stops.disableWithin(this.configurationStop, scope);
+            if (operation.state.phase !== "succeeded") {
+              if (operation.state.phase !== "rejected") throw new PluginManagementError("management_recovery_required");
+              const state = this.store.snapshot();
+              await this.store.commit(state.revision, { preferences: state.preferences, pending: null, receipts: [...state.receipts, {
+                requestId: request.requestId, fingerprint: managementFingerprint(request), status: "rejected" as const,
+                code: operation.state.code, operationId: operation.id,
+              }].slice(-100) });
+              staged = false;
+              throw new PluginManagementError(operation.state.code);
+            }
+            transaction.changed(this.configurationRestoration(profile, previousSource, before, request, active, runtimeBefore, deployment?.restore));
           }
-          transaction.changed(this.configurationRestoration(profile, previousSource, before, request, active, runtimeBefore));
-        }
-        if (this.closed) throw new PluginManagementError("management_unavailable");
-        for (const check of dormant) check();
-        checkStructure();
-        await scope.phase("staging");
-        await scope.phase("switching");
-        if (!transaction.changedRuntime) {
-          transaction.changed(this.configurationRestoration(profile, previousSource, before, request, active, runtimeBefore));
-        }
-        await profile.replace(candidate);
-        await scope.phase("retiring");
-        await scope.phase("verifying");
-        this.assertActiveConformance([...new Set([
-          ...changed.map(change => change.entryId),
-          ...this.activatedSince(profile, runtimeBefore),
-        ])]);
-        const state = this.store.snapshot();
-        await this.store.commit(state.revision, { preferences: candidate.preferences, pending: null, receipts: [...state.receipts, {
-          requestId: request.requestId, fingerprint: managementFingerprint(request), status: "succeeded" as const,
-          code: "management_configuration_applied",
-        }].slice(-100) });
-        transaction.commit();
-        this.configurationPhase = "idle";
+          if (this.closed) throw new PluginManagementError("management_unavailable");
+          for (const check of dormant) check();
+          checkStructure();
+          await scope.phase("staging");
+          await scope.phase("switching");
+          if (!transaction.changedRuntime) {
+            transaction.changed(this.configurationRestoration(profile, previousSource, before, request, active, runtimeBefore, deployment?.restore));
+          }
+          await deployment?.publish();
+          await profile.replace(candidate);
+          await scope.phase("retiring");
+          await scope.phase("verifying");
+          this.assertActiveConformance([...new Set([
+            ...changed.map(change => change.entryId),
+            ...this.activatedSince(profile, runtimeBefore),
+          ])]);
+          const state = this.store.snapshot();
+          await this.store.commit(state.revision, { preferences: candidate.preferences, pending: null, receipts: [...state.receipts, {
+            requestId: request.requestId, fingerprint: managementFingerprint(request), status: "succeeded" as const,
+            code: "management_configuration_applied",
+          }].slice(-100) });
+          transaction.commit();
+          await this.root.get("pluginState")?.finish(true);
+          this.configurationPhase = "idle";
+        } catch (error) { return reject(error); }
       }, () => staged || this.recoveryRequired, scope.signal);
     } catch (error) {
-      const code = error instanceof ManagedProfileError || error instanceof PluginManagementError || error instanceof ManagedPluginStoreError
-        ? error.code : staged ? "management_configuration_apply_failed" : "management_configuration_invalid";
-      let reported = code;
-      if (this.recoveryRequired) {
-        reported = code;
-      } else if (staged && !(error instanceof ManagedPluginStoreError && error.code === "management_save_uncertain")) {
-        const outcome = await transaction.fail({ rejected: code, rolledBack: "management_configuration_rolled_back",
-          recovery: "management_configuration_recovery_failed" });
-        reported = outcome.code;
-        this.recoveryRequired = outcome.phase === "recovery-required";
-      } else if (staged || (error instanceof ManagedPluginStoreError && error.code === "management_save_uncertain")) {
-        this.recoveryRequired = true;
-      }
-      this.configurationPhase = this.recoveryRequired ? "recovery-required" : "rejected";
-      this.configurationCode = reported;
-      if (this.recoveryRequired) await scope.recovery(reported);
-      else await scope.reject(reported);
-      throw new PluginManagementError(reported);
+      if (settled) throw error;
+      return reject(error);
     }
   }
   /** Persist admission before returning; execution is Host-owned after that point. */
@@ -495,9 +555,19 @@ export class ManagedPluginControl {
     const snapshot = this.snapshot();
     for (const id of entryIds) {
       const entry = snapshot.inspection.entries.find(item => item.id === id);
+      if (entry?.manifest?.contracts && entry.enabled === true && entry.phase !== "active") throw new PluginManagementError("management_plugin_dependency_unavailable");
       if (entry?.managementClass !== "managed" || entry.phase !== "active") continue;
+      if (entry.manifest?.contracts && entry.fiberId !== null) {
+        const fiber = this.root.get("pluginOwners")?.record(entry.fiberId)?.fiber;
+        if (!fiber) throw new PluginManagementError("management_plugin_nonconformant");
+        verifyPluginContracts(this.root, fiber, entry.manifest);
+      }
       if (snapshot.protocols.find(item => item.entryId === id)?.conformance !== "online") {
         throw new PluginManagementError("management_plugin_nonconformant");
+      }
+      if (entry.manifest?.state.mode === "versioned" && (entry.fiberId === null ||
+        !this.root.get("pluginState")?.conforms(entry.fiberId, entry.manifest.state, entry.manifest.id))) {
+        throw new PluginManagementError("management_plugin_state_nonconformant");
       }
     }
   }
@@ -574,10 +644,12 @@ export class ManagedPluginControl {
     };
   }
   private configurationRestoration(profile: ManagedProfile, source: ManagedProfileSource, before: ManagedPluginState,
-    request: ManagedPluginIntent, active: readonly string[], runtimeBefore: readonly PluginEntryView[]): PluginChangeRestoration {
+    request: ManagedPluginIntent, active: readonly string[], runtimeBefore: readonly PluginEntryView[], restoreDeployment?: () => Promise<void>): PluginChangeRestoration {
     const oldFibers = new Map(active.map(id => [id, profile.owned(id).fiber]));
     return {
       restore: async () => {
+        await restoreDeployment?.();
+        await this.root.get("pluginState")?.rollback();
         await profile.restore(source, before.preferences);
         await this.repairFailedRuntime(profile, runtimeBefore, before);
         const current = this.store.snapshot();
@@ -686,6 +758,8 @@ export class ManagedPluginControl {
   private emit(): void { for (const listener of this.listeners) { try { void Promise.resolve(listener()).catch(() => {}); } catch { /* Advisory notifications. */ } } }
 }
 
+declare module "@deepseek-ai/cordis" { interface Context { managedPlugins: ManagedPluginControl } }
+
 function requestPhase(phase: PluginChangeOperationView["phase"]): "queued" | "waiting" | "applying" {
   if (phase === "queued") return "queued";
   if (phase === "preflight" || phase === "waiting-safe-point") return "waiting";
@@ -710,6 +784,7 @@ function waitForCaller<T>(work: Promise<T>, timeoutMs: number, signal?: AbortSig
 function projectPluginProtocols(
   inspection: PluginInspectionSnapshot,
   owners: ManagedPluginSnapshot["owners"],
+  stateConforms: (entry: PluginEntryView) => boolean,
 ): readonly ManagedPluginProtocolView[] {
   const byFiber = new Map(owners.map(owner => [owner.fiberId, owner]));
   return Object.freeze(inspection.entries.filter(entry => entry.managementClass === "managed").map(entry => {
@@ -722,7 +797,7 @@ function projectPluginProtocols(
     const codeUpdate: ManagedPluginProtocolView["codeUpdate"] = coverage.some(owner => owner.declaration === "compatibility" || owner.codeReload === "unregistered") ? "missing"
       : coverage.some(owner => owner.codeReload === "restart") ? "restart"
       : entry.manifest && coverage.some(owner => owner.replacement !== entry.manifest!.replacement) ? "mismatch" : "online";
-    const conformance: ManagedPluginProtocolView["conformance"] = stop === "missing" || codeUpdate === "missing" || codeUpdate === "mismatch" ? "incomplete"
+    const conformance: ManagedPluginProtocolView["conformance"] = !stateConforms(entry) || stop === "missing" || codeUpdate === "missing" || codeUpdate === "mismatch" ? "incomplete"
       : stop === "restart" || codeUpdate === "restart" ? "restart" : "online";
     return Object.freeze({ entryId: entry.id, conformance, stop, codeUpdate });
   }));

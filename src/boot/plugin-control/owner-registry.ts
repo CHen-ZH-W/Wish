@@ -4,6 +4,7 @@ import type { Entry } from "@deepseek-ai/cordis-plugin-loader";
 import type { PluginLifecycleStatus } from "./management-types.js";
 import type { PreparePluginStop } from "./stop-contract.js";
 import type { PluginChange } from "./change-coordinator.js";
+import type {} from "../../plugin-state/registry.js";
 
 export type { PluginChange } from "./change-coordinator.js";
 
@@ -21,6 +22,10 @@ export interface PluginOwnerRegistration {
   status(signal: AbortSignal): PluginLifecycleStatus | Promise<PluginLifecycleStatus>;
   prepare(change: PluginChange): PluginChangeGuard;
   readonly replacement: "drain" | "generation";
+  /** Generation owners may drain executions through still-live dependent cleanup
+   * adapters before those adapters are fenced. Only execution admission may be
+   * sealed here; ordinary Provider calls must remain available to Consumers. */
+  readonly prepareBeforeDependents?: true;
 }
 
 /** Compatibility shape used by the existing code-reload adapter. */
@@ -47,6 +52,7 @@ interface ReplacementDeclaration {
   readonly mode: PluginOwnerRegistration["replacement"] | "restart";
   readonly prepare?: (change: PluginChange) => PluginChangeGuard;
   readonly token: symbol;
+  readonly prepareBeforeDependents?: true;
 }
 
 interface MutableOwnerRecord {
@@ -70,6 +76,7 @@ export interface PluginOwnerRecord {
   readonly canonical: boolean;
   readonly canDisable: boolean;
   readonly canReplace: boolean;
+  readonly prepareBeforeDependents: boolean;
 }
 
 interface OwnerContribution {
@@ -95,6 +102,7 @@ function canonicalContribution(registration: PluginOwnerRegistration): OwnerCont
     replacement: {
       mode: registration.replacement,
       prepare: change => registration.prepare(change),
+      ...(registration.prepareBeforeDependents ? { prepareBeforeDependents: true } : {}),
     },
   };
 }
@@ -193,13 +201,19 @@ export class PluginOwnerRegistry {
       ? this.records.get(record.fiber)?.lifecycle?.prepare
       : this.records.get(record.fiber)?.replacement?.prepare;
     if (!prepare) throw new Error("plugin_owner_unsupported");
-    return validateGuard(prepare(change));
+    const guard = validateGuard(prepare(change));
+    const state = this.root.get("pluginState")?.prepare(record.fiber, guard.drained);
+    if (!state) return guard;
+    return { drained: state.drained, deactivate: async () => { await state.drained; await guard.deactivate(); },
+      release: () => { state.release(); guard.release(); } };
   }
 
   registerOwner(owner: Context, registration: PluginOwnerRegistration): void {
     if (!registration || typeof registration.status !== "function" || typeof registration.prepare !== "function") {
       throw new TypeError("Plugin owner registration is invalid");
     }
+    if (registration.prepareBeforeDependents !== undefined && registration.prepareBeforeDependents !== true) throw new TypeError("Invalid early preparation declaration");
+    if (registration.prepareBeforeDependents && registration.replacement !== "generation") throw new TypeError("Early preparation requires a generation owner");
     this.add(owner, canonicalContribution(registration), "plugin owner");
   }
 
@@ -310,6 +324,7 @@ export class PluginOwnerRegistry {
       canonical,
       canDisable: record.lifecycle?.prepare !== undefined,
       canReplace: record.replacement?.mode !== undefined && record.replacement.mode !== "restart" && record.replacement.prepare !== undefined,
+      prepareBeforeDependents: record.replacement?.prepareBeforeDependents === true,
     });
   }
 

@@ -1,7 +1,6 @@
 import { PluginWorkOwner } from "../boot/plugin-control/work-owner.js";
 import { AgentScope } from "./agent-scope.js";
 import { parseAgentScopePresets, snapshotAgentScopePreset, type AgentScopePreset } from "./agent-preset.js";
-import { createCompactionResources } from "../compaction/service.js";
 import { Service, type Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 
@@ -76,7 +75,7 @@ export interface AgentDependencies {
 export type OpenAgentInput = Omit<
   OpenRuntimeInput,
   "agentId" | "agentInstructions" | "agentScope"
->;
+> & { readonly composition?: { readonly scope: AgentScope; readonly instructions: readonly ContextInstruction[]; readonly permissions: AgentPermissionConfiguration } };
 
 export interface AgentResources extends RuntimeResources {
   readonly agent: WishAgent;
@@ -160,16 +159,19 @@ export class Agents extends Service {
         throw new Error(`Agent Scope role ${this.scopePreset!.role} did not register local Tool ${tool.name}`);
       }
     }
+    const { composition, ...runtimeInput } = input;
     const resources = this.ctx.runEngine.open({
-      ...input,
+      ...runtimeInput,
       agentId: this.agentId,
-      agentInstructions: this.agentInstructions,
-      agentScope: this.scope,
+      agentInstructions: composition?.instructions ?? this.agentInstructions,
+      agentScope: composition?.scope ?? this.scope,
     });
     this.generations.add(resources.generation);
     return Object.freeze({
       ...resources,
-      agent: createWishAgent(this.definition, resources),
+      agent: createWishAgent(composition === undefined ? this.definition : Object.freeze({ ...this.definition,
+        configuration: Object.freeze({ agentInstructions: composition.instructions, permissions: composition.permissions }),
+      }), resources),
     });
   }
 
@@ -185,15 +187,7 @@ export class Agents extends Service {
       this.installedPrompts.add(prompt);
     }
     if (compaction !== undefined && !this.installedCompactions.has(compaction)) {
-      const policy = this.scopePreset!.compaction!;
-      compaction.registerScoped(this.ctx, this.scope, {
-        id: `preset:${this.scopePreset!.role}`,
-        open: input => createCompactionResources({
-          ...input,
-          keepRecentTokens: policy.keepRecentTokens ?? input.keepRecentTokens,
-          summaryMaxOutputTokens: policy.summaryMaxOutputTokens ?? input.summaryMaxOutputTokens,
-        }),
-      });
+      compaction.selectScoped(this.ctx, this.scope, this.scopePreset!.compaction!);
       this.installedCompactions.add(compaction);
     }
   }

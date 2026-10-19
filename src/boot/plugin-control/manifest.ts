@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { WishPluginManifestView } from "./types.js";
+import { parseContracts, type PluginServiceContracts } from "../../plugin-admission/contracts.js";
 
 export type { WishPluginManifestView } from "./types.js";
 
@@ -30,6 +31,7 @@ export type WishPluginState =
       readonly mode: "versioned";
       readonly schemaVersion: number;
       readonly readableVersions: readonly number[];
+      readonly migratableVersions?: readonly number[];
     };
 
 export interface WishPluginConfigSchema {
@@ -68,6 +70,7 @@ export interface WishPluginManifest {
     readonly network: "none" | "capability-grant";
   };
   readonly state: WishPluginState;
+  readonly contracts?: PluginServiceContracts;
 }
 
 export interface LoadedWishPluginManifest {
@@ -75,6 +78,14 @@ export interface LoadedWishPluginManifest {
   readonly view: WishPluginManifestView;
   readonly filename: string;
   readonly digest: string;
+}
+
+/** Host-owned projection used by isolated Loader embeddings before activation. */
+export function pluginManifestView(input: WishPluginManifest): WishPluginManifestView {
+  const manifest = parseWishPluginManifest(input);
+  return Object.freeze({ apiVersion: manifest.apiVersion, id: manifest.id, displayName: manifest.displayName ?? null,
+    replacement: manifest.replacement, capabilities: manifest.permissions.capabilities, isolation: manifest.sandbox.isolation,
+    state: manifest.state, ...(manifest.contracts ? { contracts: manifest.contracts } : {}) });
 }
 
 export class WishPluginManifestError extends Error {
@@ -86,7 +97,7 @@ type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]
 
 const manifestKeys = new Set([
   "apiVersion", "id", "displayName", "entry", "managementClass", "replacement",
-  "configSchema", "permissions", "sandbox", "state",
+  "configSchema", "permissions", "sandbox", "state", "contracts",
 ]);
 const schemaKeys = new Set([
   "type", "description", "const", "enum", "minimum", "maximum", "minLength", "maxLength",
@@ -123,6 +134,7 @@ export function readWishPluginManifest(
       capabilities: manifest.permissions.capabilities,
       isolation: manifest.sandbox.isolation,
       state: manifest.state,
+      ...(manifest.contracts ? { contracts: manifest.contracts } : {}),
     }),
     filename,
     digest: createHash("sha256").update(content).digest("hex"),
@@ -167,8 +179,10 @@ export function parseWishPluginManifest(input: unknown): WishPluginManifest {
   });
   requireSandboxCoverage(declared, sandbox);
   const state = parseState(value.state);
+  const contracts = value.contracts === undefined ? undefined : parseContracts(value.contracts);
   return Object.freeze({
     apiVersion: WISH_PLUGIN_API_VERSION,
+    ...(contracts ? { contracts } : {}),
     id,
     ...(displayName === undefined ? {} : { displayName }),
     entry,
@@ -281,12 +295,17 @@ function parseState(input: unknown): WishPluginState {
     return Object.freeze({ mode: "stateless" as const });
   }
   if (value.mode !== "versioned") throw new WishPluginManifestError("plugin_manifest_invalid");
-  exactKeys(value, new Set(["mode", "schemaVersion", "readableVersions"]), "plugin_manifest_invalid");
+  exactKeys(value, new Set(["mode", "schemaVersion", "readableVersions", "migratableVersions"]), "plugin_manifest_invalid");
   const schemaVersion = positive(value.schemaVersion, "plugin_manifest_invalid");
   if (!Array.isArray(value.readableVersions) || !value.readableVersions.length) throw new WishPluginManifestError("plugin_manifest_invalid");
   const readableVersions = value.readableVersions.map(item => positive(item, "plugin_manifest_invalid"));
   if (new Set(readableVersions).size !== readableVersions.length || !readableVersions.includes(schemaVersion)) throw new WishPluginManifestError("plugin_manifest_invalid");
-  return Object.freeze({ mode: "versioned" as const, schemaVersion, readableVersions: Object.freeze(readableVersions) });
+  const migrations = value.migratableVersions;
+  if (migrations !== undefined && (!Array.isArray(migrations) || migrations.some(item => !Number.isSafeInteger(item) || item < 1 || readableVersions.includes(item)) || new Set(migrations).size !== migrations.length)) {
+    throw new WishPluginManifestError("plugin_manifest_invalid");
+  }
+  return Object.freeze({ mode: "versioned" as const, schemaVersion, readableVersions: Object.freeze(readableVersions),
+    ...(migrations === undefined ? {} : { migratableVersions: Object.freeze([...migrations as number[]]) }) });
 }
 
 function requireSandboxCoverage(

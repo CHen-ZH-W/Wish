@@ -74,6 +74,9 @@
     runEngine: true
     agents: true
     application: true
+    agentProfiles: true
+    experiments: true
+    candidates: true
   config:
     - id: storage
       name: 'cordis:storage'
@@ -632,6 +635,8 @@
     - id: compaction
       name: 'cordis:compaction'
       config:
+        strategyId: !!js >-
+          launch.environment.WISH_COMPACTION_STRATEGY_ID || undefined
         keepRecentTokens: !!js >-
           launch.environment.WISH_COMPACTION_KEEP_RECENT_TOKENS === undefined || launch.environment.WISH_COMPACTION_KEEP_RECENT_TOKENS === ''
             ? undefined
@@ -640,6 +645,9 @@
           launch.environment.WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS === undefined || launch.environment.WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS === ''
             ? undefined
             : Number(launch.environment.WISH_COMPACTION_SUMMARY_MAX_OUTPUT_TOKENS)
+
+    - id: compaction-model-summary
+      name: 'cordis:compaction-model-summary'
 
     - id: tools
       name: 'cordis:tools'
@@ -861,6 +869,50 @@
 
     - id: application
       name: 'cordis:application'
+
+    - id: agent-profiles
+      name: 'cordis:agent-profiles'
+      config:
+        definitionsJson: !!js launch.environment.WISH_AGENT_PROFILES_JSON
+
+    - id: agent-profile-application
+      name: 'cordis:agent-profile-application'
+
+    - id: experiments
+      name: 'cordis:experiments'
+      config:
+        directory: !!js >-
+          launch.environment.WISH_EXPERIMENTS_DIR ||
+          (launch.environment.WISH_DATA_DIR ? launch.environment.WISH_DATA_DIR + '/experiments' : undefined)
+
+    - id: experiment-process
+      name: 'cordis:experiment-process'
+
+    - id: candidates
+      name: 'cordis:candidates'
+      config:
+        directory: !!js >-
+          launch.environment.WISH_CANDIDATES_DIR ||
+          (launch.environment.WISH_DATA_DIR ? launch.environment.WISH_DATA_DIR + '/candidates' : undefined)
+
+    - id: candidate-linux
+      name: 'cordis:candidate-linux'
+
+    - id: candidate-cli
+      name: 'cordis:candidate-cli'
+      disabled: !!js launch.surface !== 'cli'
+
+    - id: candidate-tools
+      name: 'cordis:candidate-tools'
+      disabled: !!js launch.environment.WISH_CANDIDATE_TOOLS !== '1'
+
+    - id: candidate-management
+      name: 'cordis:candidate-management'
+      disabled: !!js launch.surface !== 'webui'
+
+    - id: agent-profile-cli
+      name: 'cordis:agent-profile-cli'
+      disabled: !!js launch.surface !== 'cli'
 
     - id: plan-session-feature
       name: 'cordis:plan-session-feature'

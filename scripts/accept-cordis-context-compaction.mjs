@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,6 +12,7 @@ import { bootstrap } from "../dist/boot/bootstrap.js";
 import Compaction, {
   Config as CompactionConfig,
 } from "../dist/compaction/service.js";
+import ModelSummaryCompaction from "../dist/compaction/providers/model-summary.js";
 import ContextEngine, {
   Config as ContextEngineConfig,
 } from "../dist/context/service.js";
@@ -74,6 +76,7 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
       keepRecentTokens: 512,
       summaryMaxOutputTokens: 128,
     });
+    const summaryProvider = await root.plugin(ModelSummaryCompaction);
     await consumer.await();
     assert.equal(consumer.state, fiberState.active);
     assert.equal(generations.length, 1);
@@ -116,6 +119,7 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
     assert.equal(typeof context.forStep, "function");
     assert.equal(context.released, false);
     assert.equal(compactor.keepRecentTokens, 512);
+    assert.equal(compactor.strategyId, "model-summary-v1");
     assert.equal(typeof compactor.compact, "function");
     assert.equal(context.release(), true);
     assert.equal(context.release(), false);
@@ -155,6 +159,20 @@ test("ContextEngine and Compaction own construction and dependency lifecycle", a
     assert.equal(generations.length, 3);
     assert.throws(() => firstCompaction.open({}), /compaction_closed/);
     await assert.rejects(compactor.compact({}), /compaction_closed/);
+
+    const stableCompaction = root.reflect._getImpl("compaction").value;
+    const providerGeneration = root.compaction.open({
+      dataDirectory: join(directory, "state"), models,
+      keepRecentTokens: 768, summaryMaxOutputTokens: 192,
+    });
+    await summaryProvider.dispose();
+    assert.equal(root.reflect._getImpl("compaction").value, stableCompaction);
+    assert.throws(() => root.compaction.open({
+      dataDirectory: join(directory, "state"), models,
+      keepRecentTokens: 768, summaryMaxOutputTokens: 192,
+    }), /model-summary-v1.*unavailable/u);
+    await assert.rejects(providerGeneration.compact({}), /closed/u);
+    await root.plugin(ModelSummaryCompaction);
 
     assert.throws(
       () => contextProvider.update({ reservedOutputTokens: -1 }),
@@ -240,6 +258,21 @@ test("Loader updates and disables ContextEngine and Compaction by stable id", as
       booted.surfaceContext.get("compaction").summaryMaxOutputTokens,
       192,
     );
+    const strategyId = "include:compaction-model-summary";
+    const strategyEntry = booted.context.loader.resolve(strategyId);
+    assert.equal(strategyEntry.fiber.state, fiberState.active);
+    const stableCompaction = booted.surfaceContext.reflect._getImpl("compaction").value;
+    await booted.context.loader.update(strategyId, { disabled: true });
+    assert.equal(strategyEntry.disabled, true);
+    assert.equal(booted.surfaceContext.reflect._getImpl("compaction").value, stableCompaction);
+    assert.throws(() => stableCompaction.open({
+      dataDirectory: directory, models: undefined,
+      keepRecentTokens: 768, summaryMaxOutputTokens: 192,
+    }), /model-summary-v1.*unavailable/u);
+    await booted.context.loader.update(strategyId, { disabled: false });
+    assert.equal(strategyEntry.disabled, false);
+    assert.equal(strategyEntry.fiber.state, fiberState.active);
+    assert.equal(booted.surfaceContext.reflect._getImpl("compaction").value, stableCompaction);
 
     await assert.rejects(
       booted.context.loader.update(compactionId, {
@@ -296,6 +329,48 @@ test("Loader updates and disables ContextEngine and Compaction by stable id", as
   assert.equal(booted?.context.get("contextEngine"), undefined);
   assert.equal(booted?.context.get("compaction"), undefined);
   assert.deepEqual(booted?.context.fiber.getEffects(), []);
+});
+
+test("managed Compaction strategy stops and restarts without replacing the service", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-managed-compaction-strategy-"));
+  let booted;
+  try {
+    booted = await bootstrap({
+      surface: "cli", argv: ["--version"], cwd: repositoryRoot, homeDirectory: directory,
+      environment: { WISH_DATA_DIR: join(directory, "data"), CORDIS_HMR: "0" },
+      management: { directory: join(directory, "management"), async start(_root, control) {
+        control.setRecoveryAvailable(true);
+        return async () => control.setRecoveryAvailable(false);
+      } },
+    });
+    for (let attempt = 0; !booted.pluginManagement.snapshot().writable && attempt < 200; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(booted.pluginManagement.snapshot().writable, true);
+    const service = booted.surfaceContext.reflect._getImpl("compaction").value;
+    const entryId = "include:compaction-model-summary";
+    const before = booted.pluginManagement.snapshot();
+    const stopped = await booted.pluginManagement.change({
+      requestId: randomUUID(), revision: before.revision, preference: "disabled",
+      selection: { instanceId: before.inspection.instanceId, entryIds: [entryId] },
+    });
+    assert.equal(stopped.status, "succeeded", JSON.stringify(stopped));
+    assert.equal(booted.surfaceContext.reflect._getImpl("compaction").value, service);
+    assert.throws(() => service.open({ dataDirectory: directory, models: undefined,
+      keepRecentTokens: 512, summaryMaxOutputTokens: 128,
+    }), /model-summary-v1.*unavailable/u);
+    const after = booted.pluginManagement.snapshot();
+    const started = await booted.pluginManagement.change({
+      requestId: randomUUID(), revision: after.revision, preference: "enabled",
+      selection: { instanceId: after.inspection.instanceId, entryIds: [entryId] },
+    });
+    assert.equal(started.status, "succeeded", JSON.stringify(started));
+    assert.equal(booted.surfaceContext.reflect._getImpl("compaction").value, service);
+    assert.equal(booted.context.loader.resolve(entryId).fiber.state, fiberState.active);
+  } finally {
+    await booted?.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("schemas reject invalid generations and AgentLoop consumes capabilities", async () => {

@@ -68,7 +68,7 @@ Example deployment setting:
 ```json
 [
   {"role":"coder","availableTools":["read","grep","write","edit","bash"],"permissionProfile":"workspace-write","prompt":"Implement the assigned change.","compaction":{"keepRecentTokens":3000},"memory":"snapshot"},
-  {"role":"reviewer","availableTools":["read","grep"],"permissionProfile":"read-only","allowedCapabilities":["filesystem.read"],"prompt":"Review the assigned change and report findings.","compaction":{"keepRecentTokens":1500},"memory":"none"}
+  {"role":"reviewer","availableTools":["read","grep"],"permissionProfile":"read-only","allowedCapabilities":["filesystem.read"],"prompt":"Review the assigned change and report findings.","compaction":{"strategyId":"model-summary-v1","keepRecentTokens":1500},"memory":"none"}
 ]
 ```
 
@@ -79,7 +79,9 @@ The selected profile and available review surface also narrow the stored capabil
 to operations the child can actually execute.
 Child-specific
 plugins can inspect `ctx.agents.scopePreset?.role` and register their Tool, Prompt, Context
-Provider or Compaction strategy against `ctx.agents.scope` using the scoped APIs. These
+Provider or Compaction strategy against `ctx.agents.scope` using the scoped APIs. A
+Compaction Provider may register several named strategies on the shared service;
+the role preset chooses one by `compaction.strategyId` without changing sibling Agents. These
 registrations live only in that child process. To add a Tool that does not exist in the
 parent Application, declare it in the role's `localTools` with its `name`, `requires` and
 optional `requiredCapabilities`, and include its name in `availableTools`. The parent
@@ -145,3 +147,13 @@ failure fencing and real bootstrap/AgentLoop/Tool replacements during streaming,
 execution, using a local deterministic Model Adapter (no external Provider request).
 `npm run test:code-reload` additionally covers native file edits, multi-file batches, same-Run
 continuity, self-edit acceptance, stable-owner rejection, activation failure and cleanup deadlines.
+
+## Agent Profile 与实验
+
+版本化 Agent 方案由独立的 [Agent Profiles](../agent-profiles/README.md) 领域拥有，通过 Application execution-profile 端口绑定到 Scope 和 Run。模型、Prompt、工具、权限和 Compaction 是并列成员；[Experiments](../experiments/README.md) 用不可变快照启动隔离的真实 Runtime 做对照评测。
+
+## Runtime 替换与 Run 清理
+
+Runtime 在 canonical Owner 上声明 `prepareBeforeDependents: true`。HMR 已导入候选实现并验证影响范围后，先封住该 Runtime 的新 Run 准入，中止原 Run，等待 Core 终止以及 Application 的 Run 清理；此时 Todo、Workflow、Subagents 等清理适配器和 Provider 仍然可用。随后才按 Consumer 到 Provider 的顺序准备其余 Owner，并进行原生卸载与激活。其他 Owner 的准备顺序保持不变。
+
+`RunGeneration.abortAndDrain()` 不销毁代际；若清理失败，HMR 拒绝替换并释放准入栅栏，旧实现仍可在清理恢复后接受新的 Run。已中止的 Run 不会重放。成功排空后才允许真正退休旧代。此顺序不改变受控停用的忙态检查，也不迁移正在执行的 JavaScript 栈。SessionFeature 缺失或清理失败的检查继续生效。

@@ -115,7 +115,7 @@ Context / Model / Tools / Runtime 不依赖 AgentLoop
 `AgentLoop` Service 注入 `sessions`、`workspace`、`permissions`、
 `models`、`contextEngine`、`compaction`、`tools` 和 `runtimeLifecycle`。任一依赖缺失时
 provider 保持 PENDING；依赖 generation 更新或消失时，AgentLoop 撤销，恢复后重新激活。
-Runtime 不再硬依赖 AgentLoop，单独的执行实现换代不销毁 Run；但是缺少 AgentLoop 时
+Runtime 通过 StepPipeline 契约获取执行实现，单独的执行实现换代不销毁 Run；但是缺少 AgentLoop 时
 不能启动新 Run 或新 Step，现有 Application surface 不代表执行能力仍然可用。
 
 AgentLoop 每次 `open()` acquire 一个 `SessionResourcesHandle`，并接收

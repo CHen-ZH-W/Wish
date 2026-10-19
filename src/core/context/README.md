@@ -78,7 +78,7 @@ Projector 只执行 item 已声明的 placement，不分析正文内容：
   决策负责；Context 不猜测产品策略。
 
 Item 的内容渲染已由 provider 完成；历史合法性、唯一性和当前用户保护不是可替换
-策略。因此 Core 不再提供通用 ItemResolver、ItemRenderer、MessageNormalizer 或
+策略。Core 不提供通用 ItemResolver、ItemRenderer、MessageNormalizer 或
 AdmissionPolicy。
 
 ## 依赖方向

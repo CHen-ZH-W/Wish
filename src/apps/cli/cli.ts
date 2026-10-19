@@ -128,6 +128,7 @@ class DefaultWishCli implements WishCli {
       : undefined;
     try {
       this.application = await this.openApplication({
+        ...(args.agentProfile === undefined ? {} : { agentProfile: args.agentProfile }),
         ...(args.dataDirectory === undefined
           ? {}
           : { dataDirectory: resolve(launchDirectory, args.dataDirectory) }),

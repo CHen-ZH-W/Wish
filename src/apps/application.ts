@@ -47,6 +47,7 @@ export type ApplicationModelDependencies = Pick<
 >;
 
 export interface WishApplicationOptions {
+  readonly executionProfile?: import("./execution-profile.js").ApplicationExecutionProfile;
   readonly sessionFeatures?: import("./session-features.js").SessionFeatures;
   readonly sessions: SessionDependencies;
   readonly agent: Agent<WishAgentProtocol>;
@@ -71,6 +72,7 @@ const sessionAdmissions = new WeakMap<SessionManager, {
 }>();
 
 interface DefaultWishApplicationOptions {
+  readonly executionProfile?: import("./execution-profile.js").ApplicationExecutionProfile;
   readonly sessions: SessionManager;
   readonly agent: Agent<WishAgentProtocol>;
   readonly configuredModel: ApplicationModelDependencies["configuredModel"];
@@ -85,6 +87,7 @@ interface DefaultWishApplicationOptions {
  * Product processes obtain the same facade from the Application service.
  */
 export class ApplicationFacade implements WishApplication {
+  readonly executionProfile?: import("./execution-profile.js").ApplicationExecutionProfile["identity"];
   readonly sessionFeatures?: import("./session-features.js").SessionFeatures;
   readonly sessionReasoning?: NonNullable<ApplicationModelDependencies["sessionReasoning"]>;
   readonly sessionPermissions?: SessionPermissionProfilesPort;
@@ -92,6 +95,8 @@ export class ApplicationFacade implements WishApplication {
   readonly runGeneration?: WishRunGeneration;
   readonly runtimeRecovery?: WishRuntimeRecovery;
   private readonly selectionByRun = new Map<string, WishRunSelection>();
+  private readonly runCompletions = new Set<Promise<unknown>>();
+  private readonly pendingRunCleanup = new Map<string, string>();
   private readonly options: DefaultWishApplicationOptions;
 
   constructor(options: WishApplicationOptions) {
@@ -99,11 +104,13 @@ export class ApplicationFacade implements WishApplication {
     if (options.sessionFeatures) this.sessionFeatures = options.sessionFeatures;
     if (options.models.sessionReasoning) this.sessionReasoning = options.models.sessionReasoning;
     if (options.sessionPermissions) this.sessionPermissions = options.sessionPermissions;
+    if (options.executionProfile) this.executionProfile = options.executionProfile.identity;
     this.agentId = requireIdentifier(
       options.agent.definition.id,
       "Wish Agent id",
     );
     this.options = {
+      ...(options.executionProfile === undefined ? {} : { executionProfile: options.executionProfile }),
       sessions: options.sessions.manager,
       agent: options.agent,
       configuredModel: options.models.configuredModel,
@@ -260,9 +267,13 @@ export class ApplicationFacade implements WishApplication {
     let selectedEffort: WishRunPayload["reasoningEffort"];
     let selectedPermission: WishRunPayload["permissionProfile"];
     try {
-      basePayload = normalizeRunPayload(input.payload, this.options.configuredModel);
-      selectedEffort = input.payload.reasoningEffort ?? await this.options.sessionReasoning?.forRun(input.sessionId, basePayload.model, input.signal);
-      selectedPermission = await this.options.sessionPermissions?.forRun(input.sessionId, input.signal) ?? input.payload.permissionProfile;
+      const profile = this.options.executionProfile;
+      if (profile && ((input.payload.model && !sameModel(input.payload.model, profile.model)) ||
+        (input.payload.reasoningEffort !== undefined && input.payload.reasoningEffort !== profile.reasoningEffort) ||
+        (input.payload.permissionProfile !== undefined && input.payload.permissionProfile !== profile.permissionProfile))) throw new WishApplicationRequestError(400, "profile_selection_locked", "This Run must use its immutable Agent Profile selection");
+      basePayload = normalizeRunPayload(profile ? { ...input.payload, model: profile.model } : input.payload, this.options.configuredModel);
+      selectedEffort = profile ? profile.reasoningEffort : input.payload.reasoningEffort ?? await this.options.sessionReasoning?.forRun(input.sessionId, basePayload.model, input.signal);
+      selectedPermission = profile ? profile.permissionProfile : await this.options.sessionPermissions?.forRun(input.sessionId, input.signal) ?? input.payload.permissionProfile;
       if (selectedEffort !== undefined && !this.options.configuredModel.getModelSpec(basePayload.model).reasoningControl?.efforts.includes(selectedEffort)) {
         throw new WishApplicationRequestError(400, "invalid_reasoning_effort", "Selected model does not support this reasoning effort");
       }
@@ -278,20 +289,27 @@ export class ApplicationFacade implements WishApplication {
       ...(selectedPermission === undefined ? {} : { permissionProfile: selectedPermission }),
     });
     await this.sessionFeatures?.beforeInput(input.sessionId, payload.text);
-    const started = this.options.agent.startRun({
+    const profile = this.options.executionProfile;
+    const runId = input.runId ?? (profile ? randomUUID() : undefined);
+    if (profile && runId !== undefined) await profile.admit(session.sessionId, runId);
+    let started: WishRunHandle;
+    try { started = this.options.agent.startRun({
       scope: session.sessionId,
       payload,
       ...(input.inputSource === undefined ? {} : { inputSource: input.inputSource }),
-      ...(input.runId === undefined ? {} : { runId: input.runId }),
-      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
-    });
+      ...(runId === undefined ? {} : { runId }),
+      ...(input.metadata === undefined && profile === undefined ? {} : { metadata: { ...input.metadata,
+        ...(profile === undefined ? {} : { agentProfile: profile.identity }),
+      } }),
+    }); } catch (error) { if (profile && runId !== undefined) await profile.finish(runId, "failed"); throw error; }
     const handle: WishRunHandle = Object.freeze({
       ...started,
       completion: started.completion.then(
-        async completion => { await this.purgeRun(input.sessionId, started.runId); return completion; },
-        async error => { await this.purgeRun(input.sessionId, started.runId); throw error; },
+        async completion => { if (profile) await profile.finish(started.runId, completion.status); await this.purgeRun(input.sessionId, started.runId); return completion; },
+        async error => { if (profile) await profile.finish(started.runId, "failed"); await this.purgeRun(input.sessionId, started.runId); throw error; },
       ),
     });
+    this.runCompletions.add(handle.completion);
     this.selectionByRun.set(handle.runId, Object.freeze({
       model: payload.model,
       ...(payload.reasoningEffort === undefined ? {} : { reasoningEffort: payload.reasoningEffort }),
@@ -301,6 +319,7 @@ export class ApplicationFacade implements WishApplication {
     const pending = active.get(input.sessionId) ?? new Set<WishRunHandle>();
     active.set(input.sessionId, pending); pending.add(handle);
     const settled = () => {
+      this.runCompletions.delete(handle.completion);
       this.selectionByRun.delete(handle.runId);
       pending.delete(handle);
       if (!pending.size && active.get(input.sessionId) === pending) active.delete(input.sessionId);
@@ -309,13 +328,26 @@ export class ApplicationFacade implements WishApplication {
     return handle;
   }
 
+  /** Captured before Runtime cancellation; includes domain cleanup, not only
+   * Core Run termination. Failed cleanup remains a failed replacement. */
+  async drainRunCleanup(): Promise<void> {
+    const results = await Promise.allSettled([...this.runCompletions]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed) throw failed.reason;
+    // A rejected replacement must not forget an earlier cleanup failure when
+    // the next candidate arrives after the original completion has settled.
+    for (const [runId, sessionId] of this.pendingRunCleanup) await this.purgeRun(sessionId, runId);
+  }
+
   private async purgeRun(sessionId: string, runId: string): Promise<void> {
     try {
       await this.sessionFeatures?.purgeRun?.(sessionId, runId);
+      this.pendingRunCleanup.delete(runId);
       const pending = this.admissions().pendingCleanup.get(sessionId);
       pending?.delete(runId);
       if (pending?.size === 0) this.admissions().pendingCleanup.delete(sessionId);
     } catch (error) {
+      this.pendingRunCleanup.set(runId, sessionId);
       const pending = this.admissions().pendingCleanup.get(sessionId) ?? new Set<string>();
       pending.add(runId);
       this.admissions().pendingCleanup.set(sessionId, pending);

@@ -7,6 +7,17 @@
 `ctx.pluginInspection` 提供给 Host Consumers。业务 Provider 停用不会一起撤销此端口；
 Root 卸载后旧引用拒绝查询。
 
+候选插件通过 Host-only `deploymentSnapshot()` / `applyDeploymentOverlay()` 端口接入。
+`deployment/overlay.json` 保存经批准的外部插件静态入口，与原部署文件共同参与
+ManagedProfileSource digest。它复用同一 Root 变更队列、durable intent、Step 屏障、
+Owner 关闭与补偿；未知产物的批准和验证归 [Candidates](../../candidates/README.md) 所有。
+新产物只在 Step 屏障内首次导入，pending intent 先于 overlay 写入。失败补偿在释放
+屏障前完成，验证成功后放行重建 Owner 的准入；不确定结果继续保持 recovery-required。
+
+Manifest 的可选 `contracts.requires/provides` 声明独立版本的服务协议。部署预检检查
+依赖图，激活与受控 HMR 核验实际 Fiber 绑定及接口；候选还执行语法树模块边界与
+性能预算门禁。规则、兼容范围和证据归属见[插件准入](../../plugin-admission/README.md)。
+
 ## 管理对象与状态协议
 
 `management-types.ts` 定义管理层协议，不承载第二份 Loader 配置或任务状态。
@@ -128,7 +139,7 @@ File Backend；语义测试中的手工 Evidence 不是生产启停授权。
 ## 所有者绑定与真实报告采集
 
 `bootstrap()` 在业务树加载前安装 Root-owned `PluginOwnerRegistry` 与 `PluginChangeCoordinator`；
-生命周期查询与代码更新不再各自保存一套 Owner 声明。每个 Fiber generation 在同一记录中同时表达状态、停用 guard
+生命周期查询与代码更新共用一份 Owner 声明。每个 Fiber generation 在同一记录中同时表达状态、停用 guard
 和 `drain | generation` 替换方式；记录任一部分变化都会产生新的 registration ID，并使并发
 观察失效。`PluginLifecycleRegistry` 与 `CodeReloadCoordinator` 只保留兼容适配/读取职责。
 
@@ -138,7 +149,7 @@ generation。`PluginWorkOwner` 在声明代码可替换时使用这条单次注�
 API 仍可为非 managed 的独立兼容场景合并同一 Fiber 记录，但该记录明确标为
 `compatibility`；managed stop、配置更新和原生 HMR 都在执行副作用前拒绝它。重复 lifecycle、
 重复 replacement 或 restart/online 冲突会在不改变原记录的情况下拒绝。restart 和拆分声明
-都只是兼容债务，不会被解释为 managed conformance。
+仅用于兼容，不能满足 managed conformance。
 
 Loader Group 会并发提交兄弟条目的配置更新，而 Provider 更新又可能通过 required service
 传播到 Consumer。Registry 因此按进程内 Fiber UID 串行受管 Fiber 的 `internal/update`；
@@ -313,15 +324,16 @@ Host 在 `ManagedPluginSnapshot.controls` 中逐 Entry 返回 `managementClass`�
 - `managementClass: "managed"` 与 `replacement: "drain" | "generation"`；
 - 顶层为 object 的受限、确定性 JSON Config Schema；不支持的关键字 fail closed；
 - `permissions.capabilities` 权限上限，以及与之相符的 filesystem/process/network Sandbox 通道；
-- `state.mode: "stateless"`，或当前 `schemaVersion` 和包含当前版本的 `readableVersions`。
+- `state.mode: "stateless"`，或当前 `schemaVersion` 和包含当前版本的 `readableVersions`，以及可选且与直接可读版本不重叠的 `migratableVersions`。
 
 Host 在导入候选代码前检查 manifest 大小、字段白名单、API、入口真实路径、Schema 与当前配置、
 权限/Sandbox 一致性和状态声明。manifest 文件加入同一部署摘要和 Root 文件监听；修改它与修改
 profile 一样走持久变更事务。活动后再用 Owner Registry 核验 stop/codeUpdate，并要求实际
 `drain`/`generation` 与 manifest 相同；缺失或不一致均为 nonconformant，启停/替换被拒绝。
 
-能力声明从不签发 Grant。v1 的 `trusted-in-process` 明确表示插件实现与 Host 同权运行；不可信
-实现尚不能标为 managed，必须等待 Worker/子进程隔离。Cordis `inject` 仍是运行依赖的唯一权威，
+能力声明从不签发 Grant。v1 的 `trusted-in-process` 明确表示插件实现与 Host 同权运行；未知
+代码通过 [Candidates](../../candidates/README.md) 的 Linux 子进程沙箱验证和评测，
+进入主进程仍须显式批准，不能仅靠 manifest 获得信任。Cordis `inject` 仍是运行依赖的唯一权威，
 manifest 不复制依赖图。Timer、Listener、子进程和后台 Promise 必须绑定 Fiber effect 或 Owner
 清理；静态声明不能替代真实收尾。
 
@@ -431,10 +443,10 @@ SSE 仍只发 invalidation，Browser 可重新查询或轮询，不把事件流�
 ### 受控代码替换
 
 `code-reload.ts` 复用 Cordis 原生模块图与替换实现。受影响 Owner 的支持状态、prepare guard
-及替换后的新代注册都从 `PluginOwnerRegistry` 读取，不再维护独立 safe/restart Owner 表。
+及替换后的新代注册都从 `PluginOwnerRegistry` 读取，不维护独立 safe/restart Owner 表。
 它只接纳模块自己声明且影响闭包完整的所有者；未知所有者或未知依赖传播在卸载前拒绝。
-第一方 Runtime/Session/Application 等稳定业务 Owner 已提供 generation、lease 或 drain 协议，
-不再因为模块名称被固定判为重启边界。
+第一方 Runtime/Session/Application 等稳定业务 Owner 提供 generation、lease 或 drain 协议，
+代码替换资格由协议与实际影响闭包决定。
 managed 装配给它注入 Host-only `CodeReloadTransaction`，原生 `hmr/reload-batch` 在分析、
 缓存和导入前进入 `ManagedPluginControl.runCodeReload()`，与 UI/文件写入互斥。
 管理环境统一强制 HMR 的 `watchConfig: false`，包括直接地址加载的 HMR 实例；Root 的
@@ -476,7 +488,7 @@ managed 装配给它注入 Host-only `CodeReloadTransaction`，原生 `hmr/reloa
   旧 API 兼容合并，以及受管 Fiber 配置更新的 UID 串行与代际稳定门。
 - `change-coordinator.ts`：四类顶层插件变更的持久接纳、FIFO、身份、目标、取消边界与单调阶段状态机。
 - `safe-change.ts`：共享的 unchanged、verified rollback 与 recovery-required 失败边界。
-- `lifecycle.ts`：Owner Registry 的限时只读查询/停用适配与过期报告淘汰；不再拥有独立声明表。
+- `lifecycle.ts`：Owner Registry 的限时只读查询/停用适配与过期报告淘汰，不拥有独立声明表。
 - `stop-contract.ts`：仅进程内可用的模块 guard 与 Host reservation 接口。
 - `stop.ts`：串行协调、执行边界复核、有界等待和诚实失败回执，不拥有配置写入或模块实现。
 - `managed-profile.ts`：最后接受的部署版本、稳定身份校验及独立偏好叠加；从不写部署文件。
@@ -526,7 +538,7 @@ npm run test:module-boundaries
   Fiber 都明确登记为重启边界；`missing`：至少一个活动 Fiber 没有安全停用协议；`inactive`：
   当前没有活动 Fiber，不能从运行态证明其实现。
 - `codeUpdate` 使用同样的 `online / restart / missing / inactive` 词汇表达代码替换策略。
-  `conformance` 只是两轴摘要；`restart` 是迁移期诊断，和 `incomplete` 一样不能通过 managed
+  `conformance` 只是两轴摘要；`restart` 是兼容诊断，和 `incomplete` 一样不能通过 managed
   最终覆盖门禁。
 
 客户端只呈现这份 Host 结果：Kernel／结构项保持灰色只读，普通插件的协议缺口或重启限制
@@ -545,3 +557,7 @@ Run generation；CLI/WebUI 退役各自通过 Application 打开的 generation�
 受影响 Run 以明确 abort 终态结束，不声称迁移正在执行的 JavaScript 栈。
 在线更新不支持任意领域 schema 迁移、任意自定义 carrier，以及未经声明的外部引用；
 这些范围不能仅靠 `codeReload: true` 获得安全保证。
+
+## 插件私有状态
+
+版本化业务状态通过独立的[插件私有状态协议](../../plugin-state/README.md)接入。Root 变更队列、Step 边界和原生 HMR 在旧 Owner 排空后等待状态 flush；后继迁移先暂存，成功 receipt 持久化后才发布，失败补偿使用保留检查点。`ManagedPluginStore` 继续只持有管理状态和回执；Session / Runtime 的任务状态也不迁入私有状态域。

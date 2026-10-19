@@ -19,6 +19,12 @@ const shared = [
   ["include:runtime", "composition/runtime-service.js"],
   ["include:agents", "composition/agent-service.js"],
   ["include:application", "apps/service.js"],
+  ["include:agent-profiles", "agent-profiles/service.js"],
+  ["include:agent-profile-application", "agent-profiles/consumers/application.js"],
+  ["include:experiments", "experiments/service.js"],
+  ["include:experiment-process", "experiments/providers/process.js"],
+  ["include:candidates", "candidates/service.js"],
+  ["include:candidate-linux", "candidates/providers/linux.js"],
 ];
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -50,7 +56,7 @@ async function fixture(surface, run) {
       options.management = managedWebUi({ directory: join(directory, "management"), port: 0 });
     } else options.management = {
       directory: join(directory, "management"),
-      async start() { return async () => {}; },
+      async start(_root, control) { control.setRecoveryAvailable(true); return async () => control.setRecoveryAvailable(false); },
     };
     booted = await bootstrap(options);
     if (surface === "cli") assert.equal(await booted.completion, 0);
@@ -92,7 +98,7 @@ test("all shared core owners stop and re-enable in one WebUI Host without restar
   }
 }));
 
-test("all shared core owners perform native code replacement and renew their Fiber", { timeout: 45000 }, () => fixture("webui", async ({ booted, directory }) => {
+test("all shared core owners perform native code replacement and renew their Fiber", { timeout: 75000 }, () => fixture("webui", async ({ booted, directory }) => {
   for (const [entryId, relative] of shared) {
     const entry = booted.context.loader.resolve(entryId), previous = entry.fiber;
     const revision = booted.codeReload.snapshot().revision;
@@ -107,6 +113,23 @@ test("all shared core owners perform native code replacement and renew their Fib
     assert.equal(entry.fiber.state, 2, `${entryId} successor is not active`);
     assertOnline(booted, entryId);
   }
+}));
+
+test("the Profile CLI consumer stops, re-enables and replaces in its own surface", { timeout: 20000 }, () => fixture("cli", async ({ booted, directory }) => {
+  const entryId = "include:agent-profile-cli", entry = booted.context.loader.resolve(entryId), first = entry.fiber;
+  assertOnline(booted, entryId);
+  await change(booted, entryId, "disabled");
+  assert.equal(entry.fiber, undefined);
+  await change(booted, entryId, "enabled");
+  assert.notEqual(entry.fiber, first);
+  const previous = entry.fiber, revision = booted.codeReload.snapshot().revision;
+  const filename = join(directory, "dist/agent-profiles/consumers/cli.js");
+  await writeFile(filename, `${await readFile(filename, "utf8")}\n// managed Profile CLI replacement\n`);
+  await until(() => booted.codeReload.snapshot().revision > revision &&
+    ["succeeded", "rejected", "recovery-required"].includes(booted.codeReload.snapshot().phase), entryId);
+  assert.equal(booted.codeReload.snapshot().phase, "succeeded", JSON.stringify(booted.codeReload.snapshot()));
+  assert.notEqual(entry.fiber, previous);
+  assertOnline(booted, entryId);
 }));
 
 test("the WebUI business owner stops, re-enables and replaces while the Root host stays live", { timeout: 20000 }, () => fixture("webui", async ({ booted, directory }) => {

@@ -28,8 +28,7 @@ advertise the features that their child resource makes available. An omitted Too
 out contributions whose requirements are unavailable; an explicit request for
 one fails before launch with the missing feature names. The current CLI child is
 one-shot and supplies no Plan review or Session-resume feature, so Plan controls
-are absent from its assembled Tool set. A future interactive child may supply
-those features through its Host adapter. The resolved Tool set is passed as the
+are absent from its assembled Tool set. The resolved Tool set is passed as the
 child's explicit allow-list and remains subject to normal execution authorization.
 
 Read operations require `runtime.read`. Spawn, send, and stop require

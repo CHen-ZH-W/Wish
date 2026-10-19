@@ -197,6 +197,15 @@ export class RunGeneration<Protocol extends AgentProtocol>
     return () => { this.admissionFences.delete(fence); };
   }
 
+  /** Cancel and drain admitted Runs while keeping this generation available
+   * for an explicitly released admission fence after rejected replacement. */
+  async abortAndDrain(reason: string): Promise<void> {
+    const captured = [...this.active.values()];
+    const message = optionalReason(reason) ?? "Run generation is draining";
+    for (const run of captured) this.abortRun(run, message);
+    await Promise.allSettled(captured.map(run => run.completion));
+  }
+
   retire(options: RunGenerationRetireOptions = {}): Promise<void> {
     if (this.stateValue === "retired" && this.retirement !== undefined) {
       return this.retirement;

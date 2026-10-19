@@ -53,9 +53,9 @@ Cordis profile 按以下优先级选择：
 profile 不会隐式继承这些普通配置。Provider 凭据仍由 Model Adapter 在请求时从
 `launch.environment` 读取，不进入配置快照或 Session。
 
-环境变量不再是所有可选功能的唯一启用入口。默认 profile 可用 Wish 自有的
+可选功能可通过环境变量或受控管理面启用。默认 profile 可用 Wish 自有的
 `management.activation: user` 将“默认关闭、但允许用户打开”的 gate 委托给受控管理面；
-WebUI 只消费 Host 返回的启用权限，不按 Entry ID 猜测。首批包括 Memory Curation、它的
+WebUI 只消费 Host 返回的启用权限，不按 Entry ID 猜测。支持 Memory Curation、它的
 Runtime/Workflow Evidence Consumer，以及 HTTP Web Fetch Provider/Tool。显式关闭 Memory、
 子进程隔离、缺失 SearXNG 地址等部署条件仍是硬约束，浏览器不能越过。详细语义见
 [用户激活委托](plugin-control/README.md#用户激活委托)。
@@ -254,7 +254,7 @@ Host 授权时提出候选。child 不加载人类审核、curation 或父端候
 `WISH_MEMORY_CURATION_TIMEOUT_MS`、`WISH_MEMORY_CURATION_INTERVAL_MS` 配置。
 整理完成只生成候选，不能代替验证证据或人工采纳。
 
-新服务 skills、memory、memoryCuration 与其余业务服务一样隔离在 app realm 内。
+skills、memory、memoryCuration 与其余业务服务一样隔离在 app realm 内。
 Context 在新 Step 捕获当前 Consumer 集合，同一 Step 重投影固定集合；卸载则取消
 并排空进行中的读取。关闭 Tools 不关闭能力；关闭 Context 不删除持久记忆。
 
@@ -276,7 +276,7 @@ HMR 的 `base` 相对 profile 目录解析；把默认 profile 复制到别处�
 `base` / `root`，不要意外监视工作区之外的父目录。
 业务插件的稳定 `cordis:` 别名由 Loader 按需导入，并参与原生 HMR 模块图分析；
 共享实现文件可能使多个入口一起替换，并不保证每个条目都是独立重载单元。
-HMR 补丁版本 4 在分析模块图之前比较已加载文件的内容摘要；重写相同构建产物不会
+HMR 在分析模块图之前比较已加载文件的内容摘要；重写相同构建产物不会
 触发替换或重启。真正修改共享基础设施仍可能需要重启，编译成功不代表热更新成功。
 原生 HMR 的 `hmr/reload-prepare` 在实际卸载之前调用 Root 协调器，等待所有已登记 Runtime
 的完整 Step 收尾，再按 Consumer → Provider 的依赖顺序暂停新调用、排空在途操作，
@@ -285,7 +285,7 @@ Context/SystemPrompt/Compaction、Plan/Tasks/Coordinator、权限与沙箱 Provi
 Workflow 存储/调度、Subagents Runtime、tmux Provider/执行适配器，以及 Runtime、Sessions、
 Storage、Models、Agents、Application、Approval、Runtime Journal 和 CLI/WebUI surface。
 未声明的目标及依赖传播影响一律拒绝，不按插件名称猜测安全性。Runtime、Session、Application、
-Workflow 父 Run 等待关系分别通过 generation、lease 和持久状态 owner 收尾，不再固定要求重启。
+Workflow 父 Run 等待关系分别通过 generation、lease 和持久状态 owner 收尾。
 Subagent result relay 仍有待送达结果时拒绝替换，避免丢失父 Run 的回调。
 三种在途时机（模型输出、审批、Tool 执行）下同一 Run 跨 Step 使用新实现已由原生文件修改测试覆盖。
 Tool 自己修改代码时应返回“已受理”，不能等待需要它所在 Step 完成的替换结果。
@@ -311,11 +311,12 @@ managed 配置监听独立于业务树，与 WebUI 启停共用同一个协调�
 managed Include 被递归读取并组合为同一管理树中的原生 Group，统一计算所有文件的摘要、
 监听和偏好；拒绝文件环、重复 ID 和未命中的 patch。相对插件路径按来源文件解析。
 Catalog 外部插件必须通过 `management.manifest` 引用 `wish.plugin/v1` 静态规范；仅声明
-`class: managed` 不再获得 managed 权限。Host 在导入前核对实际入口、Config Schema、权限上限、
+`class: managed` 不能获得 managed 权限。Host 在导入前核对实际入口、Config Schema、权限上限、
 Sandbox 模式、drain/generation 和状态版本，并把 manifest 纳入同一摘要/监听。激活后仍以真实
 Owner/Fiber 覆盖为准，替换模式不一致会回滚。manifest 不复制 Cordis inject，也不授予权限；
-v1 只接受明确可信的进程内插件，不可信实现仍需尚未提供的 Worker/子进程隔离。
-自定义／带额外 inject 或非配置子 Fiber 的 Group、其他独立 EntryTree 仍需单独迁移。删除 Provider 后依赖方保持 pending，加回 Provider 后由 Cordis
+v1 只接受明确可信的进程内插件；未知代码由 [Candidates](../candidates/README.md) 在 Linux
+子进程沙箱中验证和评测，显式批准后才可进入主进程。
+自定义／带额外 inject 或非配置子 Fiber 的 Group、其他独立 EntryTree 不在受控修改范围内。删除 Provider 后依赖方保持 pending，加回 Provider 后由 Cordis
 自动重新初始化。受影响的活动所有者必须先通过现有准入与收尾检查，忙碌或不支持者拒绝
 更新，不隐式中止 Run；稳定且没有 effects 的未激活实例允许直接修改或删除。
 无效文件保留最后接受版本，仍可基于该版本执行受控启停；确定性候选失败会尝试重建并核验

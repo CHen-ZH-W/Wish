@@ -4,6 +4,8 @@ import type {
   ModelAdapterFactoryInput,
 } from "./types.js";
 export class ModelAdapterRegistry {
+  private currentVersion = 0;
+  get version(): number { return this.currentVersion; }
   private readonly factories = new Map<string, ModelAdapterFactory>();
 
   register(protocol: string, factory: ModelAdapterFactory): ModelAdapterRegistration {
@@ -15,6 +17,7 @@ export class ModelAdapterRegistry {
       throw new Error(`Model Adapter protocol "${name}" is already registered`);
     }
     this.factories.set(name, factory);
+    this.currentVersion++;
 
     let active = true;
     return Object.freeze({
@@ -24,6 +27,7 @@ export class ModelAdapterRegistry {
         active = false;
         if (this.factories.get(name) !== factory) return false;
         this.factories.delete(name);
+        this.currentVersion++;
         return true;
       },
     });

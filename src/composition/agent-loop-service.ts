@@ -74,6 +74,7 @@ import { createBasicToolResultRenderer } from "../tools/presentation/result-rend
 import type { WishToolExecutionContext } from "./tool-context.js";
 import type { AgentScope } from "./agent-scope.js";
 import type { RunContinuationFactory } from "../core/runtime/continuation.js";
+import type { RegisteredSystemPromptSection } from "../system-prompt/types.js";
 
 /** Loader-owned AgentLoop scheduling settings. */
 export interface Config {
@@ -410,6 +411,10 @@ export function createAgentLoopPipeline(
 }
 
 export interface OpenAgentLoopInput {
+  readonly boundCompactor?: ContextOverflowCompactor;
+  readonly promptSections?: readonly RegisteredSystemPromptSection[];
+  readonly excludedContextProviders?: readonly string[];
+  readonly fixedConfiguration?: boolean;
   readonly dataDirectory: string;
   readonly agentId: string;
   readonly agentScope?: AgentScope;
@@ -465,7 +470,7 @@ export class AgentLoop extends Service {
     this.work.assertOpen();
     const releaseScope = input.agentScope?.acquire();
     const promptSections = (() => {
-      try { return this.ctx.systemPrompt.capture(input.agentScope); }
+      try { return input.promptSections ?? this.ctx.systemPrompt.capture(input.agentScope); }
       catch (error: unknown) { releaseScope?.(); throw error; }
     })();
     const sessions = (() => {
@@ -475,6 +480,7 @@ export class AgentLoop extends Service {
     let context: ContextBundleHandle | undefined;
     try {
       const models = this.ctx.models.open(input.modelsConfiguration, {
+        ...(input.fixedConfiguration ? { fixedConfiguration: true } : {}),
         ...(input.modelCredential === undefined
           ? {}
           : { credential: input.modelCredential }),
@@ -489,16 +495,17 @@ export class AgentLoop extends Service {
         ...(input.agentScope === undefined ? {} : { agentScope: input.agentScope }),
         systemPromptSections: promptSections,
         configuration: {
-          reservedOutputTokens: this.ctx.contextEngine.reservedOutputTokens ?? input.reservedOutputTokens,
+          reservedOutputTokens: input.fixedConfiguration ? input.reservedOutputTokens : this.ctx.contextEngine.reservedOutputTokens ?? input.reservedOutputTokens,
         },
+        ...(input.excludedContextProviders === undefined ? {} : { excludedProviderIds: input.excludedContextProviders }),
       });
       const ownedContext = context;
-      const compaction = this.ctx.compaction.open({
+      const compaction = input.boundCompactor ?? this.ctx.compaction.open({
         ...(input.agentScope === undefined ? {} : { agentScope: input.agentScope }),
         dataDirectory: input.dataDirectory,
         models,
-        keepRecentTokens: this.ctx.compaction.keepRecentTokens ?? input.keepRecentTokens,
-        summaryMaxOutputTokens: this.ctx.compaction.summaryMaxOutputTokens ?? input.summaryMaxOutputTokens,
+        keepRecentTokens: input.fixedConfiguration ? input.keepRecentTokens : this.ctx.compaction.keepRecentTokens ?? input.keepRecentTokens,
+        summaryMaxOutputTokens: input.fixedConfiguration ? input.summaryMaxOutputTokens : this.ctx.compaction.summaryMaxOutputTokens ?? input.summaryMaxOutputTokens,
       });
       const maxParallelCalls = input.maxParallelCalls ?? this.maxParallelCalls;
       const stepPipeline = createAgentLoopPipeline({

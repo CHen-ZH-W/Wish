@@ -11,6 +11,9 @@ import type {
   ModelInputTokenCounter,
 } from "../context/types.js";
 
+/** Stable selection key for the bundled model-summary Provider. */
+export const DEFAULT_COMPACTION_STRATEGY_ID = "model-summary-v1";
+
 export type CompactionReason = "context_over_budget";
 
 /** Immutable Session view used to plan one optimistic append. */

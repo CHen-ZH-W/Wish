@@ -27,8 +27,8 @@ Workflow Attempts. Tools are optional Consumers, not the capability implementati
 ## Operations
 
 Default Storage domain: `tasks/sessions` (KV, process-local writer). Graph versions remain
-within a Session until the Session is deleted; deletion removes the collection. The arbitrary
-version-count ceiling has been removed. CLI and WebUI must not share a writable data directory concurrently.
+within a Session until the Session is deleted; deletion removes the collection. There is no
+fixed version-count ceiling. CLI and WebUI must not share a writable data directory concurrently.
 
 `WISH_TASKS_ENABLED=0` disables the capability. `WISH_TASK_TOOLS_ENABLED=0` hides only
 the model controls. Disabling Plan removes `tasks_update` but retains `tasks_read`.

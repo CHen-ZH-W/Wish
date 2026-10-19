@@ -130,7 +130,7 @@ test("Workflow close joins pending result lookup and suppresses late parent deli
     entered.resolve(); await release.promise; return { id: "run", status: "completed", steps: [] };
   } }, subagents: {} });
   try {
-    scheduler.watch("run", { deferCompletion: () => ({ release: () => { releases++; } }), followUp: () => { delivered++; } });
+    scheduler.watch("run", { deferUserTurnCompletion: () => ({ release: () => { releases++; } }), resume: () => { delivered++; return { accepted: true }; } });
     await entered.promise; closing = scheduler.close(); void closing.then(() => { closed = true; });
     await delay(10); assert.equal(closed, false); assert.equal(releases, 1);
     release.resolve(); await closing; assert.equal(delivered, 0); assert.equal(releases, 1);

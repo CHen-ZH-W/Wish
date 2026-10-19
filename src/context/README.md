@@ -113,7 +113,7 @@ checkpoint 和被 checkpoint 切开的 Tool 单元。没有 summary 时选择完
 ## Instructions 与 State
 
 稳定的 Agent/System Prompt 由 `system-prompt` 组装到独立的
-`ModelRequest.instructions`，不再由 Context 生成消息。
+`ModelRequest.instructions`，Context 不为这些指令生成消息。
 
 `InstructionsContextProvider` 只读取每次 `ContextInput` 中已经解析的 workspace
 指令，输出 `kind=instruction`、`placement=before_current_user` 的 Context item；

@@ -1,6 +1,6 @@
 # User Terminal
 
-`UserTerminalService` owns user-created interactive PTYs: Session binding, create/list/input/resize/close, recovery screens, and browser-safe views. Like DSH's terminal controller, it is a user-facing Host terminal with the Wish process user's operating-system authority. It is intentionally separate from the Agent Shell permission profiles and does not use tmux.
+`UserTerminalService` owns user-created interactive PTYs: Session binding, create/list/input/resize/close, recovery screens, and browser-safe views. It is a user-facing Host terminal with the Wish process user's operating-system authority. It is separate from the Agent Shell permission profiles and does not use tmux.
 
 `HostUserTerminalRuntime` discovers executable Host shells, inherits the Host process environment, and starts the selected shell in the Session workspace. Bash is launched with a small temporary `--rcfile` that sources the real `~/.bashrc`; this preserves the user's prompt, aliases, PATH, Conda initialization, and active environment. Other supported shells start in ordinary interactive mode. The WebUI labels this authority as `host-user` instead of implying a workspace sandbox.
 

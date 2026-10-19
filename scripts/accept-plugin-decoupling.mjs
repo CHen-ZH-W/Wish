@@ -47,8 +47,8 @@ try {
     excludes: ["include:tasks-storage", "include:tool-tasks", "include:workflow-schedulers"],
   });
   assertImpact(inspection, "include:workflow-schedulers", {
-    includes: ["include:tool-workflow-controls", "include:workflow-session-feature"],
-    excludes: ["include:tool-workflow", "include:tool-subagents"],
+    includes: ["include:tool-workflow-controls"],
+    excludes: ["include:workflow-session-feature", "include:tool-workflow", "include:tool-subagents"],
   });
   assertImpact(inspection, "include:context-engine", {
     includes: ["include:plan-mode-adapters", "include:coordinator-mode-adapters"],

@@ -1,5 +1,11 @@
 # Apps
 
+Application exposes an optional execution-profile port, implemented by
+[Agent Profiles](../agent-profiles/README.md). A bound profile fixes model, Prompt,
+Tool/permission ceilings and strategy settings for its lifetime, persists admission
+before starting each Run, and rejects silent runtime changes. CLI management and
+[experiment execution](../experiments/README.md) remain separate consumers.
+
 `src/apps/` 是 Wish 的 transport、Application service 与公开门面层。产品提供 CLI 和
 WebUI 两个 surface；进程启动与依赖图由 `src/boot/bootstrap.ts` 和 `cordis.yml` 统一拥有。
 
@@ -295,7 +301,7 @@ Plan、Memory、Tasks、Workflow、Context 不提供独立工作区页面，但 
 Browser 插件，历史仍使用通用 Tool renderer。模块停用可能因未完成工作或缺少安全清理
 协议被拒绝；这不是“所有插件随时可强制关闭”的开关。
 
-工作区侧栏负责新建、选择会话并显示当前会话的完整轮次索引；点击轮次可按需加载并定位对应正文。点击会话直接进入主会话页面，并可在当前会话下切换到只读“工具调用”子页面查看参数、结果和模块证据；不提供聚合执行记录，也不再列出执行轨迹、
+工作区侧栏负责新建、选择会话并显示当前会话的完整轮次索引；点击轮次可按需加载并定位对应正文。点击会话直接进入主会话页面，并可在当前会话下切换到只读“工具调用”子页面查看参数、结果和模块证据；不提供聚合执行记录、执行轨迹、
 Context、任务图等工作区页面。System Prompt 最新快照显示在主会话顶部，Subagent 证据保留在“工具调用”的对应 Tool 记录中，tmux 仍是
 会话右侧栏里的有界终端快照，不是网页交互终端；attach 命令供本机终端接入。
 草稿按当前浏览器中的会话保留，切换会话或全局区域不丢失；刷新/关闭标签页不承诺恢复未提交草稿。

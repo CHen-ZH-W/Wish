@@ -4,6 +4,10 @@ import { PluginManagementClassifier, type DeclaredPluginManagementClass } from "
 
 /** Host capability entrypoints; declarations do not import implementations. */
 export const HOST_PLUGIN_CATALOG = Object.freeze({
+  "candidates": "../candidates/service.js",
+  "candidate-linux": "../candidates/providers/linux.js",
+  "candidate-cli": "../candidates/consumers/cli.js",
+  "candidate-management": "../candidates/consumers/management.js",
   "include": "@deepseek-ai/cordis-plugin-include",
   "group": "@deepseek-ai/cordis-plugin-group",
   "timer": "@deepseek-ai/cordis-plugin-timer",
@@ -93,11 +97,17 @@ export const HOST_PLUGIN_CATALOG = Object.freeze({
   "system-prompt-context": "../system-prompt/consumers/context.js",
   "system-prompt-history-consumer": "../system-prompt/consumers/history.js",
   "compaction": "../compaction/service.js",
+  "compaction-model-summary": "../compaction/providers/model-summary.js",
   "tools": "../tools/service.js",
   "agent-loop": "../composition/agent-loop-service.js",
   "runtime": "../composition/runtime-service.js",
   "agents": "../composition/agent-service.js",
   "application": "../apps/service.js",
+  "agent-profiles": "../agent-profiles/service.js",
+  "agent-profile-application": "../agent-profiles/consumers/application.js",
+  "agent-profile-cli": "../agent-profiles/consumers/cli.js",
+  "experiments": "../experiments/service.js",
+  "experiment-process": "../experiments/providers/process.js",
   "models-webui-control": "../models/consumers/webui-control.js",
   "permissions-webui-control": "../permissions/consumers/webui-control.js",
   "model-usage-webui-control": "../models/pricing/consumers/webui-control.js",
@@ -110,6 +120,7 @@ export const HOST_PLUGIN_CATALOG = Object.freeze({
 
 /** Optional model control surfaces, separate from their capability Providers. */
 export const MODEL_TOOL_PLUGIN_CATALOG = Object.freeze({
+  "candidate-tools": "../candidates/consumers/model-tools.js",
   "read": "../filesystem/consumers/model-tools/read-entry.js",
   "filesystem-tool-guidance": "../filesystem/consumers/model-tools/guidance.js",
   "write": "../filesystem/consumers/model-tools/write-entry.js",

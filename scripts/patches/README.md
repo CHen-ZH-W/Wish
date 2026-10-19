@@ -1,10 +1,10 @@
 # Cordis HMR coordination patch
 
-Upstream: DeepSeek Harness `vendor/hmr`, published as
-`@deepseek-ai/cordis-plugin-hmr@1.0.17` (MIT). The installed package retains its upstream license.
+Wish applies this patch to `@deepseek-ai/cordis-plugin-hmr@1.0.17` (MIT).
+The installed package retains its license.
 
-Wish keeps upstream module resolution, dependency analysis, ESM/CJS cache invalidation and
-Loader ownership. This patch adds an awaitable `hmr/reload-prepare` middleware before disposal,
+Cordis owns module resolution, dependency analysis, ESM/CJS cache invalidation and
+Loader ownership. The patch provides an awaitable `hmr/reload-prepare` middleware before disposal,
 structured failure/restart notifications, serialized change batches, awaited cleanup/activation,
 and a post-drain deadline. `hmr/reload` remains a success notification after activation.
 `hmr/reload-batch` wraps analysis/cache/import/prepare/apply so a Host can serialize the entire
@@ -13,7 +13,7 @@ batch with configuration writes. It is distinct from the inner Step-safety prepa
 
 Registry deletion must happen before waiting on captured `Fiber.await()` calls. Direct Fiber
 disposal can be interpreted as a user disable by Loader; calling a public effect disposer twice
-does not join the first call's cleanup. On a deterministic candidate activation failure, version 5
+does not join the first call's cleanup. On a deterministic candidate activation failure, HMR
 disposes and joins candidate Fibers, restores the retained ESM/CJS namespace and plugin callback,
 then verifies a newly instantiated old generation before reporting `restored`. A deadline, unknown
 cleanup result, or failed restoration still halts subsequent batches and requires explicit recovery.
@@ -29,19 +29,16 @@ explicitly reviewed Step-local owners; it is not a general resource/state migrat
 writing, and is idempotent across clean or partially applied installs. No network or Git executable
 is needed at install time. `postinstall`, `prebuild`, and `pretypecheck` invoke it. Keep the patch's
 coordination marker intact: Boot refuses to start without `Hmr.coordinationVersion === 5`, even
-when dependencies were installed with lifecycle scripts disabled. Keep the upstream
-version pinned; do not update hashes to bypass a mismatch. Review source changes and regenerate
-runtime/types patches together when rebasing. Keep the bundled runtime artifact consistent with
-the source; `FiberState` is a type-only const enum in the upstream package.
+when dependencies were installed with lifecycle scripts disabled. Package versions and target
+hashes are pinned; an unknown version or modified target is rejected. Source, runtime and type
+patches form one artifact. The installer also recognizes the exact hashes of the supported
+older patch and upgrades them to the current artifact.
 
-Run `npm run test:code-reload` after rebasing. It includes a reconstructed clean dependency install,
+HMR compares loaded-module content snapshots before classifying full or partial reloads and
+ignores unchanged compiler output. Actual add/unlink changes reach normal import/error handling.
+
+`npm run test:code-reload` covers a reconstructed clean dependency install,
 idempotence/drift checks, native watcher races/failures and real Wish bootstrap/Run integration.
 Managed WebUI uses the batch hook for its existing configuration/persistence transaction and
 forces automatic config watching off; its Root exact-config watcher remains independent. Run
 `npm run test:managed-code-reload` for real HTTP, Run continuity, disabled preferences and recovery.
-
-Version 5 adds verified retained-generation restoration after deterministic candidate activation
-failure. It preserves version 4's loaded-module content snapshots and ignores unchanged
-compiler output before classifying full or partial reloads. Actual add/unlink changes
-still reach normal import/error handling. The upgrade path accepts the previous
-reviewed version 4 patch, and clean installation still validates upstream hashes.

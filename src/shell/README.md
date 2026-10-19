@@ -8,7 +8,7 @@ Shell Service Definition
   <- Bash Consumer
 ```
 
-Bash 只声明命令所需的 capability，不再默认调用 `child_process.spawn()`。审批前，Shell
+Bash 只声明命令所需的 capability，由 Shell Provider 执行进程调用。审批前，Shell
 Provider 通过 `preflight(request)` 固定并验证命令、cwd、timeout、文件路径 scope、网络
 开关和 policy generation；Core 签发一次性 Grant 后，`resolve(request)` 再绑定 authority，
 最后由 `run(spec)` 启动进程。Spec 只能由创建它的 Provider 消费一次。
@@ -74,7 +74,7 @@ launcher 会拆分普通子树；如果一个目录含有受保护的直属项�
 
 - `read-only`：只自动放行只读 Tool；只读 scope 的进程命令进入审批，修改和网络是硬边界。
 - `workspace-write`：只有 path-scoped Linux Native Provider 能启用；除
-  `enter_plan_mode` 和 `exit_plan_mode` 外，Tool 调用不再因能力种类进入审批；
+  `enter_plan_mode` 和 `exit_plan_mode` 外，Tool 调用不因能力种类进入审批；
   路径、网络与进程执行仍须通过能力上限、SandboxPolicy 和 Native Provider 检查。
 - `approval-required`：只读自动放行，其他调用进入审批；进程执行必须使用 Native Provider。
 - `full-access`：显式退出 Landlock/seccomp 和审批，继承宿主环境，允许访问工作区外文件及

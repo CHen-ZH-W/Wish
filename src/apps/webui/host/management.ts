@@ -12,6 +12,8 @@ export interface WebManagementHost {
   readonly url: string;
   /** Root owns the listener. A business generation owns only this handler. */
   register(handler: WebRequestHandler): WebSurfaceRegistration;
+  /** Explicit Host extensions share loopback, Origin and token validation. */
+  registerControl(namespace: string, handler: (action: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>, maximumBytes?: number): WebSurfaceRegistration;
   close(): Promise<void>;
 }
 declare module "@deepseek-ai/cordis" { interface Context { webManagementHost: WebManagementHost } }
@@ -30,6 +32,8 @@ export async function startWebManagementHost(options: {
 }): Promise<WebManagementHost> {
   if (!Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65535) throw new Error("Invalid management port");
   let handler: WebRequestHandler | undefined;
+  const extensions = new Map<string, { handler: (action: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>; maximumBytes: number }>();
+  const activeControls = new Set<AbortController>();
   let closed = false, closing: Promise<void> | undefined;
   const clients = new Set<ServerResponse>();
   const token = randomBytes(32).toString("hex");
@@ -65,9 +69,15 @@ export async function startWebManagementHost(options: {
       handler = next; notify(); let released = false;
       return { release: () => { if (!released && handler === next) { handler = undefined; notify(); } released = true; } };
     },
+    registerControl(namespace: string, next: (action: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>, maximumBytes = 262144) {
+      if (closed || !/^[a-z][a-z0-9-]{0,63}$/u.test(namespace) || extensions.has(namespace) || !Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 8 * 1024 * 1024) throw new Error("Management extension is unavailable or invalid");
+      const entry = { handler: next, maximumBytes }; extensions.set(namespace, entry);
+      return { release: () => { if (extensions.get(namespace) === entry) extensions.delete(namespace); } };
+    },
     close() {
       if (closing) return closing;
-      closed = true; options.control.setRecoveryAvailable(false); handler = undefined;
+      closed = true; options.control.setRecoveryAvailable(false); handler = undefined; extensions.clear();
+      for (const controller of activeControls) controller.abort();
       clearInterval(heartbeat); removeControl(); removeSettings(); removeCredentials(); removeLoader();
       for (const client of clients) client.end(); clients.clear();
       return closing = new Promise<void>((resolve, reject) => {
@@ -97,6 +107,18 @@ export async function startWebManagementHost(options: {
       }
     }
     if (path.startsWith("/api/management/")) {
+      if (method === "POST" && path.startsWith("/api/management/extensions/")) {
+        const match = /^\/api\/management\/extensions\/([a-z][a-z0-9-]{0,63})\/([a-z][a-z0-9-]{0,63})$/u.exec(path);
+        const extension = match ? extensions.get(match[1]!) : undefined;
+        if (!match || !extension) throw new ManagementHttpError(404, "management_extension_unavailable");
+        const input = await body(request, extension.maximumBytes), controller = new AbortController();
+        activeControls.add(controller);
+        const close = () => { if (!response.writableEnded) controller.abort(); };
+        response.once("close", close);
+        try { const result = await extension.handler(match[2]!, input, controller.signal); json(response, 200, result); }
+        finally { response.off("close", close); activeControls.delete(controller); }
+        return;
+      }
       if (method === "GET" && path === "/api/management/bootstrap") {
         json(response, 200, { token, instanceId: options.control.snapshot().inspection.instanceId, businessAvailable: !!handler }); return;
       }
@@ -167,12 +189,12 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 function only(value: Record<string, unknown>, keys: string[]): void {
   if (Object.keys(value).some(key => !keys.includes(key))) throw new ManagementHttpError(400, "management_invalid_request");
 }
-async function body(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function body(request: IncomingMessage, maximumBytes = 262144): Promise<Record<string, unknown>> {
   if (request.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") throw new ManagementHttpError(415, "management_json_required");
   let size = 0; const chunks: Buffer[] = [];
   for await (const chunk of request) {
     const buffer = Buffer.from(chunk); size += buffer.length;
-    if (size > 262144) throw new ManagementHttpError(413, "management_body_too_large");
+    if (size > maximumBytes) throw new ManagementHttpError(413, "management_body_too_large");
     chunks.push(buffer);
   }
   try {

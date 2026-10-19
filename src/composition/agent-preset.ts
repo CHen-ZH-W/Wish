@@ -14,6 +14,7 @@ export interface AgentScopePreset {
   readonly localTools?: readonly AgentLocalToolDeclaration[];
   readonly prompt?: string;
   readonly compaction?: {
+    readonly strategyId?: string;
     readonly keepRecentTokens?: number;
     readonly summaryMaxOutputTokens?: number;
   };
@@ -74,8 +75,9 @@ export function snapshotAgentScopePreset(value: unknown): AgentScopePreset {
   if (input.compaction !== undefined) {
     if (!input.compaction || typeof input.compaction !== "object" || Array.isArray(input.compaction)) throw new TypeError("Invalid Agent Scope Compaction");
     const policy = input.compaction as Record<string, unknown>;
-    if (Object.keys(policy).some(key => key !== "keepRecentTokens" && key !== "summaryMaxOutputTokens")) throw new TypeError("Unknown Agent Scope Compaction field");
+    if (Object.keys(policy).some(key => key !== "strategyId" && key !== "keepRecentTokens" && key !== "summaryMaxOutputTokens")) throw new TypeError("Unknown Agent Scope Compaction field");
     compaction = Object.freeze({
+      ...(policy.strategyId === undefined ? {} : { strategyId: identifier(policy.strategyId, "Agent Scope Compaction strategy") }),
       ...(policy.keepRecentTokens === undefined ? {} : { keepRecentTokens: positive(policy.keepRecentTokens) }),
       ...(policy.summaryMaxOutputTokens === undefined ? {} : { summaryMaxOutputTokens: positive(policy.summaryMaxOutputTokens) }),
     });

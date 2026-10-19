@@ -87,7 +87,8 @@ async function fixture(stage, run) {
     } });
   } catch (error) { throw Error(`${error.message}\nReload: ${JSON.stringify(booted?.codeReload.snapshot())}`, { cause: error }); }
   finally {
-    probe.proceed.resolve(); if (handle) await handle.completion;
+    // Assertions above own completion failures; fixture teardown must still release the Host.
+    probe.proceed.resolve(); if (handle) await handle.completion.catch(() => {});
     await booted?.dispose(); delete globalThis[key]; await rm(directory, { recursive: true, force: true });
   }
 }
@@ -141,14 +142,80 @@ test("a Tool can submit its own code edit and return acceptance without waiting 
 
 test("a Runtime code edit retires the affected Run generation and activates a successor", { timeout: 18000 }, () => fixture("model", async f => {
   const runtime = f.booted.context.loader.resolve("include:runtime").fiber;
+  const todoFeature = f.booted.context.loader.resolve("include:todo-session-feature").fiber;
+  const todo = f.ctx.get("todo"), state = await todo.get("session");
+  await todo.replace({ sessionId: "session", runId: state.runId, userTurnId: state.userTurnId,
+    items: [{ id: "owned", content: "Must be cleared before unloading", status: "in_progress" }] });
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  f.ctx.get("application").registerSessionFeature("hmr-cleanup-proof", {
+    purgeOrder: 6, inspect: async () => undefined, act: async () => {},
+    async purgeRun() {
+      assert.equal(await todo.get("session"), undefined, "real Todo state must already be cleared");
+      entered.resolve(); await release.promise;
+    },
+  });
   const filename = join(f.directory, "dist/composition/runtime-service.js");
-  await writeFile(filename, await readFile(filename, "utf8") + "\n// replace Runtime generation\n");
-  await until(() => f.booted.codeReload.snapshot().phase === "applying");
+  try {
+    await writeFile(filename, await readFile(filename, "utf8") + "\n// replace Runtime generation\n");
+    await until(() => f.probe.signals.some(signal => signal.aborted));
+    f.probe.proceed.resolve(); await entered.promise;
+    assert.equal(f.booted.codeReload.snapshot().phase, "draining");
+    assert.equal(runtime.state, 2); assert.equal(todoFeature.state, 2);
+    assert.throws(() => f.app.runGeneration.startRun({ id: "wish" }, { scope: "other", payload: { text: "blocked" } }), /suspended/);
+    release.resolve();
+    assert.equal((await f.handle.completion).status, "aborted");
+    await until(() => f.booted.codeReload.snapshot().phase === "succeeded");
+    assert.notEqual(f.booted.context.loader.resolve("include:runtime").fiber, runtime);
+    assert.equal(runtime.state, 4);
+    assert.deepEqual(f.probe.executions, []);
+    const currentTodo = f.ctx.get("todo");
+    assert.equal(await currentTodo.get("session"), undefined);
+    await currentTodo.openTurn({ sessionId: "session", runId: "after-reload", userTurnId: "after-reload" });
+    await currentTodo.replace({ sessionId: "session", runId: "after-reload", userTurnId: "after-reload",
+      items: [{ id: "new", content: "New generation remains usable", status: "pending" }] });
+    const currentApp = await f.ctx.get("application").open();
+    assert.ok((await currentApp.sessionFeatures.inspect("session")).some(feature => feature.key === "todo"));
+    await currentTodo.clear("session"); await currentApp.runGeneration.retire();
+  } finally { release.resolve(); }
+}));
+
+test("an invalid Runtime module keeps the original active Run and its cleanup owners", { timeout: 18000 }, () => fixture("model", async f => {
+  const runtime = f.booted.context.loader.resolve("include:runtime").fiber;
+  const filename = join(f.directory, "dist/composition/runtime-service.js");
+  await writeFile(filename, "invalid JavaScript @\n");
+  await until(() => f.booted.codeReload.snapshot().phase === "rejected");
+  assert.equal(f.booted.codeReload.snapshot().code, "code_reload_import_failed");
+  assert.equal(f.booted.context.loader.resolve("include:runtime").fiber, runtime);
+  assert.ok(f.probe.signals.every(signal => !signal.aborted));
   f.probe.proceed.resolve();
-  assert.equal((await f.handle.completion).status, "aborted");
-  await until(() => f.booted.codeReload.snapshot().phase === "succeeded");
-  assert.notEqual(f.booted.context.loader.resolve("include:runtime").fiber, runtime);
-  assert.equal(runtime.state, 4);
-  assert.deepEqual(f.probe.executions, []);
-  assert.ok(f.probe.signals.some(signal => signal.aborted));
+  assert.equal((await f.handle.completion).status, "completed");
+  assert.deepEqual(f.probe.executions, [1, 1]);
+}));
+
+test("failed Run cleanup rejects Runtime replacement and restores admission without replay", { timeout: 18000 }, () => fixture("model", async f => {
+  const runtime = f.booted.context.loader.resolve("include:runtime").fiber;
+  let fails = true;
+  f.ctx.get("application").registerSessionFeature("hmr-cleanup-failure", {
+    purgeOrder: 1, inspect: async () => undefined, act: async () => {},
+    async purgeRun() { if (fails) throw Error("injected Run cleanup failure"); },
+  });
+  const failed = assert.rejects(f.handle.completion, /injected Run cleanup failure/);
+  try {
+    const filename = join(f.directory, "dist/composition/runtime-service.js");
+    await writeFile(filename, await readFile(filename, "utf8") + "\n// cleanup failure must reject replacement\n");
+    await until(() => f.probe.signals.some(signal => signal.aborted));
+    f.probe.proceed.resolve(); await failed;
+    await until(() => f.booted.codeReload.snapshot().phase === "rejected");
+    assert.equal(f.booted.context.loader.resolve("include:runtime").fiber, runtime);
+    assert.equal(runtime.state, 2); assert.deepEqual(f.probe.executions, []);
+    const revision = f.booted.codeReload.snapshot().revision;
+    await writeFile(filename, await readFile(filename, "utf8") + "\n// unresolved cleanup still blocks a later candidate\n");
+    await until(() => f.booted.codeReload.snapshot().revision > revision && f.booted.codeReload.snapshot().phase === "rejected");
+    assert.equal(f.booted.context.loader.resolve("include:runtime").fiber, runtime);
+    fails = false;
+    const next = await f.app.startRun({ sessionId: "session", payload: { text: "new Run after cleanup recovered" } });
+    assert.equal((await next.completion).status, "completed");
+    assert.notEqual(next.runId, f.handle.runId);
+    assert.deepEqual(f.probe.executions, [1]);
+  } finally { fails = false; }
 }));

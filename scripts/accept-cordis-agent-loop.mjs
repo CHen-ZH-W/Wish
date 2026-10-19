@@ -12,6 +12,7 @@ import AgentLoop, {
 } from "../dist/composition/agent-loop-service.js";
 import { bootstrap } from "../dist/boot/bootstrap.js";
 import Compaction from "../dist/compaction/service.js";
+import ModelSummaryCompaction from "../dist/compaction/providers/model-summary.js";
 import ContextEngine from "../dist/context/service.js";
 import * as ModelPlugins from "../dist/models/plugins.js";
 import Models from "../dist/models/service.js";
@@ -84,6 +85,7 @@ test("AgentLoop owns the Step pipeline and follows all injected capabilities", a
       keepRecentTokens: 512,
       summaryMaxOutputTokens: 128,
     });
+    await root.plugin(ModelSummaryCompaction);
     await root.plugin(Tools);
     await root.plugin(ReadTool);
     assert.equal(agentLoopProvider.state, fiberState.pending);

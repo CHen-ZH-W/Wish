@@ -316,6 +316,63 @@ test("scoped Compaction work drains before its contributing Fiber is disposed", 
   } finally { await scope.dispose(); await root.fiber.dispose(); }
 });
 
+test("Compaction registers multiple Cordis strategies, resolves Agent choices, and drains replacement", async () => {
+  const root = new Context();
+  const application = new AgentScope("application");
+  const coder = new AgentScope("coder", application);
+  const child = new AgentScope("child", coder);
+  const reviewer = new AgentScope("reviewer", application);
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  root.provide("sessions", { open: () => ({}) });
+  root.provide("models", {});
+  try {
+    await root.plugin(Compaction);
+    let calls = 0;
+    const providers = root.plugin({ inject: ["compaction"], apply(ctx) {
+      ctx.compaction.registerStrategy(ctx, { id: "alpha-v1", open: () => ({ compact: () => "alpha-v1" }) });
+      ctx.compaction.registerStrategy(ctx, { id: "beta-v1", open: input => ({
+        keepRecentTokens: input.keepRecentTokens,
+        async compact() {
+          if (++calls === 1) { entered.resolve(); await finish.promise; }
+          return `beta-v1:${input.keepRecentTokens}`;
+        },
+      }) });
+    } });
+    const selectors = root.plugin({ inject: ["compaction"], apply(ctx) {
+      ctx.compaction.selectScoped(ctx, coder, { strategyId: "beta-v1", keepRecentTokens: 7 });
+      ctx.compaction.selectScoped(ctx, reviewer, { strategyId: "alpha-v1" });
+    } });
+    await Promise.all([providers.await(), selectors.await()]);
+    const input = { dataDirectory: "/tmp", models: {}, keepRecentTokens: 2, summaryMaxOutputTokens: 1 };
+    assert.equal(await root.compaction.open({ ...input, agentScope: reviewer }).compact({}), "alpha-v1");
+    const old = root.compaction.open({ ...input, agentScope: coder });
+    assert.equal(old.keepRecentTokens, 7);
+    const pending = old.compact({});
+    await entered.promise;
+    let unloaded = false;
+    const unloading = providers.dispose().then(() => { unloaded = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(unloaded, false, "the Provider Fiber waits for its admitted compaction");
+    finish.resolve();
+    assert.equal(await pending, "beta-v1:7");
+    await unloading;
+    await assert.rejects(() => old.compact({}), /closed/u);
+    assert.throws(() => root.compaction.open({ ...input, agentScope: coder }), /beta-v1.*unavailable/u);
+    const replacement = root.plugin({ inject: ["compaction"], apply(ctx) {
+      ctx.compaction.registerStrategy(ctx, { id: "beta-v1", open: input => ({ compact: () => `beta-v2:${input.keepRecentTokens}` }) });
+    } });
+    await replacement.await();
+    assert.equal(await root.compaction.open({ ...input, agentScope: coder }).compact({}), "beta-v2:7");
+    const override = root.plugin({ inject: ["compaction"], apply(ctx) {
+      ctx.compaction.registerStrategy(ctx, { id: "beta-v1", open: () => ({ compact: () => "child-beta" }) }, child);
+    } });
+    await override.await();
+    assert.equal(await root.compaction.open({ ...input, agentScope: child }).compact({}), "child-beta");
+    assert.equal(await root.compaction.open({ ...input, agentScope: coder }).compact({}), "beta-v2:7");
+  } finally { finish.resolve(); await application.dispose(); await root.fiber.dispose(); }
+});
+
 test("role preset crosses the CLI child boundary with Tool and Memory isolation", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-agent-scope-"));
   const preset = parseAgentScopePresets(JSON.stringify([{ role: "reviewer", availableTools: ["read"],
@@ -342,8 +399,8 @@ test("the production Agent owner installs its child Prompt and Compaction policy
   const registered = [];
   root.provide("runEngine", {});
   root.provide("systemPrompt", { registerScoped(_owner, scope, section) { registered.push(["prompt", scope, section]); } });
-  root.provide("compaction", { registerScoped(_owner, scope, strategy) { registered.push(["compaction", scope, strategy]); } });
-  const selected = { role: "reviewer", prompt: "Inspect only", compaction: { keepRecentTokens: 321 }, memory: "none" };
+  root.provide("compaction", { selectScoped(_owner, scope, selection) { registered.push(["compaction", scope, selection]); } });
+  const selected = { role: "reviewer", prompt: "Inspect only", compaction: { strategyId: "selective-v2", keepRecentTokens: 321 }, memory: "none" };
   try {
     const fiber = root.plugin(Agents, { childPresetsJson: JSON.stringify([selected]), scopePresetJson: JSON.stringify(selected) });
     await fiber.await();
@@ -352,9 +409,7 @@ test("the production Agent owner installs its child Prompt and Compaction policy
     assert.equal(registered[0][0], "prompt");
     assert.equal(registered[0][2].content, "Inspect only");
     assert.equal(registered[1][0], "compaction");
-    assert.equal(registered[1][2].open({ keepRecentTokens: 5, summaryMaxOutputTokens: 9,
-      models: { configuredModel: { getDefaultModel: () => ({ provider: "mock", model: "mock" }), resolve: ref => ({ ref }) }, model: {}, requestCounter: {} },
-      sessions: { history: { compaction: {} } } }).keepRecentTokens, 321);
+    assert.deepEqual(registered[1][2], selected.compaction);
   } finally { await root.fiber.dispose(); }
 });
 
@@ -389,7 +444,7 @@ test("a child-local Tool declaration must be fulfilled by a scoped plugin before
   const visible = new Set();
   root.provide("runEngine", { open: () => ({ runtime: {}, generation: { retire: async () => {} }, sessions: {}, models: {} }) });
   root.provide("systemPrompt", { registerScoped() {} });
-  root.provide("compaction", { registerScoped() {} });
+  root.provide("compaction", { selectScoped() {} });
   root.provide("tools", { registryFor: () => ({ has: name => visible.has(name) }) });
   try {
     const fiber = root.plugin(Agents, { scopePresetJson: JSON.stringify(preset) });

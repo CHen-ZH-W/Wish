@@ -120,6 +120,7 @@ export interface WishRuntimeRecovery {
  * Product entrypoints obtain it from the Loader-managed Application service.
  */
 export interface WishApplication {
+  readonly executionProfile?: import("./execution-profile.js").ApplicationExecutionProfile["identity"];
   readonly sessionFeatures?: import("./session-features.js").SessionFeatures;
   readonly sessionReasoning?: SessionReasoningPort;
   readonly sessionPermissions?: SessionPermissionProfilesPort;

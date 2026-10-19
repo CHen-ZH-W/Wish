@@ -26,6 +26,7 @@ const generation = new RunGeneration<WishAgentProtocol>(runtime, {
 const state: RunGenerationState = generation.state;
 const snapshot: RunGenerationSnapshot = generation.snapshot();
 const retirement: Promise<void> = generation.retire();
+const replacementDrain: Promise<void> = generation.abortAndDrain("replace Runtime");
 
 // Standalone Core Runtime remains a valid Agent dependency without Cordis.
 const standalone: RuntimeDependencies = {
@@ -35,4 +36,5 @@ const standalone: RuntimeDependencies = {
 void state;
 void snapshot;
 void retirement;
+void replacementDrain;
 void standalone;
