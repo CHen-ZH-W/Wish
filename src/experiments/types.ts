@@ -70,6 +70,8 @@ export interface ExperimentExecutionInput {
   readonly directory: string;
   readonly timeoutMs: number;
   readonly maxSteps: number;
+  /** Optional generic Profile task limits; independent of dataset assertions or experiment scoring. */
+  readonly requestBudget?: { readonly modelCalls: number; readonly tokens: number; readonly maxOutputTokens: number };
 }
 export interface ExperimentExecutionResult {
   readonly status: ExperimentCaseResult["status"];
@@ -81,6 +83,7 @@ export interface ExperimentExecutionResult {
   readonly attemptsComplete?: boolean;
   readonly assertionPassed?: boolean;
   readonly error?: string;
+  readonly executionEvidence?: { readonly historyDigest: string; readonly events: readonly import("../core/runtime/durability/types.js").DurableRuntimeLifecycleEvent[] };
 }
 /** Provider owns a complete isolated invocation, including cancellation and process cleanup. */
 export interface ExperimentExecutor {

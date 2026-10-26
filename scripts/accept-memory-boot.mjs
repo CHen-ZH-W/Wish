@@ -56,8 +56,10 @@ test("default knowledge capabilities are active in an isolated home before openi
   assert.ok(f.tools().includes("memory_write"));
   assert.equal(f.enabled("memory-storage"), true);
   assert.equal(f.enabled("memory-child-snapshot"), false);
-  assert.equal(f.enabled("memory-curation"), false);
-  assert.equal(f.enabled("memory-runtime-evidence"), false);
+  assert.equal(f.enabled("memory-curation"), true);
+  assert.equal(f.enabled("memory-runtime-evidence"), true);
+  assert.equal(f.enabled("memory-curation-trigger"), true);
+  assert.deepEqual((await f.context.memoryCuration.scheduler.state()).jobs, []);
   assert.equal(f.root.get("skills"), undefined);
   assert.equal(f.root.get("memory"), undefined);
   assert.equal(f.root.get("memoryCuration"), undefined);
@@ -70,7 +72,7 @@ test("knowledge Tools can be disabled without removing Providers, Context or hum
   assert.equal(f.enabled("skills-context"), true);
   assert.equal(f.enabled("memory-context"), true);
   assert.equal(f.enabled("skills-session-feature"), true);
-  assert.equal(f.enabled("memory-session-feature"), true);
+  assert.equal(f.enabled("memory-session-feature"), false);
   assert.equal(f.tools().some(name => ["list_skills", "read_skill", "memory_search", "memory_read", "memory_write"].includes(name)), false);
 });
 
@@ -91,7 +93,7 @@ test("disabling a knowledge capability disables all of its optional Consumers", 
   for (const entry of f.root.loader.entries()) if (/^include:(skills-|memory-)/u.test(entry.id)) assert.equal(entry.disabled, true, entry.id);
 });
 
-test("curation requires its opt-in and evidence adapters follow available providers", async t => {
+test("curation evidence adapters follow available providers", async t => {
   const f = await graph(t, { environment: { WISH_MEMORY_CURATION_ENABLED: "1", WISH_WORKFLOW_ENABLED: "0", WISH_SUBAGENTS_ENABLED: "0" } });
   assert.ok(f.context.memoryCuration);
   assert.equal(f.enabled("memory-runtime-evidence"), true);
@@ -101,8 +103,8 @@ test("curation requires its opt-in and evidence adapters follow available provid
   assert.deepEqual((await f.context.memoryCuration.scheduler.state()).jobs, []);
 });
 
-test("automatic flag alone does not start or instantiate curation", async t => {
-  const f = await graph(t, { environment: { WISH_MEMORY_AUTO_CURATION: "1" } });
+test("explicit curation disable overrides automatic background work", async t => {
+  const f = await graph(t, { environment: { WISH_MEMORY_AUTO_CURATION: "1", WISH_MEMORY_CURATION_ENABLED: "0" } });
   assert.equal(f.context.get("memoryCuration"), undefined);
   assert.equal(f.enabled("memory-runtime-evidence"), false);
 });

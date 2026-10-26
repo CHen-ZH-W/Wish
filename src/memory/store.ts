@@ -9,6 +9,7 @@ interface MemoryJournalChange {
   readonly libraryId: string;
   readonly revision: number;
   readonly document?: MemoryDocument;
+  readonly documents?: readonly MemoryDocument[];
   readonly candidate?: MemoryCandidate;
   readonly audit: MemoryAudit;
 }
@@ -34,9 +35,10 @@ export class JournalMemoryStore implements MemoryStateStore {
       const audit = state.audit.at(-1)!;
       const documents = state.documents.filter(item => JSON.stringify(item) !== JSON.stringify(loaded.state.documents.find(old => old.id === item.id)));
       const candidates = state.candidates.filter(item => JSON.stringify(item) !== JSON.stringify(loaded.state.candidates.find(old => old.id === item.id)));
-      if (documents.length > 1 || candidates.length > 1 || loaded.state.documents.some(item => !state.documents.some(next => next.id === item.id)) || loaded.state.candidates.some(item => !state.candidates.some(next => next.id === item.id))) throw new Error("Memory commits must change one document/candidate without removing history");
+      if ((audit.action !== "consolidate" && documents.length > 1) || candidates.length > 1 || loaded.state.documents.some(item => !state.documents.some(next => next.id === item.id)) || loaded.state.candidates.some(item => !state.candidates.some(next => next.id === item.id))) throw new Error("Memory commits cannot remove history");
       const change: MemoryJournalChange = { schemaVersion: 1, libraryId: this.libraryId, revision: state.revision,
-        ...(documents[0] === undefined ? {} : { document: documents[0] }), ...(candidates[0] === undefined ? {} : { candidate: candidates[0] }), audit };
+        ...(audit.action === "consolidate" ? { documents } : documents[0] === undefined ? {} : { document: documents[0] }),
+        ...(candidates[0] === undefined ? {} : { candidate: candidates[0] }), audit };
       validateChange(loaded.state, change);
       await this.journal.append({ idempotencyKey: `memory:${this.libraryId}:${audit.operationId}`, entries: [new TextEncoder().encode(JSON.stringify(change))] },
         loaded.last === undefined ? JOURNAL_ANY : { kind: "revision", revision: loaded.last.revision }, signal);
@@ -51,8 +53,9 @@ export class JournalMemoryStore implements MemoryStateStore {
     for await (const entry of this.journal.read({ ...(signal === undefined ? {} : { signal }) })) {
       const change = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(entry.value)) as MemoryJournalChange;
       validateChange(state, change);
+      const changedDocuments = change.documents ?? (change.document ? [change.document] : []);
       const next = snapshotState({ ...state, revision: change.revision,
-        documents: change.document === undefined ? state.documents : [...state.documents.filter(item => item.id !== change.document!.id), change.document],
+        documents: [...state.documents.filter(item => !changedDocuments.some(next => next.id === item.id)), ...changedDocuments],
         candidates: change.candidate === undefined ? state.candidates : [...state.candidates.filter(item => item.id !== change.candidate!.id), change.candidate],
         audit: [...state.audit, change.audit] });
       state = next; last = entry;
@@ -64,6 +67,20 @@ export class JournalMemoryStore implements MemoryStateStore {
 function validateChange(state: MemoryState, change: MemoryJournalChange): void {
   if (!change || change.schemaVersion !== 1 || change.libraryId !== state.libraryId || change.revision !== state.revision + 1 || change.audit?.revision !== change.revision) throw new Error("Memory Journal is corrupt");
   const doc = change.document, item = change.candidate, audit = change.audit;
+  if (audit.action === "consolidate") {
+    if (audit.actor.kind !== "curation" || audit.targetId !== state.libraryId || item || doc || !Array.isArray(change.documents)) throw new Error("Invalid Memory consolidation commit");
+    const changed = change.documents;
+    if (new Set(changed.map(value => value.id)).size !== changed.length) throw new Error("Duplicate Memory consolidation target");
+    const next = new Map([...state.documents, ...changed].map(value => [value.id, value]));
+    for (const value of changed) {
+      const old = state.documents.find(previous => previous.id === value.id);
+      if (value.version !== (old?.version ?? 0) + 1 || value.updatedAt !== audit.at || (old && old.status !== "accepted" && !(old.path && value.status === "accepted"))) throw new Error("Invalid Memory consolidation revision");
+      if (value.status !== "accepted" && (!old || !["stale", "superseded"].includes(value.status) || hash(content(old)) !== hash(content(value)))) throw new Error("Consolidation cannot erase history");
+      if (value.status === "superseded" && (value.supersededBy === value.id || next.get(value.supersededBy!)?.status !== "accepted")) throw new Error("Invalid consolidation replacement");
+    }
+    return;
+  }
+  if (change.documents !== undefined) throw new Error("Only consolidation can commit a document batch");
   if (doc && doc.version !== (state.documents.find(old => old.id === doc.id)?.version ?? 0) + 1) throw new Error("Memory document revision is corrupt");
   if (item && item.version !== (state.candidates.find(old => old.id === item.id)?.version ?? 0) + 1) throw new Error("Memory candidate revision is corrupt");
   if (audit.action === "propose") {

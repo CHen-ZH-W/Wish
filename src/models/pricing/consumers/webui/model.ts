@@ -1,4 +1,4 @@
-import type { ClientConnection } from "../../../../apps/webui/client/connection.js";
+import { ClientApiError, type ClientConnection } from "../../../../apps/webui/client/connection.js";
 import type { SessionClientModel } from "../../../../apps/webui/client/model/session.js";
 import { RefreshQueue, SnapshotStore } from "../../../../apps/webui/client/model/store.js";
 import type { SessionModelUsageView } from "../webui-types.js";
@@ -15,6 +15,10 @@ export class ModelUsageClientModel extends SnapshotStore<ModelUsageClientSnapsho
   private readonly queue: RefreshQueue;
   private readonly removers: Array<() => void> = [];
   private observedKey = "";
+  private observedInstance: string | null = null;
+  private observedRun: string | null = null;
+  private observedSequence = 0;
+  private refreshSequence = 0;
   private closed = false;
 
   constructor(
@@ -32,12 +36,14 @@ export class ModelUsageClientModel extends SnapshotStore<ModelUsageClientSnapsho
         if (response.value.sessionId !== sessionId || response.value.scope !== "session" || response.value.schemaVersion !== 1) {
           throw new Error("模型用量响应与当前会话不匹配");
         }
-        if (current() && this.getSnapshot().sessionId === sessionId) {
+        if (current() && this.available() && this.getSnapshot().sessionId === sessionId) {
           this.publish({ sessionId, view: response.value, loading: false, error: null });
         }
       } catch (error) {
-        if (current() && this.getSnapshot().sessionId === sessionId) {
-          this.publish({ ...this.getSnapshot(), loading: false,
+        if (current() && this.available() && this.getSnapshot().sessionId === sessionId) {
+          const revoked = error instanceof ClientApiError && (error.status === 401 || error.status === 403 ||
+            ["control_not_found", "session_not_found", "business_unavailable", "management_closed", "connection_closed"].includes(error.code));
+          this.publish({ sessionId, view: revoked ? null : this.getSnapshot().view, loading: false,
             error: error instanceof Error ? error.message : "模型用量读取失败" });
         }
       }
@@ -66,19 +72,38 @@ export class ModelUsageClientModel extends SnapshotStore<ModelUsageClientSnapsho
     const run = this.sessions.run.getSnapshot();
     const active = connection.online && connection.businessAvailable;
     const sessionId = active ? sessions.selectedId : null;
-    const terminalModelEvents = run.events.filter(event => event.type === "model.stream" &&
-      (event.payload.type === "done" || event.payload.type === "error")).length;
-    const key = `${connection.instanceId ?? ""}:${active}:${sessionId ?? ""}:${run.runId ?? ""}:${terminalModelEvents}:${run.terminal}`;
+    const changedInstance = this.observedInstance !== connection.instanceId;
+    this.observedInstance = connection.instanceId;
+    if (this.observedRun !== run.runId) {
+      this.observedRun = run.runId;
+      this.observedSequence = 0;
+      this.refreshSequence = 0;
+    }
+    // Completion follows durable usage settlement; streamed text needs no HTTP read.
+    for (let index = run.events.length - 1; index >= 0; index--) {
+      const event = run.events[index]!;
+      const sequence = event.sequence ?? index + 1;
+      if (sequence <= this.observedSequence) break;
+      if (event.type === "model.stream" && ["start", "done", "error"].includes(event.payload.type) ||
+        event.type === "runtime.transition" && ["step.started", "step.completed", "step.failed", "step.aborted",
+          "run.completed", "run.failed", "run.aborted"].includes(event.payload.type)) {
+        this.refreshSequence = Math.max(this.refreshSequence, sequence);
+      }
+    }
+    this.observedSequence = run.events.at(-1)?.sequence ?? run.events.length;
+    const historyRevision = sessions.sessions?.find(session => session.sessionId === sessionId)?.historyRevision ?? "";
+    const key = `${connection.instanceId ?? ""}:${active}:${sessionId ?? ""}:${historyRevision}:${run.runId ?? ""}:${this.refreshSequence}:${run.terminal}`;
     if (key === this.observedKey) return;
-    const changedSession = sessionId !== this.getSnapshot().sessionId;
+    const reset = changedInstance || sessionId !== this.getSnapshot().sessionId;
     this.observedKey = key;
     this.publish({
       sessionId,
-      view: changedSession ? null : this.getSnapshot().view,
-      loading: !!sessionId && (changedSession || this.getSnapshot().view === null),
+      view: reset ? null : this.getSnapshot().view,
+      loading: !!sessionId && (reset || this.getSnapshot().view === null),
       error: null,
     });
-    if (sessionId) void this.refresh();
+    // Even a disappearing Session must invalidate its in-flight response.
+    void this.refresh();
   };
 
   private available(): boolean {

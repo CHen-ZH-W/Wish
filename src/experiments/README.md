@@ -58,3 +58,5 @@ Plan 只接受快照 digest。模型、策略、Prompt 或工具均可以作为�
 本地进程 Provider 接受可信的已安装插件，工具沿用权限系统与执行 Sandbox，仅允许 `read-only` / `workspace-write`，防止无界权限实验或无人响应的审批挂起。带候选来源标记的快照强制交给 [Candidate Plugin](../candidates/README.md) 注册的 Linux sandbox executor；该 Provider 不存在时拒绝执行，不会降级到普通子进程。HMR、WebUI 和候选管理入口在 Worker 中禁用，冻结的语义配置保留；标准 Storage、Sessions、tmux 等宿主资源位置重定位到该案例目录。自定义 Provider 若持有外部可变状态，仍需要自己的隔离协议。
 
 Storage 的现有文件 Backend 仅保证进程内写入序列化。同一数据目录保持一个写入 Host，读取 CLI 不会误恢复仍存活的任务。需要多 Host 同时写入时，必须先提供具备相应并发保证的 Storage Provider。
+
+`executeProfileTask` 是共享的隔离 Runtime 调用入口，直接调用不会创建 Experiment、运行效果比较或给出 `passed`。它可供其他 Host 消费者复用。完整资源快照接入私有 Skills/Memory Provider，HOME、TMPDIR、工作区、数据与 tmux 位置分别隔离。可选 `requestBudget` 在 Worker 限制模型请求数和输出上限，使用请求字节作保守的输入预算预留，仍只按真实账本报告 Token。该模式使用已支持的标准协议 Adapter，不隐式切换模型或价格协议；自定义协议需要单独提供适配。

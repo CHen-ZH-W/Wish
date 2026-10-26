@@ -1,0 +1,14 @@
+.evolution-view{padding:20px;max-width:100%;color:inherit;font-size:calc(14px * var(--wish-font-scale));overflow-wrap:anywhere}
+.evolution-view>header{margin-bottom:20px}.evolution-view h2{margin-bottom:8px}.evolution-view p{white-space:pre-wrap}
+.evolution-view form>label,.evolution-feedback label{display:block;margin-bottom:8px;font-weight:600}
+.evolution-view textarea{display:block;width:100%;min-height:72px;resize:vertical;margin-top:8px}
+.evolution-form-actions{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-top:12px}
+.evolution-form-actions label{display:flex;align-items:center;gap:8px}.evolution-evidence-note{margin:20px 0;color:var(--muted);font-size:calc(12px * var(--wish-font-scale))}
+.evolution-record{padding:20px 0;border-top:1px solid var(--line)}.evolution-record>header{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px}
+.evolution-record h3{margin:0;max-width:65ch;white-space:pre-wrap}.evolution-record>header>span{font-size:calc(12px * var(--wish-font-scale));color:var(--muted)}
+.evolution-record details{margin:12px 0}.evolution-record summary{cursor:pointer;padding:4px 0;color:var(--accent)}.evolution-record details p{margin-top:8px}
+.evolution-record pre{white-space:pre;max-height:360px;overflow:auto;max-width:100%;padding:12px;background:var(--control-surface);border-radius:var(--radius)}
+.evolution-stages{list-style:none;padding:0;margin:16px 0}.evolution-stages li{display:flex;justify-content:space-between;gap:16px;padding:6px 0;border-bottom:1px solid var(--line)}
+.evolution-stages li>span:last-child{color:var(--muted);font-size:calc(12px * var(--wish-font-scale))}.evolution-technical-result{font-weight:600}
+.evolution-error{color:var(--danger);white-space:pre-wrap}.evolution-feedback{margin-top:20px}.evolution-feedback button{margin-top:8px}
+@media(max-width:600px){.evolution-view{padding:16px}.evolution-form-actions{align-items:stretch}.evolution-form-actions>button{margin-left:auto}}

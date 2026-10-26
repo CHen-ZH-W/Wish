@@ -54,7 +54,8 @@ const todoNames = ["todo_write"];
 const goalNames = ["get_goal", "create_goal", "update_goal"];
 const workflowNames = ["workflow_read", "workflow_start", "workflow_cancel", "workflow_retry"];
 const skillNames = ["list_skills", "read_skill"];
-const memoryNames = ["memory_search", "memory_read", "memory_write"];
+const memoryNames = ["memory_search", "memory_read", "memory_list", "memory_write"];
+const developmentNames = ["wish_begin", "wish_read", "wish_propose", "wish_verify", "wish_report"];
 const productNames = [
   ...basicNames,
   ...tmuxNames,
@@ -67,6 +68,7 @@ const productNames = [
   ...workflowNames,
   ...skillNames,
   ...memoryNames,
+  ...developmentNames,
 ];
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -225,7 +227,7 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
     assert.equal(await defaultBoot.completion, 0);
     assertBootTools(
       defaultBoot,
-      [...basicNames, ...tmuxNames, ...planNames, ...coordinatorNames, ...taskNames, ...todoNames, ...goalNames, ...workflowNames, ...skillNames, ...memoryNames],
+      [...basicNames, ...tmuxNames, ...planNames, ...coordinatorNames, ...taskNames, ...todoNames, ...goalNames, ...workflowNames, ...skillNames, ...memoryNames, ...developmentNames],
       "Subagent model Tools must be independently disableable",
     );
     assert.notEqual(defaultBoot.surfaceContext.get("tmux"), undefined);
@@ -292,6 +294,28 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
   }
   assert.equal(booted?.context.get("tools"), undefined);
   assert.deepEqual(booted?.context.fiber.getEffects(), []);
+});
+
+test("default Wish Tools and Plan controls follow the development and Plan gates", async () => {
+  for (const environment of [{}, { WISH_DEVELOPMENT_ENABLED: "0" }, { WISH_PLAN_ENABLED: "0" }]) {
+    const directory = await mkdtemp(join(tmpdir(), "wish-loader-development-tools-"));
+    let booted;
+    try {
+      booted = await bootstrap({ surface: "cli", argv: ["--version"], cwd: repositoryRoot, homeDirectory: directory,
+        environment: { WISH_DATA_DIR: join(directory, "data"), ...environment } });
+      assert.equal(await booted.completion, 0);
+      const planEnabled = environment.WISH_PLAN_ENABLED !== "0";
+      const developmentEnabled = planEnabled && environment.WISH_DEVELOPMENT_ENABLED !== "0";
+      const excluded = new Set([
+        ...(!developmentEnabled ? developmentNames : []),
+        ...(!planEnabled ? [...planNames, "tasks_update", "workflow_start"] : []),
+      ]);
+      assertBootTools(booted, productNames.filter(name => !excluded.has(name)), JSON.stringify(environment));
+      assert.equal(booted.surfaceContext.get("wishDevelopment") !== undefined, developmentEnabled);
+      const controls = booted.surfaceContext.get("plan")?.modeControls().map(control => control.toolName).filter(name => developmentNames.includes(name)) ?? [];
+      assert.deepEqual(controls.sort(), developmentEnabled ? ["wish_begin", "wish_propose", "wish_read"] : []);
+    } finally { await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
+  }
 });
 
 function toolNames(registry) {

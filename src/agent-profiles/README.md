@@ -55,6 +55,25 @@ Snapshot 冻结配置和实现身份，不保证外部模型输出、网络或�
 
 凭证只保留环境变量引用，不保存凭证值；明文密钥和敏感请求头拒绝捕获。实验重跑需要相应凭证仍可用。
 
-`memory: "none"` 禁用标准 Memory context/prompt 和 `memory_*` 工具；`"isolated"` 只允许在实验的独立 Host 中使用空的私有 Memory。普通共享 Host 不将共享 Memory 冒充 Agent 私有状态。其他有状态插件遵循自身状态协议；Profile 不负责插件状态迁移。
+隔离 Worker 通过 CLI surface 启动，即使快照来自 WebUI，也会只切换 CLI/WebUI 入口。Loader entry 可用 `experiment: exclude` 明确排除实验外部的 Host 控制器；此标记随 deployment 一起冻结，Worker 不按领域名称猜测。候选本身的 Loader entry 不继承被替换条目的排除标记。模型、权限、Prompt 与业务插件的语义配置仍按快照固定。
+
+`memory: "none"` 禁用标准 Memory context/prompt 和 `memory_*` 工具；`"isolated"` 只允许在实验的独立 Host 中使用私有 Memory。未选择资源初态时为空；显式冻结 accepted snapshot 时，从这些文档开始，后续状态只属于该 Worker。普通共享 Host 不将共享 Memory 冒充 Agent 私有状态。其他有状态插件遵循自身状态协议；Profile 不负责插件状态迁移。
+
+`resources.ts` 提供显式资源归档。`agentProfiles.capture(selection, host, { resources })`
+把完整资源纳入快照 digest；不传第三参时仍按原协议生成 legacy snapshot。
+`captureProfileResources({ cwd, skills })` 捕获完整有界 Skill 包；无 Skills 时必须显式传
+`emptySkills: true`。Memory 初态默认明确为空，也可通过
+`freezeMemoryInitialState(acceptedSnapshot)` 固定已接受文档的内容、原版本与 library revision；
+不会隐式读取生产 Memory，不接受 pending、stale 或 deleted 文档。资源对象固定逐资源、整包、
+Skills 集合、Memory 与组合摘要，`validateProfileResources` 复验这些身份。
+
+资源完整的快照只能在隔离 Worker 执行。标准 Skills/Memory Provider 被替换为私有资源
+Provider；Skill 不再扫描运行时工作区或 HOME，Memory 从固定初态建立独立状态。
+候选检查阶段允许明确注册的 Skill 包替换同一来源的版本，并捕获实际资源组合；正式
+执行时使用 sealed 组合，每步核对完整包。新增 Tool 名称必须显式进入候选 Profile。
+资源缺失、变化或仍使用未知动态 Provider 时拒绝执行；不授予发布权限。
+`profileResourceCoverage(snapshot)` 只有看到合法资源对象才返回 `complete`；旧 Profile 未含
+该字段时明确返回 `legacy-unfrozen`，保留旧 digest，不将历史快照补写成资源已冻结。
+资源归档与读取验收：`node scripts/accept-skill-resource-snapshots.mjs`。
 
 见 [Experiments](../experiments/README.md) 运行相同数据集的 A/B 对比。验收：`npm run test:agent-profiles`。

@@ -5,7 +5,8 @@ import type { Subagents, SubagentLaunchIdentity, SpawnSubagentRequest, SubagentR
 import type { SubagentResource } from "../../subagents/resources.js";
 import type { SessionHistorySnapshot } from "../../sessions/types.js";
 import { SessionNotFoundError } from "../../sessions/types.js";
-import { childMemoryInput, childMemoryState, MEMORY_CANDIDATES_RESOURCE, MEMORY_SNAPSHOT_RESOURCE } from "../child-resources.js";
+import { childMemoryState, MEMORY_CANDIDATES_RESOURCE, MEMORY_SNAPSHOT_RESOURCE } from "../child-resources.js";
+import { readChildMemorySnapshot, writeChildMemorySnapshot } from "../adapters/child-snapshot-file.js";
 import type { Memory, MemoryEvidence } from "../types.js";
 import { content, hash } from "../validation.js";
 
@@ -27,15 +28,21 @@ export class SubagentMemoryResources {
   private readonly abort = new AbortController();
   private readonly work = new Set<Promise<unknown>>();
   private tail: Promise<void> = Promise.resolve();
-  private readonly snapshotLimit: number;
+  private readonly snapshotLimit: number | undefined;
   constructor(private readonly options: SubagentMemoryResourcesOptions) {
-    this.snapshotLimit = options.snapshotLimit ?? 10;
-    if (!Number.isSafeInteger(this.snapshotLimit) || this.snapshotLimit < 1 || this.snapshotLimit > 20) throw new Error("Invalid child Memory snapshot limit");
+    this.snapshotLimit = options.snapshotLimit;
+    if (this.snapshotLimit !== undefined && (!Number.isSafeInteger(this.snapshotLimit) || this.snapshotLimit < 1)) throw new Error("Invalid child Memory snapshot limit");
   }
-  prepare(request: SpawnSubagentRequest, _identity: SubagentLaunchIdentity): Promise<readonly SubagentResource[]> {
+  prepare(request: SpawnSubagentRequest, identity: SubagentLaunchIdentity): Promise<readonly SubagentResource[]> {
     return this.track(async signal => {
       if (!request.allowedCapabilities?.includes("runtime.read")) return Object.freeze([]);
-      const snapshot = await this.options.memory.snapshot({ text: request.task.slice(0, 4000), limit: this.snapshotLimit, signal });
+      const state = await this.options.memory.state(signal);
+      const files = state.documents.filter(item => item.status === "accepted" && item.path);
+      if (files.length) {
+        const snapshot = { schemaVersion: 1 as const, libraryId: state.libraryId, revision: state.revision, documents: files };
+        return Object.freeze([await writeChildMemorySnapshot(this.options.exchange, identity, { snapshot, allowProposals: false }, signal)]);
+      }
+      const snapshot = await this.options.memory.snapshot({ text: request.task, limit: this.snapshotLimit ?? Math.max(1, state.documents.length), signal });
       signal.throwIfAborted();
       const allowProposals = request.allowedCapabilities.includes("runtime.control") && request.availableTools?.includes("memory_write") === true;
       return Object.freeze([{ type: MEMORY_SNAPSHOT_RESOURCE, schemaVersion: 1, payload: { snapshot, allowProposals } }]);
@@ -62,7 +69,7 @@ export class SubagentMemoryResources {
     if (!manifest || !manifest.resources.some(item => item.type === MEMORY_SNAPSHOT_RESOURCE)) return;
     if (record.resourceManifestDigest !== manifest.digest) throw new Error("Child Memory manifest differs from the Host-committed snapshot");
     if (JSON.stringify(manifest.owner) !== JSON.stringify(ownerOf(record))) throw new Error("Child Memory owner scope mismatch");
-    const input = childMemoryInput(manifest);
+    const input = await readChildMemorySnapshot(this.options.exchange, manifest, signal);
     if (input.snapshot.libraryId !== this.options.memory.libraryId) throw new Error("Child Memory snapshot belongs to another library");
     const output = await this.options.exchange.readOutputResource(manifest, MEMORY_CANDIDATES_RESOURCE, signal);
     if (!output) return;

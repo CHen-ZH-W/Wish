@@ -9,6 +9,7 @@ const runtimeExports: Readonly<Record<string, readonly string[]>> = {
   "wish/plugins/state": ["PluginStateError"],
   "wish/compaction/service": ["createCompactionResources"],
   "wish/tools/managed": ["ManagedToolOwner"],
+  "wish/skills/local": ["FrozenSkills"],
 };
 const pureNode = new Set(["node:path", "node:url", "node:util", "node:crypto", "node:buffer", "node:events"]);
 export interface ArchitectureInput {

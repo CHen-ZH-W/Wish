@@ -88,11 +88,23 @@ Sessions 自己不负责调度。
 - `active | archived` 状态；
 - `createdAt`、`updatedAt`；
 - 只随 transcript 变化的 `historyRevision`；
-- 可选的最终展示标题 `title`。
+- 可选的最终展示标题 `title`、来源 `titleSource`（`fallback | model | manual`）和独立的标题版本 `titleRevision`。
 
 标题生成、失败重试和 UI 展示不属于 Sessions。`updateMetadata` 只提交调用方已经决定
 的最终值，而且不会改变 `historyRevision`，因此普通标题修改不会制造无意义的
 Compaction CAS 冲突。
+
+创建时有标题则 `titleRevision` 为 1，无标题为 0；省略 `titleSource` 的标题创建或修改
+按 `manual` 保存。旧记录缺失版本时读取为 0，已有标题缺失来源时读取为 `manual`。
+每次显式提交 `title`（包括相同文本、来源变化和 `null` 清除）都会递增标题版本；
+清除标题仍保存来源，调用方可据 `manual` 保留用户的固定标题意图。
+`titleSource` 不能脱离 `title` 单独提交。
+
+`updateMetadata` 可携带 `expectedTitleRevision`，Store 在同一会话串行事务内核对当前
+标题版本后提交；冲突抛出 `SessionTitleConflictError`，携带 `expectedTitleRevision`
+和 `actualTitleRevision`。读取标题、等待模型、再写回的调用方应保留读到的版本作为
+提交条件，防止旧结果覆盖较新的用户操作。这个条件只保护标题元数据，不替代历史 CAS；
+File Store 的原子性仍限于本进程的同一 Store 实例。
 
 `archive` 把会话设为只读；`restore` 恢复为活动状态，两者均保留历史及其 revision。
 `delete` 清理 Session 自己的元数据、历史和 checkpoint，其他领域的数据不属于此操作。

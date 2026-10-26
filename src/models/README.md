@@ -269,6 +269,12 @@ Provider usage 优先。完成事件没有 usage 时，`UsageResolvingModel` 查
 `calculateModelCost` 分别计算 uncached input、cache read、cache write 和 output。
 静态模型价格解析为 `flat` quote；DeepSeek Policy 共享工作日 UTC 峰谷窗口，但按
 Flash/Pro、USD/CNY 选择不同费率，并把旧 Flash 兼容名归到当前 Flash 计费模型。
+按 2026-10-21 核对的[官方定价](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)，
+北京时间周一至周五 09:00–12:00、14:00–18:00 为高峰，端点按左闭右开处理；其余时段、
+周末和中国法定节假日全天为闲时，闲时单价为高峰的一半。节假日表按
+[国务院 2026 年放假通知的政府转载](https://www.beijing.gov.cn/zhengce/zhengcefagui/202511/t20251104_4258873.html)
+维护；调休周末仍属闲时。当前内置日历只覆盖 2026 年，未知年份的候选高峰时段不猜价；
+若用户显式配置了静态价格，仍遵循既有 `flat` 回退规则。
 OpenAI-compatible `created` 与 OpenAI Responses `created_at` 会统一为 Unix 毫秒；
 Provider 创建时间存在时优先作为时段依据，否则使用请求开始时间；quote 固化
 requested/billed model、price version、period、currency、时点和 time basis，不执行隐式
@@ -294,8 +300,16 @@ Session transcript 仍只保存会话事实，账单通过稳定 ID 关联而不
 `GET /api/sessions/:id/controls/model-usage` 读取当前 Session 的累计投影：命中率只使用已完成且
 报告 `cachedInputTokens` 的 Provider attempt，缺失字段显示为未知或“部分”，绝不按零处理。
 停用 `model-usage-webui-control` 会同时撤销该 Control 与独立 Browser 状态位，历史账本不受影响；
-模型设置、思考强度和 Models Provider 也不依赖这一展示 Consumer。默认记账币种是 USD；部署可用
-`WISH_MODEL_PRICING_CURRENCY=CNY` 选择 DeepSeek 的官方人民币价表，不做汇率换算。
+模型设置、思考强度和 Models Provider 也不依赖这一展示 Consumer。默认记账币种是 CNY，
+DeepSeek 使用官方人民币价表；部署可用 `WISH_MODEL_PRICING_CURRENCY=USD` 显式选择美元。
+已有账本保留原币种，不做汇率换算或历史金额重算。
+
+同一 Control 的 `cost` 投影读取已保存的终态费用，在上下文占用旁贡献独立的“费用”状态位。
+它按币种累计未缓存输入、缓存读写和输出费用，并按持久化的 `peak`／`off_peak`／`flat`
+等时段分组；历史时段元数据缺失时显示未知，不依据当前时间倒推。不同币种不相加，
+缓存节省额不计入支出。缺价格或缺用量的请求计入费用缺失，未完成请求单独标记；估算费用明确标注，
+缺失费用不变成零，小额正费用也不会格式化成零。该读投影不重新选择价格、不修改历史
+账本，费用仅覆盖本会话的模型调用，不等同于服务商账户的最终扣款账单。
 
 ## 请求前输入 Token
 

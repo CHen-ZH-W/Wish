@@ -13,8 +13,13 @@ export interface ChildMemoryInput {
 
 export function childMemoryInput(manifest: SubagentResourceManifest): ChildMemoryInput {
   const resource = snapshotResourceManifest(manifest).resources.find(item => item.type === MEMORY_SNAPSHOT_RESOURCE);
-  const value = resource?.payload as ChildMemoryInput;
-  if (resource?.schemaVersion !== 1 || !value || typeof value.allowProposals !== "boolean" || value.snapshot?.schemaVersion !== 1 || !Array.isArray(value.snapshot.documents) || value.snapshot.documents.length > 100) throw new Error("Invalid child Memory snapshot resource");
+  if (resource?.schemaVersion !== 1) throw new Error("Invalid child Memory snapshot resource");
+  return validateChildMemoryInput(resource.payload);
+}
+
+export function validateChildMemoryInput(input: unknown): ChildMemoryInput {
+  const value = input as ChildMemoryInput;
+  if (!value || typeof value.allowProposals !== "boolean" || value.snapshot?.schemaVersion !== 1 || !Array.isArray(value.snapshot.documents)) throw new Error("Invalid child Memory snapshot resource");
   const documents = value.snapshot.documents.map(document);
   if (documents.some(item => item.status !== "accepted") || new Set(documents.map(item => item.id)).size !== documents.length) throw new Error("Child Memory snapshot must contain unique accepted documents");
   return Object.freeze({ allowProposals: value.allowProposals, snapshot: Object.freeze({ schemaVersion: 1, libraryId: identity(value.snapshot.libraryId), revision: version(value.snapshot.revision), documents: Object.freeze(documents) }) });

@@ -25,6 +25,10 @@ Host API / events -> connection -> React-free Client Models
   `navigation: "hidden"` 只允许显式流程打开，不出现在区域视图列表，当前用于新建会话和主会话标题栏打开的“工具调用”；
   主会话是工作区默认本地面板，但单一面板不会在侧栏生成冗余入口；点击会话显式回到主会话，“工具调用”只从主内容顶部进入；
   `Sidebar` 可替换当前侧栏内容，`onOpen` 在进入面板前更新所有者自己的展示选择。
+  `preserveState` 按需保留已访问面板的 React 状态和 DOM；隐藏时暂停 Effects，返回时恢复，
+  同一 `View` 的多个导航入口复用一份视图。主会话、归档和工具调用使用此契约，切换页面保留
+  提示词展开、历史窗口、阅读位置及侧栏工作标签；切换 Session 时重新校准阅读跟随，提示词展示按会话和快照隔离。
+  保留仅限当前浏览器页面；最后一个对应注册移除或 renderer 替换后释放旧视图，不保留已卸载模块。
   三者随同一面板注册/清理；Shell 不按模块名分支，也不持有 Session 或归档状态。
 - `plugins.ts` 提供静态贡献绑定与独立的 Tool 可用状态绑定；`module-loader.ts` 负责按版本
   加载可选 UI 模块，再以明确 Host Entry 身份、同一 Root 代次及实际 active 状态挂载。
@@ -52,7 +56,7 @@ Host API / events -> connection -> React-free Client Models
   `src/workspace/directory-picker`，不混入 Workspace Step Snapshot 或 Session 事实。
   目录浏览使用管理令牌保护的 POST API，只列文件夹，至多返回 500 项并提示截断；隐藏
   目录默认不显示。未指定目录的浏览从 Host home 开始，但不预选 Workspace。用户选择工作区并发送首条消息时才把 `workspaceRoot` 发送给 Host，Host 重新校验目录。首条消息发送失败时
-  草稿留在已创建会话，界面要求核对，不自动重复创建或发送。
+  草稿留在已创建会话，界面要求核对，不自动重复创建或发送。创建和发送成功后立即继续首条消息流程，列表与历史在后台核对，不等待全量刷新才进入会话。
   切换到已有会话或离开创建流程不会留下空 Session。候选列表只是浏览器读投影，不是第二套
   Workspace 注册表，Workspace 的规范身份与文件边界仍由 Host Workspace 能力所有。
 
@@ -60,20 +64,34 @@ Settings 描述与 Client Model 位于 `src/settings`；审批 Client Model 和 
 `src/approval`。工作区不提供 Plan、Memory、Tasks、Workflow、Context、Subagents 或执行轨迹的独立页面；
 这些 Host 能力及 Session Feature 状态不因此删除。Todo、Goal 按需贡献主会话卡片，System Prompt 的最新快照位于主会话顶部，Subagents 与其他 Tool renderer 只在“工具调用”子页面展开完整调用证据。
 tmux 不占用独立工作区页面，而是作为模块功能贡献到当前会话的通用右侧栏。Skills 声明全局左栏入口，并用自己的 React-free Client Model、目录侧栏
-与正文视图替换默认会话导航；目录仍由当前 Session 的 Host Workspace 决定。Models 声明设置区入口并拥有自己的 React-free
+与正文视图替换默认会话导航；通过独立 Connection Control 展示用户源和 WebUI 启动工作区的
+现有技能，无需选择或创建 Session。支持文件夹／单个 `SKILL.md` 手动导入与显式同名覆盖，
+导入草稿在切页后保留；目录、包版本和写入范围由 Skills Host Provider 校验。Models 声明设置区入口并拥有自己的 React-free
 Client Model，连接公开 Settings 描述、按模型上下文覆盖与脱敏 Credentials 状态。密钥输入只写
 后立即从浏览器模型丢弃，快照永不持有原值。通用设置依次展示 WebUI 外观和 composer 命名空间；
 Models/Pricing 另以独立 Host gate 向会话右下角贡献累计缓存命中率；Conversation 只渲染
 通用 `sessionStatus` seat，不导入或解释 Models DTO。没有已完成 attempt 时该 seat 不占空间；
 详情中的“部分”表示 Provider 字段覆盖不完整，而不是把未知缓存量计为零。
+同一个 Models/Pricing Consumer 还以独立 `model-cost` seat 在上下文占用旁显示会话累计费用，
+共用既有用量 Client Model 和 Control。详情按币种展示缓存／输出分项及峰谷时段费用；
+浏览器只格式化 Host 已保存的金额，不计算费率或换汇。费用缺失、进行中和估算均明确标注。
+Context 通过独立的 `context-occupancy-webui-control` gate 贡献同一状态栏中的占用圆环与
+百分比；详情展示模型窗口、估算用量和系统提示词／工具定义／对话消息分项。计数由 Host
+Context 模块提供，浏览器不扫描历史或自行数 Token。缺少可靠快照或窗口时隐藏占用；
+切换 Session、断线或 Host 代次变化会清除旧读数。它与会话累计用量独立，也不参与预算准入。
 System Prompt 历史同样使用独立 Host gate，并通过通用 ledger contribution 提供请求时只读快照；
 Conversation 不导入提示词 DTO，只把该贡献的最新快照放在主会话顶部；完整提示词历史保留在 Host 数据中。
 首次有效快照和内容变化分别显示折叠行，正文只在展开时挂载；禁用 UI Consumer 只撤销展示，不删除后端历史。
+提示词模块在同一 Host 实例内缓存已验证快照和展开状态；普通后台核对失败或暂时读到不完整历史时
+保持已有内容，返回缓存会话时同步恢复并重新核对。断线、实例变化、明确撤销和卸载仍清理旧展示。
 `theme.ts` 只把 Host Settings 快照投影为根元素的主题、语言和字号，不另存一份偏好事实。
 各模块 UI Consumer 提供自己的英文文案，Shell 不按模块 ID 翻译；会话正文和工作区文件保持原文。需要操作 Session Feature 的专用界面
 只转发显示过的 token/action/feedback；过期确认必须重查。
 Todo 模块只显示当前 UserTurn 的整表进度；Goal 模块显示持久 phase、进程内 activation、
 轮次及带 revision 的人工操作。浏览器不生成自动 Goal round，也不把 UI 快照当作授权来源。
+Goal 与开发目标卡只在目标或会话身份变化时重置确认／修改状态，普通页面往返保留当前界面。
+同一会话临时读取失败或正在变更时保留已验证内容，并暂停旧操作资格；真实空结果、运行终态、
+会话或实例变化仍撤销对应内容，后台结果不能恢复已失效的确认或权限。
 没有 Runtime 状态迁入 React，也没有在 Tools 下集中实现这些业务能力。
 
 SessionFeature 的可选 `data` 是模块拥有的只读展示投影；Apps 只传递，不解释字段。
@@ -84,6 +102,8 @@ Subagents UI 用真实子记录身份及 parentRunId 关联 `spawn_agent` 调用
 模块才提供懒加载 xterm 的逐键输入、启动、resize 与关闭，并在创建时由 Host 固化 Session 权限和 Shell sandbox；
 Files 使用单列可展开树；Terminal 通过有界 SSE attachment 接收原始 PTY 输出，输入和 resize 携带当前 attachment identity，
 后台 roster 核对不传画面、不切换 loading，也不重建 emulator，
+普通页面往返保留文档读取结果、图片／PDF 的本地 Blob URL 和终端 emulator。隐藏时停止终端订阅与输入，
+返回后获取新 attachment，同时保留旧画面；资源在实际 DOM 移除时释放，包含隐藏期间撤销模块的情况。
 不把 tmux 观察入口升级成隐式执行 authority。历史 Tool 在 Host 入口确认不可用时标注并可前往插件管理，不删除历史正文。
 
 CSS/HTML 无内联执行；浏览器 bundle 不携带 Node Provider 或密钥。当前正文以安全纯文本显示，
@@ -100,7 +120,8 @@ React/Cordis 运行库，业务模块不是各自打包一份 React。
 
 ## 界面代码更新
 
-已启动的新版页面每 3 秒检查同源 `/assets/ui-modules.json`。仅修改业务 UI 后运行：
+已启动的新版页面每 3 秒检查同源 `/assets/ui-modules.json`。在实际提供静态资源的部署目录中，
+仅修改业务 UI 后运行：
 
 ```sh
 npm run typecheck
@@ -111,6 +132,10 @@ npm run build:webui-client
 Host 代码替换仍使用自己的受控生命周期，不能把 UI 重挂载当作 Host 更新成功。
 构建先完成整个编译，再写带哈希的模块/chunk，最后原子替换清单。编译失败保留已发布版本。
 静态服务仅允许固定资源和严格格式的本地模块路径，保留 CSP、nosniff 与 HEAD/404 语义。
+
+`npm run webui` 会复制源码、依赖并构建隔离发布，再从该发布目录启动。工作区中的构建不会
+更新已经启动的隔离发布，浏览器刷新也仍会读取原发布。使用这一入口时，源码修改后需要重新
+启动 `npm run webui` 生成新发布，再保存草稿并刷新页面；不能把工作区构建成功当作运行实例已更新。
 
 - 模块代码变更：先下载/校验新导出，再卸载旧 Browser 插件、激活新插件；一次 slot batch
   发布完整结果，保留面板选择和既有导航次序。Session、Run 镜像、连接、草稿及无关面板实例不重建。
@@ -126,7 +151,11 @@ Host 代码替换仍使用自己的受控生命周期，不能把 UI 重挂载�
 长时间频繁开发更新可在保存草稿后显式刷新。这里不是远程插件下载或任意代码执行管理 API。
 
 验证入口：`npm run test:webui-next`、`npm run test:webui-next:browser`、
-`npm run test:module-boundaries`、`npm run test:webui-code-reload:browser`。
+`npm run test:webui-navigation:browser`、`npm run test:webui-components:browser`、`npm run test:module-boundaries`、`npm run test:webui-code-reload:browser`。
+导航验收用生产 React 组件与本地 HTTP 固定响应检查桌面和窄屏往返、阅读状态、目录展开、
+不变历史的请求复用，以及隐藏 Effects 暂停、面板别名和注册移除／替换的释放；不启动 Host 或外部 Provider。
+组件导航验收使用实际 Goal／Todo／审批、开发目标卡、输入区选择器、上下文／用量／费用、文档与终端组件，
+检查已有内容和展开状态不因恢复而清空，临时读取失败时保留展示并撤销旧写资格，真实空结果、终态及撤销仍生效。
 代码更新测试在临时副本修改真实 Skills UI 源码并重新构建，覆盖同页替换、草稿/选择保留、
 编译/导入/激活/渲染失败、修复、真实 Skills 启停和 core 刷新提示。Host 未声明安全停用
 的模块会拒绝停用，不通过前端隐藏绕过。

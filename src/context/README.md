@@ -19,6 +19,27 @@ Models adapter ──窗口与请求前计数─┘             │
 让它针对历史 `oldEntries` 生成 checkpoint，再重新投影一次。Context 不生成摘要、
 不修改 Session，也不把整个最终模型请求交给 Compaction。
 
+## WebUI 上下文占用
+
+独立的 `context-occupancy` Consumer 观察最终投影，并在 Storage Domain
+`context-occupancy` 中按 Session 保留最近 20 个计数快照。快照仅包含身份、计数和摘要
+hash，不保存提示词正文、Tool schema、响应正文或图片地址；删除 Session 会清理这些数据，
+Run 结束与页面刷新不会清空快照。
+
+展示优先使用请求前计数；没有计数时，使用同一模型及请求配置下的 Provider 输入用量为
+基准，加上后续投影与已提交输出的启发式增减。Wish 的 `usage.inputTokens` 已包含缓存
+输入，不再另加缓存读写。没有可用基准时，文本请求退回字符与结构开销估算；无法可靠
+计量的多模态内容、尚未重新投影的压缩结果或被拒绝的请求不产生确定占用。
+
+`context-occupancy-webui-control` 通过通用只读 control 暴露计量投影，独立浏览器模块向
+`sessionStatus` 贡献圆环、近似百分比与可展开的用量分项。分母是完整模型窗口；系统／
+工具／对话分项是启发式构成，不保证相加等于 Provider 校准后的总量。缺少快照或窗口
+时隐藏，不把未知显示成零。该计量不参与硬预算准入、压缩决策或会话累计用量统计。
+
+可运行 `npm run test:context-occupancy` 验证计量、持久化和客户端边界；
+`npm run test:context-occupancy:browser` 验证真实浏览器交互。浏览器脚本仅为占用数值
+提供固定响应，真实 Host 启动、control 注册及插件启停仍参与验收，不调用真实 Provider。
+
 ## 契约与目录
 
 Context 模块不会在超限时自行压缩。它的主要契约包括：

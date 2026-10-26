@@ -57,6 +57,7 @@
     goal: true
     goalRoundDriver: true
     plan: true
+    wishDevelopment: true
     tasks: true
     workflow: true
     workflowContinuations: true
@@ -75,6 +76,8 @@
     agents: true
     application: true
     agentProfiles: true
+    evolution: true
+    evolutionTrigger: true
     experiments: true
     candidates: true
   config:
@@ -122,7 +125,7 @@
         backendId: file
         currency: !!js >-
           launch.environment.WISH_MODEL_PRICING_CURRENCY === undefined || launch.environment.WISH_MODEL_PRICING_CURRENCY === ''
-            ? 'USD'
+            ? 'CNY'
             : launch.environment.WISH_MODEL_PRICING_CURRENCY
 
     - id: system-prompt-history-storage
@@ -216,7 +219,7 @@
 
     - id: memory-write-tool
       name: 'cordis:memory-write-tool'
-      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_MEMORY_WRITE_ENABLED === '0'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || ((launch.surface === 'cli' && launch.argv[0] === 'child') && !(!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST)) || launch.environment.WISH_MEMORY_TOOLS_ENABLED === '0' || launch.environment.WISH_MEMORY_WRITE_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
 
     - id: memory-tool-guidance
       name: 'cordis:memory-tool-guidance'
@@ -232,7 +235,7 @@
 
     - id: memory-session-feature
       name: 'cordis:memory-session-feature'
-      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_SESSION_FEATURE_ENABLED === '0'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_SESSION_FEATURE_ENABLED !== '1'
 
     - id: memory-subagent-resources
       name: 'cordis:memory-subagent-resources'
@@ -240,7 +243,7 @@
 
     - id: memory-curation
       name: 'cordis:memory-curation'
-      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
       management:
         activation: user
         constraint: !!js >-
@@ -252,19 +255,20 @@
            launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
       config:
         backendId: file
-        automatic: !!js launch.environment.WISH_MEMORY_AUTO_CURATION === '1'
-        intervalMs: !!js >-
-          launch.environment.WISH_MEMORY_CURATION_INTERVAL_MS ? Number(launch.environment.WISH_MEMORY_CURATION_INTERVAL_MS) : undefined
-        maxConcurrent: !!js >-
-          launch.environment.WISH_MEMORY_CURATION_MAX_CONCURRENT ? Number(launch.environment.WISH_MEMORY_CURATION_MAX_CONCURRENT) : undefined
-        maxAttempts: !!js >-
-          launch.environment.WISH_MEMORY_CURATION_MAX_ATTEMPTS ? Number(launch.environment.WISH_MEMORY_CURATION_MAX_ATTEMPTS) : undefined
-        timeoutMs: !!js >-
-          launch.environment.WISH_MEMORY_CURATION_TIMEOUT_MS ? Number(launch.environment.WISH_MEMORY_CURATION_TIMEOUT_MS) : undefined
+        automatic: !!js launch.environment.WISH_MEMORY_AUTO_CURATION === undefined || launch.environment.WISH_MEMORY_AUTO_CURATION === '' || launch.environment.WISH_MEMORY_AUTO_CURATION === '1'
+        model: !!js launch.environment.WISH_MEMORY_CURATION_MODEL || undefined
+        consolidationModel: !!js launch.environment.WISH_MEMORY_CONSOLIDATION_MODEL || undefined
+        directory: !!js launch.environment.WISH_MEMORY_DIRECTORY || undefined
+        maxUnusedDays: !!js >-
+          launch.environment.WISH_MEMORY_MAX_UNUSED_DAYS !== undefined ? Number(launch.environment.WISH_MEMORY_MAX_UNUSED_DAYS) : undefined
+        minIdleMs: !!js >-
+          launch.environment.WISH_MEMORY_CURATION_MIN_IDLE_MS !== undefined ? Number(launch.environment.WISH_MEMORY_CURATION_MIN_IDLE_MS) : undefined
+        maxAgeMs: !!js >-
+          launch.environment.WISH_MEMORY_CURATION_MAX_AGE_MS ? Number(launch.environment.WISH_MEMORY_CURATION_MAX_AGE_MS) : undefined
 
     - id: memory-runtime-evidence
       name: 'cordis:memory-runtime-evidence'
-      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
       management:
         activation: user
         constraint: !!js >-
@@ -277,7 +281,7 @@
 
     - id: memory-workflow-evidence
       name: 'cordis:memory-workflow-evidence'
-      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1' || launch.environment.WISH_WORKFLOW_ENABLED === '0'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1') || launch.environment.WISH_WORKFLOW_ENABLED === '0'
       management:
         activation: user
         constraint: !!js >-
@@ -285,6 +289,19 @@
           (launch.surface === 'cli' && launch.argv[0] === 'child') ||
           (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) ||
           launch.environment.WISH_WORKFLOW_ENABLED === '0' ||
+          (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined &&
+           launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' &&
+           launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
+
+    - id: memory-curation-trigger
+      name: 'cordis:memory-curation-trigger'
+      disabled: !!js launch.environment.WISH_MEMORY_ENABLED === '0' || (launch.surface === 'cli' && launch.argv[0] === 'child') || (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) || (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' && launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
+      management:
+        activation: user
+        constraint: !!js >-
+          launch.environment.WISH_MEMORY_ENABLED === '0' ||
+          (launch.surface === 'cli' && launch.argv[0] === 'child') ||
+          (!!launch.environment.WISH_CHILD_RESOURCES_FILE || !!launch.environment.WISH_CHILD_RESOURCES_DIGEST) ||
           (launch.environment.WISH_MEMORY_CURATION_ENABLED !== undefined &&
            launch.environment.WISH_MEMORY_CURATION_ENABLED !== '' &&
            launch.environment.WISH_MEMORY_CURATION_ENABLED !== '1')
@@ -532,6 +549,9 @@
             ? undefined
             : Number(launch.environment.WISH_CONTEXT_RESERVED_OUTPUT_TOKENS)
 
+    - id: context-occupancy
+      name: 'cordis:context-occupancy'
+
     - id: system-prompt
       name: 'cordis:system-prompt'
 
@@ -559,6 +579,32 @@
           launch.environment.WISH_GOAL_MAX_ROUNDS === undefined || launch.environment.WISH_GOAL_MAX_ROUNDS === ''
             ? undefined
             : Number(launch.environment.WISH_GOAL_MAX_ROUNDS)
+
+    - id: development
+      name: 'cordis:development'
+      disabled: !!js launch.environment.WISH_DEVELOPMENT_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+      config:
+        backendId: file
+
+    - id: development-context
+      name: 'cordis:development-context'
+      disabled: !!js launch.environment.WISH_DEVELOPMENT_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: development-policy
+      name: 'cordis:development-policy'
+      disabled: !!js launch.environment.WISH_DEVELOPMENT_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: tool-development
+      name: 'cordis:development-tools'
+      disabled: !!js launch.environment.WISH_DEVELOPMENT_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: development-session-feature
+      name: 'cordis:development-session-feature'
+      disabled: !!js launch.environment.WISH_DEVELOPMENT_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0'
+
+    - id: development-webui-control
+      name: 'cordis:development-webui-control'
+      disabled: !!js launch.environment.WISH_DEVELOPMENT_ENABLED === '0' || launch.environment.WISH_PLAN_ENABLED === '0' || launch.surface !== 'webui'
 
     - id: goal-context
       name: 'cordis:goal-context'
@@ -820,6 +866,52 @@
     - id: web-tool-guidance
       name: 'cordis:web-tool-guidance'
 
+    # Title services share a local scope; adding this feature does not rebuild app.
+    - id: session-title
+      name: 'cordis:group'
+      group: true
+      isolate:
+        sessionTitle: true
+        sessionTitleGenerator: true
+      config:
+        - id: session-title-model
+          name: 'cordis:session-title-model'
+          disabled: !!js >-
+            launch.environment.WISH_SESSION_TITLE_ENABLED === '0' ||
+            (launch.surface !== 'webui' && launch.environment.WISH_SESSION_TITLE_ENABLED !== '1') ||
+            (launch.surface === 'cli' && launch.argv[0] === 'child')
+          config:
+            model: !!js launch.environment.WISH_SESSION_TITLE_MODEL || undefined
+            maxInputBytes: 4096
+            maxOutputTokens: !!js >-
+              launch.environment.WISH_SESSION_TITLE_MAX_OUTPUT_TOKENS ? Number(launch.environment.WISH_SESSION_TITLE_MAX_OUTPUT_TOKENS) : undefined
+
+        - id: session-title-storage
+          name: 'cordis:session-title-storage'
+          disabled: !!js >-
+            launch.environment.WISH_SESSION_TITLE_ENABLED === '0' ||
+            (launch.surface !== 'webui' && launch.environment.WISH_SESSION_TITLE_ENABLED !== '1') ||
+            (launch.surface === 'cli' && launch.argv[0] === 'child')
+          config:
+            backendId: file
+            maxConcurrent: 1
+            maxAttempts: 3
+            timeoutMs: !!js >-
+              launch.environment.WISH_SESSION_TITLE_TIMEOUT_MS ? Number(launch.environment.WISH_SESSION_TITLE_TIMEOUT_MS) : 20000
+            retryBaseMs: 1000
+            retryMaxMs: 30000
+            maxTitleBytes: 80
+            fallbackMaxCodePoints: 60
+            fallbackMaxBytes: 120
+            seedMaxCodePoints: 2000
+
+        - id: session-title-session-feature
+          name: 'cordis:session-title-session-feature'
+          disabled: !!js >-
+            launch.environment.WISH_SESSION_TITLE_ENABLED === '0' ||
+            (launch.surface !== 'webui' && launch.environment.WISH_SESSION_TITLE_ENABLED !== '1') ||
+            (launch.surface === 'cli' && launch.argv[0] === 'child')
+
     - id: agent-loop
       name: 'cordis:agent-loop'
 
@@ -914,6 +1006,38 @@
       name: 'cordis:agent-profile-cli'
       disabled: !!js launch.surface !== 'cli'
 
+    - id: evolution
+      name: 'cordis:evolution'
+      experiment: exclude
+      disabled: !!js launch.environment.WISH_EVOLUTION_ENABLED !== '1'
+
+    - id: evolution-candidate-pipeline
+      name: 'cordis:evolution-candidate-pipeline'
+      experiment: exclude
+      disabled: !!js launch.environment.WISH_EVOLUTION_ENABLED !== '1'
+
+    - id: evolution-runtime-observer
+      name: 'cordis:evolution-runtime-observer'
+      experiment: exclude
+      disabled: !!js launch.environment.WISH_EVOLUTION_ENABLED !== '1'
+
+    - id: evolution-cli
+      name: 'cordis:evolution-cli'
+      experiment: exclude
+      disabled: !!js launch.environment.WISH_EVOLUTION_ENABLED !== '1' || launch.surface !== 'cli'
+
+    - id: evolution-trigger
+      name: 'cordis:evolution-trigger'
+      experiment: exclude
+      disabled: !!js launch.environment.WISH_EVOLUTION_ENABLED !== '1' || !['advisory', 'automatic'].includes(launch.environment.WISH_EVOLUTION_TRIGGER_MODE) || launch.environment.WISH_EXPERIMENT_WORKER === '1'
+      config:
+        mode: !!js launch.environment.WISH_EVOLUTION_TRIGGER_MODE || 'off'
+
+    - id: evolution-webui-control
+      name: 'cordis:evolution-webui-control'
+      experiment: exclude
+      disabled: !!js launch.environment.WISH_EVOLUTION_ENABLED !== '1' || launch.surface !== 'webui'
+
     - id: plan-session-feature
       name: 'cordis:plan-session-feature'
       disabled: !!js launch.environment.WISH_PLAN_ENABLED === '0'
@@ -982,11 +1106,17 @@
     - id: models-webui-control
       name: 'cordis:models-webui-control'
       disabled: !!js launch.surface !== 'webui'
+    - id: skills-webui-control
+      name: 'cordis:skills-webui-control'
+      disabled: !!js launch.surface !== 'webui' || launch.environment.WISH_SKILLS_ENABLED === '0'
     - id: permissions-webui-control
       name: 'cordis:permissions-webui-control'
       disabled: !!js launch.surface !== 'webui'
     - id: model-usage-webui-control
       name: 'cordis:model-usage-webui-control'
+      disabled: !!js launch.surface !== 'webui'
+    - id: context-occupancy-webui-control
+      name: 'cordis:context-occupancy-webui-control'
       disabled: !!js launch.surface !== 'webui'
     - id: system-prompt-history-webui-control
       name: 'cordis:system-prompt-history-webui-control'

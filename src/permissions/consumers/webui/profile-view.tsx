@@ -30,7 +30,7 @@ export function PermissionProfileComposerItem({ model, sessionId, busy }: {
     <span className="composer-model-name">{t("权限", "Access")}</span>
     <label className="sr-only" htmlFor="wish-permission-profile">{t("下次运行的权限", "Permission for the next run")}</label>
     <select id="wish-permission-profile" aria-label={t("下次运行的权限", "Permission for the next run")}
-      value={view?.selected ?? ""} disabled={!view || state.pending || state.loading}
+      value={view?.selected ?? ""} disabled={!view || !state.writable || state.pending || state.loading}
       onChange={(event) => { void model.select(event.target.value as PermissionProfile).catch(() => {}); }}>
       {!view ? <option value="" disabled>{t("读取中", "Loading")}</option> : null}
       {view?.availableProfiles.map((profile) => <option key={profile} value={profile}>{t(...labels[profile])}</option>)}

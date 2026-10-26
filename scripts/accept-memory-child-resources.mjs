@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -62,7 +62,31 @@ test("child gets an immutable task-filtered snapshot and a durable private propo
     finally { await restored.close(); }
     await assert.rejects(f.child.decide({ candidateId: proposed.id, expectedCandidateVersion: 1, decision: "accept", operationId: "forge-human", actor: user, reason: "Forge" }), /cannot accept/u);
     await assert.rejects(f.child.changeStatus({ id: "visible", expectedVersion: 1, status: "deleted", operationId: "forge-delete", actor: user, reason: "Forge" }), /cannot mutate/u);
+    await assert.rejects(f.child.consolidate({ operationId: "forge-curation", actor: { kind: "curation", id: "memory-curation" }, reason: "Forge", expectedRevision: 0, upserts: [], retirements: [] }), /cannot consolidate/u);
   } finally { await f.close(); }
+});
+
+test("file memory inherits the entire handbook, summary and Skills beyond inline resource limits", async () => {
+  const f = await fixture(); let child;
+  try {
+    const files = ["memory_summary.md", "MEMORY.md", ...Array.from({ length: 120 }, (_, index) => `skills/procedure-${index}/SKILL.md`)];
+    await f.parent.consolidate({ operationId: "file-memory", expectedRevision: (await f.parent.state()).revision,
+      actor: { kind: "curation", id: "memory-curation" }, reason: "File workspace fixture", retirements: [],
+      upserts: files.map((path, index) => ({ ...body, id: `file-${index}`, path, expectedVersion: 0,
+        content: path === "memory_summary.md" ? "v1\nRead MEMORY.md and the indexed Skills." : "Reusable procedure.\n".repeat(1100) })) });
+    const identity = { ...childIdentity, id: "file-memory-child" };
+    const resources = await f.resources.prepare({ ...f.request, task: "unrelated new task" }, identity);
+    assert.equal(resources[0].schemaVersion, 2);
+    assert.ok(JSON.stringify(resources).length < 1000);
+    const manifest = await f.exchange.writeInputResources(identity, f.request, resources);
+    child = await ChildSnapshotMemory.open(f.exchange, manifest);
+    assert.equal((await child.state()).documents.length, 122);
+    assert.equal((await child.read("file-121")).path, "skills/procedure-119/SKILL.md");
+    await assert.rejects(child.propose(f.proposal), /not delegated/);
+    const path = join(f.exchange.childDataDirectory(identity.id), `memory-snapshot-${resources[0].payload.digest}.json`);
+    await writeFile(path, "{}");
+    await assert.rejects(ChildSnapshotMemory.open(f.exchange, manifest), /digest mismatch/);
+  } finally { await child?.close(); await f.close(); }
 });
 
 test("parent imports only sealed successful child proposals, idempotently, without acceptance", async () => {
@@ -131,7 +155,10 @@ test("consumer close aborts and drains in-flight snapshot preparation", async ()
   let release, entered;
   const started = new Promise(resolve => { entered = resolve; });
   const blocked = new Promise(resolve => { release = resolve; });
-  const resources = new SubagentMemoryResources({ memory: { async snapshot() { entered(); await blocked; return { schemaVersion: 1, libraryId: "knowledge", revision: 0, documents: [] }; } }, exchange: {}, subagents: {}, evidence: {} });
+  const resources = new SubagentMemoryResources({ memory: {
+    async state() { entered(); await blocked; return { documents: [] }; },
+    async snapshot() { return { schemaVersion: 1, libraryId: "knowledge", revision: 0, documents: [] }; },
+  }, exchange: {}, subagents: {}, evidence: {} });
   const preparation = resources.prepare({ task: "inspect", allowedCapabilities: ["runtime.read"] }, childIdentity);
   await started;
   let closed = false;

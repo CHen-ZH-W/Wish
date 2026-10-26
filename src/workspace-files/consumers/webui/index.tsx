@@ -25,6 +25,8 @@ function WorkspaceFilesSidebar({ client, sessionId, actions }: { client: Workspa
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(["."]));
   const lifetime = useRef<AbortController | null>(null);
   const levelsRef = useRef(levels); levelsRef.current = levels;
+  const expandedRef = useRef(expanded); expandedRef.current = expanded;
+  const scope = useRef({ client, sessionId });
 
   const load = useCallback(async (path: string, signal: AbortSignal, preserve = true) => {
     setLevels(current => ({ ...current, [path]: preserve && current[path]?.phase === "ready" ? current[path] : { phase: "loading" } }));
@@ -40,10 +42,13 @@ function WorkspaceFilesSidebar({ client, sessionId, actions }: { client: Workspa
 
   useEffect(() => {
     const controller = new AbortController(); lifetime.current = controller;
-    setLevels({}); setExpanded(new Set(["."]));
-    void load(".", controller.signal, false);
+    const changed = scope.current.client !== client || scope.current.sessionId !== sessionId;
+    scope.current = { client, sessionId };
+    if (changed) { setLevels({}); setExpanded(new Set(["."])); }
+    const paths = changed ? ["."] : new Set([".", ...expandedRef.current]);
+    for (const path of paths) void load(path, controller.signal, !changed);
     return () => { controller.abort(); if (lifetime.current === controller) lifetime.current = null; };
-  }, [load]);
+  }, [client, sessionId, load]);
 
   const toggle = useCallback((path: string) => {
     const controller = lifetime.current; if (!controller) return;

@@ -1,5 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {} from "../../../apps/webui/client/plugins.js";
 import type { SessionFeatureView } from "../../../apps/session-features.js";
 import { useLanguage, useText } from "../../../apps/webui/client/i18n.js";
@@ -13,7 +13,12 @@ function GoalConversationCard({ model, sessionId }: { readonly model: FeaturesCl
   const goal = parseGoalView(view?.data);
   const [confirm, setConfirm] = useState<{ readonly view: SessionFeatureView; readonly action: string; readonly label: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { setConfirm(null); setError(null); }, [sessionId, goal?.id]);
+  const identity = useRef({ sessionId, goalId: goal?.id });
+  useEffect(() => {
+    if (identity.current.sessionId === sessionId && identity.current.goalId === goal?.id) return;
+    identity.current = { sessionId, goalId: goal?.id };
+    setConfirm(null); setError(null);
+  }, [sessionId, goal?.id]);
   if (!view || !goal) return null;
   const stale = confirm !== null && JSON.stringify(confirm.view.token) !== JSON.stringify(view.token);
   const phase = phaseLabel(goal.phase, language);

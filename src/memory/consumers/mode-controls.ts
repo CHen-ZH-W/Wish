@@ -1,6 +1,6 @@
 import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import type { Context } from "@deepseek-ai/cordis";
-const names = ["memory_search", "memory_read"];
+const names = ["memory_search", "memory_read", "memory_list"];
 export const MemoryPlanControls = { name: "memory-plan-controls", inject: ["memory", "plan"], apply(ctx: Context) {
   const releases = names.map(toolName => ctx.plan.registerModeControl({ toolName, resourcePrefix: "memory." }));
   new PluginWorkOwner(ctx, { code: "memory_mode_controls", codeReload: true,

@@ -1,5 +1,5 @@
 import { Service, type Context } from "@deepseek-ai/cordis";
-import type { ChangeMemoryStatusRequest, DecideMemoryRequest, Memory, MemoryCandidate, MemoryDocument, MemoryQuery, MemorySnapshot, MemoryState, ProposeMemoryRequest } from "./types.js";
+import type { ChangeMemoryStatusRequest, ConsolidateMemoryRequest, DecideMemoryRequest, Memory, MemoryCandidate, MemoryDocument, MemoryQuery, MemorySnapshot, MemoryState, ProposeMemoryRequest } from "./types.js";
 export abstract class MemoryService extends Service implements Memory {
   constructor(ctx: Context) { super(ctx, "memory"); }
   abstract readonly libraryId: string;
@@ -9,6 +9,7 @@ export abstract class MemoryService extends Service implements Memory {
   abstract propose(input: ProposeMemoryRequest): Promise<MemoryCandidate>;
   abstract decide(input: DecideMemoryRequest): Promise<MemoryCandidate>;
   abstract changeStatus(input: ChangeMemoryStatusRequest): Promise<MemoryDocument>;
+  abstract consolidate(input: ConsolidateMemoryRequest): Promise<number>;
   abstract snapshot(input?: MemoryQuery): Promise<MemorySnapshot>;
   abstract close(): Promise<void>;
 }

@@ -13,7 +13,7 @@ import { MemoryRuntime, InMemoryStateStore } from "../dist/memory/index.js";
 import { MemoryWriteTool, captureCurrentSessionEvidence } from "../dist/memory/consumers/model-tools.js";
 import { hash } from "../dist/memory/validation.js";
 
-test("Memory proposal follows the Application Session lease, never the default data root", async () => {
+test("Memory note follows the Application Session lease, never the default data root", async () => {
   const root = await mkdtemp(join(tmpdir(), "wish-memory-session-isolation-"));
   const memory = new MemoryRuntime(new InMemoryStateStore());
   const owner = new Context();
@@ -27,7 +27,9 @@ test("Memory proposal follows the Application Session lease, never the default d
     }] });
     const registry = new ToolRegistry();
     // A default manager with identical logical IDs must not be used by this Consumer.
+    const notes = [];
     owner.provide("memory", memory);
+    owner.provide("memoryCuration", { async addNote(input) { notes.push(input); return { noteId: "note", status: "recorded" }; } });
     owner.provide("tools", { register: definition => registry.register(definition) });
     owner.provide("sessions", defaults);
     await owner.plugin(MemoryWriteTool);
@@ -43,7 +45,7 @@ test("Memory proposal follows the Application Session lease, never the default d
         model: { async *stream(request) {
           yield { type: "start", model: request.model };
           if (invocations++ === 0) yield { type: "tool_call", call: { id: "write-candidate", name: "memory_write", argumentsJson: JSON.stringify({
-            id: "test-knowledge", expectedVersion: 0, title: "Actual source", content: "Derived from custom Session", appliesTo: "fixture", keywords: [], reason: "reviewable",
+            note: "Remember the facts from this custom Session.",
           }) } };
           else yield { type: "text_delta", text: "Candidate submitted" };
           yield { type: "done", finishReason: invocations === 1 ? "tool_calls" : "stop" };
@@ -53,7 +55,8 @@ test("Memory proposal follows the Application Session lease, never the default d
     const runtime = new Runtime({ stepPipeline: pipeline });
     const handle = runtime.startRun({ id: "agent" }, { runId: "same-run", scope: "same-session", inputSource: "user", payload: { text: "CUSTOM ACTUAL EVIDENCE" } });
     assert.equal((await handle.completion).status, "completed");
-    const candidate = (await memory.state()).candidates[0];
+    const candidate = notes[0];
+    assert.equal((await memory.state()).candidates.length, 0);
     assert.ok(candidate, "memory_write must succeed with the current Session-bound Port");
     const history = await custom.manager.readHistory({ sessionId: "same-session" });
     const prefix = history.records.filter(record => record.kind === "message" && record.runId === "same-run" && record.sequence <= candidate.evidence[0].throughSequence);

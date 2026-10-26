@@ -15,6 +15,8 @@ export interface MemoryActor {
   readonly runId?: string;
 }
 export interface MemoryContent {
+  /** Relative file in the consolidated memory workspace, when file-backed. */
+  readonly path?: string;
   readonly title: string;
   readonly content: string;
   /** Routing guidance, never a substitute for access authorization. */
@@ -47,7 +49,7 @@ export interface MemoryAudit {
   readonly revision: number;
   readonly operationId: string;
   readonly requestDigest: string;
-  readonly action: "propose" | "accept" | "reject" | "status";
+  readonly action: "propose" | "accept" | "reject" | "status" | "consolidate";
   readonly targetId: string;
   readonly actor: MemoryActor;
   readonly reason: string;
@@ -84,6 +86,24 @@ export interface ChangeMemoryStatusRequest extends MemoryOperation {
   readonly status: Exclude<MemoryStatus, "accepted">;
   readonly supersededBy?: string;
 }
+export interface MemoryUpsert extends MemoryContent {
+  readonly id: string;
+  readonly expectedVersion: number;
+}
+export interface MemoryRetirement {
+  readonly id: string;
+  readonly expectedVersion: number;
+  readonly supersededBy?: string;
+}
+/** Host-owned automatic consolidation; one atomic, audited update of the library. */
+export interface ConsolidateMemoryRequest extends MemoryOperation {
+  readonly expectedRevision: number;
+  readonly upserts: readonly MemoryUpsert[];
+  readonly retirements: readonly MemoryRetirement[];
+}
+export class MemoryRevisionConflictError extends Error {
+  constructor() { super("Memory changed during consolidation"); }
+}
 export interface MemoryQuery {
   readonly text?: string;
   readonly limit?: number;
@@ -104,6 +124,7 @@ export interface Memory {
   propose(input: ProposeMemoryRequest): Promise<MemoryCandidate>;
   decide(input: DecideMemoryRequest): Promise<MemoryCandidate>;
   changeStatus(input: ChangeMemoryStatusRequest): Promise<MemoryDocument>;
+  consolidate(input: ConsolidateMemoryRequest): Promise<number>;
   snapshot(input?: MemoryQuery): Promise<MemorySnapshot>;
   close(): Promise<void>;
 }

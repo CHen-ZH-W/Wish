@@ -86,6 +86,8 @@ export default { inject: ["tools", "filesystem"], apply(ctx) {
     f.boot = async () => {
       f.booted = await bootstrap({ surface: "webui", cwd: directory, homeDirectory: directory,
         environment: { WISH_DATA_DIR: join(directory, "data"), WISH_WEBUI_WORKSPACE_ROOT: directory,
+          // Probe ordinals and Step barriers belong to the main Run alone.
+          WISH_SESSION_TITLE_ENABLED: "0",
           WISH_MODELS_JSON: JSON.stringify(modelConfig) },
         management: managedWebUi({ directory: join(directory, "management"), port: 0 }) });
       f.ctx = f.booted.surfaceContext;

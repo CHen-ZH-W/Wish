@@ -16,20 +16,23 @@ export default {
     const work = new PluginWorkOwner(ctx, { code: "experiment_process", codeReload: true,
       beforeDrain: () => retirement.abort(new Error("experiment_executor_closed")),
     });
-    const remove = ctx.experiments.registerExecutor({ execute: (input, signal) => work.run(() => execute(input, AbortSignal.any([signal, retirement.signal]), ctx.launch.environment)) });
+    const remove = ctx.experiments.registerExecutor({ execute: (input, signal) => work.run(() => executeProfileTask(input, AbortSignal.any([signal, retirement.signal]), ctx.launch.environment)) });
     ctx.effect(() => remove, "experiment executor");
   },
 };
 
-async function execute(input: ExperimentExecutionInput, signal: AbortSignal, environment: Readonly<Record<string, string | undefined>>): Promise<ExperimentExecutionResult> {
+/** Shared isolated Runtime invocation. Calling this function creates no Experiment/evaluation record. */
+export async function executeProfileTask(input: ExperimentExecutionInput, signal: AbortSignal, environment: Readonly<Record<string, string | undefined>>): Promise<ExperimentExecutionResult> {
   signal.throwIfAborted(); await verifyCode(input.snapshot.code);
   if (input.snapshot.candidate) throw new AgentProfileError("experiment_candidate_requires_sandbox");
   if (!["read-only", "workspace-write"].includes(input.snapshot.definition.permissionProfile)) throw new AgentProfileError("experiment_permission_requires_confinement", "Experiments require read-only or workspace-write Tool permissions");
   await mkdir(dirname(input.directory), { recursive: true });
   await mkdir(input.directory, { mode: 0o700 });
+  await mkdir(join(input.directory, "home"), { mode: 0o700 });
+  await mkdir(join(input.directory, "tmp"), { mode: 0o700 });
   const request = join(input.directory, "request.json");
-  await writeFile(join(input.directory, "cordis.json"), experimentDeployment(input.snapshot.deployment, input.directory), { mode: 0o600, flag: "wx" });
-  await writeFile(request, canonical({ schemaVersion: 1, snapshot: input.snapshot, testCase: input.testCase, maxSteps: input.maxSteps }), { mode: 0o600, flag: "wx" });
+  await writeFile(join(input.directory, "cordis.json"), experimentDeployment(input.snapshot.deployment, input.directory, input.snapshot.resources, "sealed", !!input.requestBudget), { mode: 0o600, flag: "wx" });
+  await writeFile(request, canonical({ schemaVersion: 1, snapshot: input.snapshot, testCase: input.testCase, maxSteps: input.maxSteps, ...(input.requestBudget ? { requestBudget: input.requestBudget } : {}) }), { mode: 0o600, flag: "wx" });
   const log = await open(join(input.directory, "worker.log"), "wx", 0o600);
   const started = performance.now();
   let timedOut = false;
@@ -39,10 +42,21 @@ async function execute(input: ExperimentExecutionInput, signal: AbortSignal, env
   let writes = Promise.resolve();
   let outputBytes = 0;
   let child: ReturnType<typeof spawn>;
+  const credentialNames = new Set<string>();
+  const findCredentials = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(findCredentials); return; }
+    if (!value || typeof value !== "object") return;
+    for (const [key, item] of Object.entries(value)) {
+      if (["apiKeyEnv", "fromEnv"].includes(key) && typeof item === "string") credentialNames.add(item);
+      else findCredentials(item);
+    }
+  };
+  findCredentials(input.snapshot.models);
   try {
     child = spawn(process.execPath, [fileURLToPath(new URL("../worker.js", import.meta.url)), request], {
       cwd: input.directory, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe", "ipc"],
-      env: { ...Object.fromEntries(Object.entries(environment).filter(([key]) => !key.startsWith("WISH_") && !["CORDIS_CONFIG", "CORDIS_HMR", "NODE_OPTIONS"].includes(key))),
+      env: { ...Object.fromEntries(Object.entries(environment).filter(([key]) => (!key.startsWith("WISH_") || credentialNames.has(key)) && !["CORDIS_CONFIG", "CORDIS_HMR", "NODE_OPTIONS"].includes(key))),
+        HOME: join(input.directory, "home"), TMPDIR: join(input.directory, "tmp"),
         WISH_EXPERIMENT_WORKER: "1", WISH_AGENT_PROFILE: "", CORDIS_HMR: "0" },
     });
     const kill = (kind: NodeJS.Signals) => {
@@ -53,7 +67,7 @@ async function execute(input: ExperimentExecutionInput, signal: AbortSignal, env
       if (killed) return; killed = true;
       kill("SIGTERM");
       // Keep the escalation even if the leader exits first: its descendants may survive it.
-      cleanup = new Promise<void>(accept => setTimeout(() => { kill("SIGKILL"); accept(); }, 1_000));
+      cleanup = new Promise<void>(accept => setTimeout(() => { kill("SIGKILL"); accept(); }, 2_500));
     };
     const append = (bytes: Buffer) => {
       const remaining = Math.max(0, 512 * 1024 - outputBytes);

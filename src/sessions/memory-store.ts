@@ -122,6 +122,8 @@ export class InMemorySessionStore implements SessionStore {
       state.session = updateSessionMetadataSnapshot({
         session: state.session,
         title: normalized.title,
+        titleSource: normalized.titleSource,
+        expectedTitleRevision: normalized.expectedTitleRevision,
         updatedAt: this.timestamp(),
       });
       return snapshotSession(state.session);

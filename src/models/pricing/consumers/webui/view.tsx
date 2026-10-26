@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { useLanguage, useText } from "../../../../apps/webui/client/i18n.js";
 import { useSnapshot } from "../../../../apps/webui/client/ui/primitives.js";
@@ -15,13 +15,14 @@ export function ModelUsageStatus({
   const state = useSnapshot(model);
   const view = state.sessionId === sessionId ? state.view : null;
   if (!view || view.attempts.completed === 0) return null;
-  return <ModelUsagePopover view={view} />;
+  return <ModelUsagePopover key={sessionId} view={view} />;
 }
 
 function ModelUsagePopover({ view }: { view: SessionModelUsageView }) {
   const t = useText(), language = useLanguage();
   const id = `model-usage-${useId().replaceAll(":", "")}`;
   const trigger = useRef<HTMLButtonElement>(null), panel = useRef<HTMLDivElement>(null);
+  const restoreOpen = useRef(false);
   const [open, setOpen] = useState(false);
   const partial = view.coverage === "partial";
   const percent = view.cacheHitRatio === undefined ? null : formatPercent(view.cacheHitRatio, language);
@@ -29,18 +30,22 @@ function ModelUsagePopover({ view }: { view: SessionModelUsageView }) {
     ? t("缓存 —", "Cache —")
     : t(`缓存命中 ${percent}${partial ? " · 部分" : ""}`, `Cache hit ${percent}${partial ? " · Partial" : ""}`);
   const number = new Intl.NumberFormat(language);
-  useEffect(() => () => {
-    if (panel.current?.matches(":popover-open")) panel.current.hidePopover();
-  }, []);
-
-  const position = () => {
+  const position = useCallback(() => {
     const anchor = trigger.current, node = panel.current;
     if (!anchor || !node) return;
     const box = anchor.getBoundingClientRect(), width = Math.min(312, window.innerWidth - 32);
     const height = node.offsetHeight || 360;
     node.style.left = `${Math.max(16, Math.min(box.right - width, window.innerWidth - width - 16))}px`;
     node.style.top = `${Math.max(8, box.top - height - 8)}px`;
-  };
+  }, []);
+  useEffect(() => {
+    const node = panel.current;
+    if (restoreOpen.current && node) { node.showPopover(); queueMicrotask(position); }
+    return () => {
+      restoreOpen.current = !!node?.matches(":popover-open");
+      if (restoreOpen.current) node!.hidePopover();
+    };
+  }, [position]);
 
   return <div className="model-usage-anchor">
     <button ref={trigger} className="model-usage-trigger" aria-haspopup="dialog" aria-expanded={open}

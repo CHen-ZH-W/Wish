@@ -154,7 +154,7 @@ export class Application extends Service {
       profile?.attachRuntime(() => resources.generation.retire({ reason: "Agent Profile owner released" }));
       const sessionPermissions = dynamicSessionPermissions(this.ctx);
       facade = new ApplicationFacade({
-        sessionFeatures: this.features,
+        sessionFeatures: this.features.forGraph(resources.sessions.manager),
         sessions: resources.sessions,
         models: resources.models,
         ...(sessionPermissions === undefined ? {} : { sessionPermissions }),

@@ -31,14 +31,8 @@ try {
       requests.push(payload);
       const toolMessages = payload.messages.filter(item => item.role === "tool");
       if (requests.length > 8) return sendText(response, "fixture refused repeated failed calls");
-      if (toolMessages.some(item => item.tool_call_id === "memory-write-1")) return sendText(response, "child memory proposal ready for parent review");
-      if (toolMessages.some(item => item.tool_call_id === "memory-read-1")) {
-        return sendCall(response, "memory-write-1", "memory_write", {
-          id: "child-observation", expectedVersion: 0, title: "Memory child observation", content: "The transparent child read its delegated memory snapshot through the normal model Tool path.",
-          appliesTo: "Wish child Memory integration", keywords: ["child", "memory"], reason: "Observed the model-visible delegated Memory read",
-        });
-      }
-      return sendCall(response, "memory-read-1", "memory_read", { id: "inspect-guidance", expectedVersion: 1 });
+      if (toolMessages.some(item => item.tool_call_id === "memory-read-1")) return sendText(response, "Read the delegated memory Skill and applied its verification guidance.");
+      return sendCall(response, "memory-read-1", "memory_read", { path: "skills/inspect/SKILL.md" });
     });
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -47,9 +41,13 @@ try {
   journals = new FileJournalStorageBackend({ backendId: "parent", rootDirectory: join(directory, "parent-library") });
   const journal = journals.open({ namespace: "memory/knowledge" });
   memory = new MemoryRuntime(new JournalMemoryStore(journal, "knowledge"));
-  const human = { kind: "human", id: "test-operator" };
-  const seed = await memory.propose({ operationId: "seed", actor: human, reason: "Fixture knowledge", targetId: "inspect-guidance", expectedDocumentVersion: 0, title: "Inspect Memory", content: "VERIFY_SHARED_READ_0913: inspect source and focused tests before changing code.", appliesTo: "Wish child integration", keywords: ["inspect", "memory"], evidence: [{ kind: "operator", id: "fixture", revision: "1", digest: "a".repeat(64) }] });
-  await memory.decide({ operationId: "seed-review", actor: human, reason: "Fixture reviewed", candidateId: seed.id, expectedCandidateVersion: 1, decision: "accept" });
+  const evidence = [{ kind: "operator", id: "fixture", revision: "1", digest: "a".repeat(64) }];
+  await memory.consolidate({ operationId: "seed", actor: { kind: "curation", id: "memory-curation" }, reason: "Fixture knowledge", expectedRevision: 0, retirements: [],
+    upserts: [
+      { id: "summary", path: "memory_summary.md", content: "v1\nSHARED_SUMMARY: Project verification procedures are indexed in MEMORY.md and skills/inspect/SKILL.md." },
+      { id: "handbook", path: "MEMORY.md", content: "Inspect source and focused tests. Related Skill: skills/inspect/SKILL.md" },
+      { id: "inspect-guidance", path: "skills/inspect/SKILL.md", content: "VERIFY_SHARED_READ_0913: inspect source and focused tests before changing code." },
+    ].map(item => ({ ...item, expectedVersion: 0, title: item.path, appliesTo: "Wish child integration", keywords: ["inspect", "memory"], evidence })) });
   const launcher = new WishCliSubagentLauncherBackend({ dataDirectory, modelsConfigurationPath: modelsPath, prepareResources: (request, identity) => resources.prepare(request, identity) });
   subagents = new SubagentRuntime({ execution: new TmuxSubagentExecutionBackend(new LocalTmuxBackend({ socketPath, sessionPrefix: "wish-memory-real" })), store: new MemorySubagentRecordStore(),
     launcher: { async resolve(request, identity) {
@@ -63,7 +61,7 @@ try {
   } };
   resources = new SubagentMemoryResources({ memory, exchange: launcher.exchange, subagents, evidence: evidenceReader });
   child = await subagents.spawn({ parentAgentId: "wish", parentSessionId: "parent-session", parentRunId: "parent-run", workspaceRoot: workspace,
-    task: "Inspect Memory in a transparent child and propose an observation", permissionProfile: "full-access", allowedCapabilities: ["runtime.read", "runtime.control"], availableTools: ["memory_read", "memory_search", "memory_write"] });
+    task: "Inspect the shared memory Skill in a transparent child", permissionProfile: "full-access", allowedCapabilities: ["runtime.read", "runtime.control"], availableTools: ["memory_read", "memory_search", "memory_list", "memory_write"] });
   assert.match(child.target.attachCommand, /attach-session/u);
   let collected;
   const deadline = Date.now() + 30000;
@@ -77,20 +75,16 @@ try {
   assert.equal(collected.record.status, "exited");
   assert.equal(collected.record.resourceManifestDigest, (await launcher.exchange.readInputResources(child)).digest);
   assert.ok(requests.some(request => request.messages.some(item => item.role === "tool" && String(item.content).includes("VERIFY_SHARED_READ_0913"))), JSON.stringify({ requests, output: collected.output }));
-  assert.ok(requests.some(request => request.messages.some(item => item.role === "tool" && String(item.content).includes("Candidate recorded"))), JSON.stringify({ requests, output: collected.output }));
+  assert.ok(requests.some(request => JSON.stringify(request.messages).includes("SHARED_SUMMARY")), "summary is injected before the child asks to retrieve a file");
+  assert.ok(requests.every(request => !request.tools?.some(tool => tool.function?.name === "memory_write")), "child does not start an independent write or human-review pipeline");
   await resources.consume(collected.record);
-  const proposed = (await memory.state()).candidates.find(item => item.actor.kind === "child");
-  assert.equal(proposed?.status, "pending");
-  assert.equal(proposed.actor.runId, child.childRunId);
-  assert.equal(proposed.reviewSessionId, "parent-session");
-  assert.equal(await memory.read("child-observation"), undefined);
+  assert.equal((await memory.state()).candidates.length, 0);
   await resources.close();
   await memory.close();
   memory = new MemoryRuntime(new JournalMemoryStore(journal, "knowledge"));
-  resources = new SubagentMemoryResources({ memory, exchange: launcher.exchange, subagents, evidence: evidenceReader });
-  await resources.consume(collected.record);
-  assert.equal((await memory.state()).candidates.filter(item => item.actor.kind === "child").length, 1);
-  console.log("real tmux child read pinned Memory, durably returned a proposal, and parent imported it once for review");
+  assert.equal((await memory.state()).candidates.length, 0);
+  assert.equal((await memory.state()).documents.length, 3);
+  console.log("real tmux child received the complete pinned memory workspace, injected its summary and read a Skill through the model Tool path");
 } finally {
   await resources?.close().catch(() => undefined);
   if (child) await subagents?.stop(access(child)).catch(() => undefined);

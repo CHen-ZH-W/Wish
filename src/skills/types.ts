@@ -48,7 +48,28 @@ export interface SkillResource {
   readonly complete: boolean;
 }
 
+/** Complete allowed UTF-8 package bytes; the manifest digest alone does not pin resources. */
+export interface SkillPackageSnapshot {
+  readonly schemaVersion: 1;
+  readonly skill: SkillSummary;
+  readonly resources: readonly {
+    readonly path: string;
+    readonly content: string;
+    readonly digest: string;
+    readonly bytes: number;
+  }[];
+  readonly digest: string;
+}
+
+/** Host-registered source. Its declared user/workspace scope never grants authority. */
+export interface SkillSource extends Skills {
+  readonly id: string;
+  snapshot(input: SkillLookup): Promise<readonly SkillPackageSnapshot[]>;
+}
+
 export interface Skills {
   list(input: SkillLookup): Promise<SkillCatalog>;
   read(input: ReadSkillRequest): Promise<SkillResource>;
+  /** Explicit capture only; implementations without complete capture remain compatible readers. */
+  snapshot?(input: SkillLookup): Promise<readonly SkillPackageSnapshot[]>;
 }

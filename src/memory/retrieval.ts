@@ -4,8 +4,8 @@ import type { MemoryDocument, MemoryQuery } from "./types.js";
 export function retrieve(documents: readonly MemoryDocument[], input: MemoryQuery = {}): readonly MemoryDocument[] {
   input.signal?.throwIfAborted();
   const limit = input.limit ?? 20;
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (input.text !== undefined && (typeof input.text !== "string" || input.text.length > 4000))) throw new TypeError("Invalid Memory query");
-  const terms = [...new Set((input.text ?? "").toLowerCase().split(/[^\p{L}\p{N}_.-]+/u).filter(Boolean))].slice(0, 64);
+  if (!Number.isSafeInteger(limit) || limit < 1 || (input.text !== undefined && (typeof input.text !== "string"))) throw new TypeError("Invalid Memory query");
+  const terms = [...new Set((input.text ?? "").toLowerCase().split(/[^\p{L}\p{N}_.-]+/u).filter(Boolean))];
   const ranked = documents.filter(item => item.status === "accepted").map(item => {
     const title = `${item.title} ${item.keywords.join(" ")}`.toLowerCase();
     const body = `${item.appliesTo} ${item.content}`.toLowerCase();

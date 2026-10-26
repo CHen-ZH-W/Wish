@@ -193,10 +193,10 @@ function parseState(text: string, recover = true): ParsedState {
       let operation = parseOperation(value);
       if (seen.has(operation.id)) throw new Error();
       seen.add(operation.id);
-      if (recover && !terminalPhases.has(operation.phase)) {
-        const pending = raw.pending?.requestId === operation.requestId;
+      const pending = raw.pending?.requestId === operation.requestId;
+      if (recover && (!terminalPhases.has(operation.phase) || pending && operation.phase === "rejected")) {
         operation = freeze({ ...operation, phase: pending ? "recovery-required" as const : "rejected" as const,
-          code: pending ? "management_recovery_required" : "plugin_change_interrupted", cancellable: false });
+          code: pending ? raw.pending.failure?.code ?? "management_recovery_required" : "plugin_change_interrupted", cancellable: false });
         changed = true;
       }
       return operation;
@@ -212,8 +212,13 @@ function validatePending(pending: any): void {
     !id(pending.selection?.instanceId) || !Array.isArray(pending.selection?.entryIds) || !pending.selection.entryIds.length ||
     pending.selection.entryIds.length > 512 || pending.selection.entryIds.some((entry: unknown) => !id(entry)) ||
     new Set(pending.selection.entryIds).size !== pending.selection.entryIds.length ||
-    Object.keys(pending).some(key => !["requestId", "revision", "preference", "selection", "configuration"].includes(key)) ||
+    Object.keys(pending).some(key => !["requestId", "revision", "preference", "selection", "configuration", "failure"].includes(key)) ||
     Object.keys(pending.selection).some(key => !["instanceId", "entryIds"].includes(key))) throw new Error();
+  const failure = pending.failure;
+  if (failure !== undefined && (!failure || failure.stage !== "stop" || !id(failure.operationId) ||
+    !/^[a-z][a-z0-9_]{0,79}$/u.test(failure.code) || !["unchanged", "changed", "unknown"].includes(failure.runtime) ||
+    !["confirmed", "pending", "failed", "unknown"].includes(failure.cleanup) ||
+    Object.keys(failure).some(key => !["stage", "operationId", "code", "runtime", "cleanup"].includes(key)))) throw new Error();
   if (pending.configuration === undefined) return;
   const configuration = pending.configuration;
   if (!pending.requestId.startsWith("configuration:") || pending.preference !== "inherit" || !configuration ||

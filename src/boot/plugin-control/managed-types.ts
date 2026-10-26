@@ -21,6 +21,14 @@ export type ManagedEntryChange = {
   readonly afterGroup: boolean;
 });
 export interface ManagedPluginIntent extends ManagedPluginRequest {
+  /** Public diagnostic facts retained when an uncertain stop outlives its process. */
+  readonly failure?: {
+    readonly stage: "stop";
+    readonly operationId: string;
+    readonly code: string;
+    readonly runtime: "unchanged" | "changed" | "unknown";
+    readonly cleanup: "confirmed" | "pending" | "failed" | "unknown";
+  };
   readonly configuration?: {
     readonly beforeDigest: string;
     readonly afterDigest: string;

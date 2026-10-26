@@ -73,6 +73,139 @@ async function fixture(run) {
 }
 const deferred = () => Promise.withResolvers();
 
+test("an observation change after saving an intent rejects without quarantining an unchanged generation", () => fixture(async directory => {
+  const f = await start(directory), commit = f.store.commit.bind(f.store);
+  let changed = false;
+  f.store.commit = async (revision, update) => {
+    const result = await commit(revision, update);
+    if (update.pending && !changed) {
+      changed = true;
+      await f.root.plugin({ name: "concurrent-observation", apply() {} });
+    }
+    return result;
+  };
+  try {
+    await writeFile(f.filename, deployment(2));
+    await assert.rejects(f.control.reloadConfiguration(), { code: "management_configuration_changed" });
+    assert.equal(f.refs[0].request(), 1);
+    assert.equal(f.refs[0].closes, 0);
+    assert.equal(f.control.snapshot().status, "ready");
+    assert.equal(f.store.snapshot().pending, null);
+    assert.equal(f.store.snapshot().receipts.at(-1).code, "management_configuration_changed");
+    await writeFile(f.filename, deployment(3));
+    await f.control.reloadConfiguration();
+    assert.equal(f.refs.at(-1).request(), 3, "a rejected intent must not block the next valid update");
+  } finally { await f.close(); }
+}));
+
+test("failure to clear a rejected intent retains recovery state instead of reporting ready", () => fixture(async directory => {
+  const f = await start(directory), commit = f.store.commit.bind(f.store);
+  let saved = false;
+  f.store.commit = async (revision, update) => {
+    if (saved && update.pending === null) throw new ManagedPluginStoreError("management_save_failed");
+    const result = await commit(revision, update);
+    if (update.pending && !saved) {
+      saved = true;
+      await f.root.plugin({ name: "concurrent-observation", apply() {} });
+    }
+    return result;
+  };
+  try {
+    await writeFile(f.filename, deployment(2));
+    await assert.rejects(f.control.reloadConfiguration(), { code: "management_save_failed" });
+    assert.equal(f.refs[0].request(), 1);
+    assert.equal(f.refs[0].closes, 0);
+    assert.equal(f.control.snapshot().status, "recovery-required");
+    assert.equal(f.control.snapshot().configuration.phase, "recovery-required");
+    assert.equal(f.control.snapshot().operations.at(-1).phase, "recovery-required");
+    assert.ok(f.store.snapshot().pending);
+  } finally { await f.close(); }
+}));
+
+test("private-state settlement failure keeps a rejected configuration fenced after its intent is cleared", () => fixture(async directory => {
+  const f = await start(directory), commit = f.store.commit.bind(f.store);
+  let saved = false, finishes = 0;
+  f.root.provide("pluginState", {
+    async begin() {},
+    async finish(success) {
+      assert.equal(success, false);
+      finishes++;
+      throw Object.assign(Error("private state index save failed"), { code: "plugin_state_recovery_required" });
+    },
+  });
+  f.store.commit = async (revision, update) => {
+    const result = await commit(revision, update);
+    if (update.pending && !saved) {
+      saved = true;
+      await f.root.plugin({ name: "concurrent-observation", apply() {} });
+    }
+    return result;
+  };
+  try {
+    await writeFile(f.filename, deployment(2));
+    await assert.rejects(f.control.reloadConfiguration(), { code: "plugin_state_recovery_required" });
+    assert.equal(finishes, 1);
+    assert.equal(f.store.snapshot().pending, null);
+    assert.equal(f.refs[0].request(), 1);
+    assert.equal(f.refs[0].closes, 0);
+    assert.equal(f.control.snapshot().status, "recovery-required");
+    assert.equal(f.control.snapshot().configuration.phase, "recovery-required");
+    assert.equal(f.control.snapshot().configuration.code, "plugin_state_recovery_required");
+    assert.equal(f.control.snapshot().operations.at(-1).phase, "recovery-required");
+    assert.equal(f.control.snapshot().operations.at(-1).code, "plugin_state_recovery_required");
+    await assert.rejects(f.control.reloadConfiguration(), { code: "management_recovery_required" });
+  } finally { await f.close(); }
+}));
+
+test("configuration cleanup failure preserves its cause and recovery state across restart without replay", () => fixture(async directory => {
+  const f = await start(directory, { close: async () => { throw Error("cleanup failed"); } });
+  let failure;
+  try {
+    await writeFile(f.filename, deployment(2));
+    await assert.rejects(f.control.reloadConfiguration(), { code: "stop_cleanup_failed" });
+    const snapshot = f.control.snapshot();
+    assert.equal(snapshot.status, "recovery-required");
+    assert.equal(snapshot.configuration.phase, "recovery-required");
+    assert.equal(snapshot.operations.at(-1).phase, "recovery-required");
+    assert.equal(snapshot.operations.at(-1).code, "stop_cleanup_failed");
+    failure = snapshot.pending.failure;
+    assert.deepEqual(failure, { stage: "stop", operationId: f.control.stops.current().id,
+      code: "stop_cleanup_failed", runtime: "changed", cleanup: "failed" });
+    await assert.rejects(f.control.reloadConfiguration(), { code: "management_recovery_required" });
+    assert.equal(f.refs[0].closes, 1, "a failed close cannot be replayed by another configuration event");
+  } finally { await f.close(); }
+  const restored = await start(directory);
+  try {
+    assert.equal(restored.control.snapshot().status, "recovery-required");
+    assert.equal(restored.control.snapshot().configuration.phase, "recovery-required");
+    assert.equal(restored.control.snapshot().configuration.code, "stop_cleanup_failed");
+    assert.deepEqual(restored.control.snapshot().pending.failure, failure);
+    assert.equal(restored.refs.length, 0, "restart must not reactivate an uncertain generation");
+  } finally { await restored.close(); }
+}));
+
+test("failure diagnostic save errors cannot reopen an uncertain configuration generation", () => fixture(async directory => {
+  const f = await start(directory, { close: async () => { throw Error("cleanup failed"); } });
+  const commit = f.store.commit.bind(f.store);
+  f.store.commit = async (revision, update) => {
+    if (update.pending?.failure) throw new ManagedPluginStoreError("management_save_failed");
+    return commit(revision, update);
+  };
+  try {
+    await writeFile(f.filename, deployment(2));
+    await assert.rejects(f.control.reloadConfiguration(), { code: "management_save_failed" });
+    const state = f.control.snapshot();
+    assert.equal(state.status, "recovery-required");
+    assert.equal(state.configuration.phase, "recovery-required");
+    assert.equal(state.operations.at(-1).phase, "recovery-required");
+    assert.ok(state.pending);
+    assert.equal(f.control.stops.current().state.code, "stop_cleanup_failed");
+    assert.throws(() => f.refs[0].request(), /closed/);
+    await assert.rejects(f.control.reloadConfiguration(), { code: "management_recovery_required" });
+    assert.equal(f.refs[0].closes, 1);
+  } finally { await f.close(); }
+}));
+
 test("declared user activation overrides only the default-off gate and remains constrained by deployment", async () => {
   await fixture(async directory => {
     await writeFile(join(directory, "cordis.yml"), deployment(1, true, [], { activation: "user", constraint: false }));

@@ -44,9 +44,9 @@ export async function mountWishBrowser(element: HTMLElement): Promise<() => Prom
     ctx.effect(() => () => drafts.close());
     const ConversationView = () => <Conversation model={model} settings={settings} slots={slots} drafts={drafts} />;
     const ToolCallsView = () => <ToolCalls model={model} slots={slots} />;
-    ctx.effect(() => ctx.wishUiSlots.panel({ id: "conversation", label: "会话", labelEn: "Conversation", area: "workspace", navigationGroup: "session", Icon: () => <Icon name="conversation" />, onOpen: () => model.browse("active"), View: ConversationView }));
-    ctx.effect(() => ctx.wishUiSlots.panel({ id: "tool-calls", label: "工具调用", labelEn: "Tool calls", area: "workspace", navigation: "hidden", navigationGroup: "session", View: ToolCallsView }));
-    ctx.effect(() => ctx.wishUiSlots.panel({ id: "archives", label: "归档", labelEn: "Archive", area: "workspace", navigation: "rail", Icon: () => <Icon name="archive" />, onOpen: () => model.browse("archived"), Sidebar: () => <SessionNavigation model={model} slots={slots} drafts={drafts} status="archived" panelId="archives" />, View: ConversationView }));
+    ctx.effect(() => ctx.wishUiSlots.panel({ id: "conversation", label: "会话", labelEn: "Conversation", area: "workspace", navigationGroup: "session", preserveState: true, Icon: () => <Icon name="conversation" />, onOpen: () => model.browse("active"), View: ConversationView }));
+    ctx.effect(() => ctx.wishUiSlots.panel({ id: "tool-calls", label: "工具调用", labelEn: "Tool calls", area: "workspace", navigation: "hidden", navigationGroup: "session", preserveState: true, View: ToolCallsView }));
+    ctx.effect(() => ctx.wishUiSlots.panel({ id: "archives", label: "归档", labelEn: "Archive", area: "workspace", navigation: "rail", preserveState: true, Icon: () => <Icon name="archive" />, onOpen: () => model.browse("archived"), Sidebar: () => <SessionNavigation model={model} slots={slots} drafts={drafts} status="archived" panelId="archives" />, View: ConversationView }));
     ctx.effect(() => ctx.wishUiSlots.navigation({ id: "sessions", View: () => <SessionNavigation model={model} slots={slots} drafts={drafts} /> }));
     ctx.effect(() => ctx.wishUiSlots.navigation({ id: "rounds", forPanel: "conversation", View: () => <RoundNavigation model={model} slots={slots} /> }));
   } });

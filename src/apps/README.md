@@ -49,6 +49,12 @@ Cordis Application service -> ApplicationFacade
 CLI | WebUI -> WishApplication
 ```
 
+Session Features 的 `runStarted` 在 Runtime 接纳成功后收到首条输入及可信来源；可选的标题
+Consumer 在此保存兜底并安排后台生成，失败不拒绝主 Run。`metadataUpdated` 只观察已提交
+的元数据，观察失败不能回滚写入。注册可绑定具体 Session graph，Application 的其他数据根
+不会调用该图的钩子；有持久工作责任的模块卸载后保留清理保护，可选观察模块可显式释放。
+标题模块的配置和恢复语义见[会话标题](../session-title/README.md)。
+
 Step pipeline 的包装顺序固定为：
 
 ```text
@@ -73,6 +79,13 @@ WebUI 提供 `GET /api/sessions/:id/features` 与
 `POST /api/sessions/:id/features/:key`；后者必须携带显示过的 `action`、`token`，必要时携带
 `feedback`。接口先检查 Session 所有权，过期版本按冲突拒绝。普通新消息及 steer/follow-up
 会通知业务模块，使尚未批准的 Plan Review 可以继续多轮规划。
+
+不依赖 Session 的业务页面可注册默认范围 Control。`GET /api/controls/:key/default`
+检查状态，`POST /api/queries/:key/default` 执行有界只读查询，
+`POST /api/controls/:key/default` 提交人工修改。Host 将 WebUI 规范化后的启动工作区作为
+独立 scope 传给 Control，HTTP 层不解释领域 payload。Control 注册和进行中操作由其插件
+Owner 管理；POST 沿用同源、管理令牌及 JSON 大小校验。Skills 技能库通过此契约独立浏览
+和导入，不伪造 Session 或复用会话选择状态。
 
 每次 `Application.open()` 都创建一个拥有 Session Handle 的 RunGeneration。退役顺序是停止
 新 Run、请求取消并等待已有 Run 终态、最后释放 Session Handle。CLI/WebUI 的关闭流程负责
@@ -211,7 +224,7 @@ wish recovery resolve --resolution-id <id> --run-id <id> --user-turn-id <id> \
 # 主会话工作台、独立插件管理与 Settings；已有密钥环境时直接 npm run webui
 DEEPSEEK_API_KEY=... npm run webui
 WISH_MODELS_CONFIG=./models.json npm run webui
-# 构建或安装后也可运行 wish-webui
+# 也可通过 wish-webui 创建独立运行副本并启动
 ```
 
 默认监听 `127.0.0.1:8790`。HTTP 接口如下：
@@ -250,6 +263,17 @@ Run ID，并通过 Application 的窄 Recovery Port 管理结论，不直接写 
 ### 独立管理面
 
 `npm run webui` 和 `wish-webui` 固定启动 React + Browser Cordis 外壳，不需要版本开关。
+入口先在 `<WISH_DATA_DIR 或 ~/.wish>/releases` 创建独立源码、配置、依赖和构建副本，
+构建成功后按完整副本的内容摘要发布为 `webui-<摘要>`，再从该目录启动并输出路径；
+`WISH_WEBUI_RUNTIME_DIR` 可覆盖其父目录。相同内容经过核验后复用路径，避免重启改变
+持久 AgentProfile 的产物身份；已被 HMR 修改的副本保留，另建干净副本。
+工作区中的构建和测试不会覆盖当前副本的代码、依赖或静态资源。成功副本在退出后保留，
+构建失败或构建子进程被中断时，启动器清理本次未发布目录；依赖使用副本内的相对链接，
+外部依赖链接拒绝启动。
+自定义 `CORDIS_CONFIG` 仍按原规则使用外部配置，不属于副本隔离范围。
+已有 AgentProfile 仍绑定捕获时的部署路径和产物。从工作区原地部署迁到独立副本，或改变插件
+布局后，需要为新部署重新捕获 Profile；启动器不会改写已有快照或放宽产物校验。
+`npm run webui:dev` 保留原地构建和运行，适合明确需要让工作区构建直接触发 HMR 的开发环境。
 `/` 与 `/index.html` 指向同一界面，没有旧版回退。Root 拥有监听器、静态资源、管理 API、Settings
 和进程信号；业务 WebUI 插件只注册业务 handler。业务插件停用后管理面仍可用，业务请求
 返回 `business_unavailable`，不以隐藏前端代替 Host 停用。
@@ -261,6 +285,9 @@ Run ID，并通过 Application 的窄 Recovery Port 管理结论，不直接写 
 不必再设置 `CORDIS_HMR=1`；`CORDIS_HMR=0 npm run webui` 可显式关闭。仅明确声明的
 Step-local 所有者允许替换，持久化回执成功后才继续下一 Step，失败走独立管理恢复入口。
 管理 API/SSE 同步 `codeReload` 状态；这不等于浏览器加载了新版 UI 代码。
+普通入口保留 profile 的 HMR 默认值和显式 `CORDIS_HMR`，代码监听对象属于启动输出的运行副本。
+需要在线更新时，将完整候选产物交给受控管理发布路径，或明确更新该副本的部署配置；
+运行目录隔离不改变插件准入、收尾和失败恢复协议。
 目前不支持运行时更换监听端口或任意状态所有者热替换。
 配置更新的在线范围及失败恢复见 [受控配置](../boot/plugin-control/README.md#配置文件重载)。
 Root 监听端口由 `WISH_WEBUI_PORT` 指定，默认 8790；业务插件行的端口不重配置 Root。

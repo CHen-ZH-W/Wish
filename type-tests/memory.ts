@@ -9,7 +9,7 @@ const tools = createMemoryTools(memory);
 async function snapshot(): Promise<MemorySnapshot> { return memory.snapshot(); }
 function service(ctx: Context): Memory { return ctx.memory; }
 function proposal(input: ProposeMemoryRequest) { return memory.propose(input); }
-// @ts-expect-error Durable knowledge cannot be published without a human decision operation.
+// @ts-expect-error Human candidate review requires a complete operation identity.
 memory.decide({ candidateId: "candidate", decision: "accept" });
 // @ts-expect-error Snapshots are read-only knowledge, not mutable domain state.
 function mutate(value: MemorySnapshot) { value.documents.push({}); }

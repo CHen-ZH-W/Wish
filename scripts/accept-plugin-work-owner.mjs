@@ -58,6 +58,77 @@ test("abandoning a prepared stop reopens admission and release is idempotent", a
   });
 });
 
+test("a reload fence pauses domain dispatch and rollback releases both admissions exactly once", async () => {
+  const finish = deferred();
+  let suspended = 0, resumed = 0, paused = false;
+  await fixture(async ({ owner, participant, activate }) => {
+    activate();
+    const admitted = owner.run(() => finish.promise);
+    const prepared = participant.prepare();
+    assert.equal(paused, true, "domain dispatch stops synchronously, before waiting for admitted calls");
+    assert.equal(suspended, 1);
+    await assert.rejects(owner.run(() => 1), /sample_closed/);
+    finish.resolve();
+    await admitted;
+    await prepared.drained;
+    prepared.release(); prepared.release();
+    assert.equal(paused, false);
+    assert.equal(resumed, 1);
+    assert.equal(await owner.run(() => 42), 42);
+    const next = participant.prepare();
+    assert.equal(suspended, 2, "a later fence acquires a fresh domain pause");
+    next.release();
+    assert.equal(resumed, 2);
+  }, { codeReload: true, suspendAdmissions() {
+    suspended++; paused = true;
+    return () => { resumed++; paused = false; };
+  } });
+});
+
+test("deactivation retains the domain pause and close does not suspend or resume twice", async () => {
+  let suspended = 0, resumed = 0;
+  await fixture(async ({ owner, participant, activate }) => {
+    activate();
+    const prepared = participant.prepare();
+    assert.equal(suspended, 1);
+    await prepared.deactivate();
+    prepared.release(); prepared.release();
+    await owner.close();
+    assert.equal(suspended, 1);
+    assert.equal(resumed, 0, "a retired domain must never restart its dispatcher");
+    await assert.rejects(owner.run(() => 1), /sample_closed/);
+  }, { codeReload: true, suspendAdmissions() { suspended++; return () => { resumed++; }; } });
+
+  suspended = 0;
+  await fixture(async ({ owner }) => {
+    const first = owner.close();
+    assert.equal(suspended, 1, "direct close also pauses domain dispatch synchronously");
+    assert.equal(owner.close(), first);
+    await first;
+    assert.equal(suspended, 1);
+    assert.equal(resumed, 0);
+  }, { suspendAdmissions() { suspended++; return () => { resumed++; }; } });
+});
+
+test("a throwing domain pause leaves work admission open and a later fence can succeed", async () => {
+  let fail = true, resumed = 0;
+  await fixture(async ({ owner, participant, activate }) => {
+    activate();
+    assert.throws(() => participant.prepare(), /pause failed/);
+    assert.doesNotThrow(() => owner.assertOpen());
+    assert.equal(await owner.run(() => 42), 42);
+    fail = false;
+    const prepared = participant.prepare();
+    await assert.rejects(owner.run(() => 1), /sample_closed/);
+    prepared.release(); prepared.release();
+    assert.equal(resumed, 1);
+    assert.equal(await owner.run(() => 43), 43);
+  }, { codeReload: true, suspendAdmissions() {
+    if (fail) throw new Error("pause failed");
+    return () => { resumed++; };
+  } });
+});
+
 test("immediate disposal finishes calls admitted before their microtask begins", async () => {
   await fixture(async ({ root, owner }) => {
     let calls = 0;

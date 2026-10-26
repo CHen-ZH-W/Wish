@@ -5,6 +5,8 @@ import type { LedgerBlock } from "./projection/ledger.js";
 export interface UiPanel {
   readonly id: string; readonly label: string; readonly labelEn?: string; readonly area: "workspace" | "settings";
   readonly View: ComponentType; readonly Icon?: ComponentType;
+  /** Retain visited UI state while registered; hidden Effects are paused. Aliases with the same View share it. */
+  readonly preserveState?: boolean;
   /** Global rail entry instead of the area-local panel list. */
   readonly navigation?: "rail" | "hidden";
   /** Named local groups appear only while one of their members is open. */

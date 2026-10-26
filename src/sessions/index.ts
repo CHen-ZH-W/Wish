@@ -47,6 +47,7 @@ export {
   SessionInvalidTranscriptError,
   SessionNotFoundError,
   SessionRevisionConflictError,
+  SessionTitleConflictError,
 } from "./types.js";
 export type {
   AppendSessionCheckpointInput,
@@ -73,6 +74,7 @@ export type {
   SessionMessageOrigin,
   SessionMessageRecord,
   SessionStatus,
+  SessionTitleSource,
   SessionStore,
   SessionToolResultArchiveReceipt,
   UpdateSessionMetadataInput,

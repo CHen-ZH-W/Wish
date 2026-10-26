@@ -39,6 +39,7 @@ export const HOST_SERVICE_CONTRACTS: Readonly<Record<string, ServiceContract>> =
   tools: { version: 1, methods: ["register", "registerScoped", "registryFor"] },
   context: { version: 1, methods: ["registerProvider", "registerProviderScoped", "registerObserver", "open"] },
   systemPrompt: { version: 1, methods: ["register", "registerScoped", "capture", "assemble", "assembleInstructions"] },
+  skills: { version: 1, methods: ["registerSource"] },
   models: { version: 1, methods: ["open", "load", "register", "registerPricing"] },
   storageBackend: { version: 1, methods: ["acquire", "resolve", "backend"] },
   filesystem: { version: 1, methods: ["preflight", "resolve", "readFile", "writeFile", "stat"] },

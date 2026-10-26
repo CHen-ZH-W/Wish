@@ -28,7 +28,7 @@ export function ReasoningComposerItem({ model, sessionId, busy }: { model: Reaso
     <span className="composer-model-name" title={view ? `${view.model.provider}/${view.model.model}` : t("正在读取模型", "Loading model")}>{view?.model.model ?? t("模型", "Model")}</span>
     <label className="sr-only" htmlFor="wish-reasoning-effort">{t("思考强度", "Reasoning effort")}</label>
     <select id="wish-reasoning-effort" aria-label={t("下次运行的思考强度", "Reasoning effort for the next run")} value={view?.selected ?? view?.control?.defaultEffort ?? ""}
-      disabled={!view || state.pending || state.loading}
+      disabled={!view || !state.writable || state.pending || state.loading}
       onChange={event => { void model.select(event.target.value as ModelReasoningEffort).catch(() => {}); }}>
       {!view?.control ? <option value="" disabled>{t("读取中", "Loading")}</option> : null}
       {view?.control?.efforts.map(effort => <option key={effort} value={effort}>{t(labels[effort], ({ none: "Off", low: "Low", high: "High", max: "Max" } as const)[effort])}</option>)}

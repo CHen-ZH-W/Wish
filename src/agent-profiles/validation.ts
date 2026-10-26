@@ -3,6 +3,7 @@ import { isAbsolute } from "node:path";
 import { loadModelsConfiguration, formatModelReference, resolveConfiguredModel } from "../models/config.js";
 import { PERMISSION_PROFILES, TOOL_CAPABILITY_KINDS } from "../permissions/types.js";
 import type { AgentProfileDefinition, AgentProfileSnapshot } from "./types.js";
+import { validateProfileResources } from "./resources.js";
 
 export class AgentProfileError extends Error {
   constructor(readonly code: string, message: string = code) { super(message); this.name = "AgentProfileError"; }
@@ -78,7 +79,11 @@ export function validateDefinition(value: unknown): AgentProfileDefinition {
 }
 export function validateSnapshot(value: unknown): AgentProfileSnapshot {
   const input = record(value);
-  exact(input, ["schemaVersion", "digest", "runtime", "definition", "model", "models", "instructions", "promptSections", "permissions", "compaction", "reservedOutputTokens", "maxParallelCalls", "code", "plugins", "deployment", "candidate"]);
+  exact(input, ["schemaVersion", "digest", "runtime", "definition", "model", "models", "instructions", "promptSections", "permissions", "compaction", "reservedOutputTokens", "maxParallelCalls", "code", "plugins", "deployment", "candidate", "resources"]);
+  if (input.resources !== undefined) {
+    const resources = validateProfileResources(input.resources);
+    if (record(input.definition).memory === "none" && resources.memory.kind !== "empty") throw new AgentProfileError("profile_memory_resource_conflict");
+  }
   if (input.candidate !== undefined) {
     const candidate = record(input.candidate); exact(candidate, ["sourceDigest", "artifactDigest"]);
     if (!/^[a-f0-9]{64}$/u.test(String(candidate.sourceDigest)) || !/^[a-f0-9]{64}$/u.test(String(candidate.artifactDigest))) throw new AgentProfileError("profile_invalid_candidate");

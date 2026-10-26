@@ -81,7 +81,7 @@ function addEntry(rows: Record<string, unknown>[], parentId: string, entry: Reco
 
 async function boot(request: Record<string, unknown>, scratch: string, mode: string) {
   const snapshot = validateSnapshot(mode === "check" ? request.base : request.snapshot);
-  const rows = JSON.parse(experimentDeployment(snapshot.deployment, scratch)) as Record<string, unknown>[];
+  const rows = JSON.parse(experimentDeployment(snapshot.deployment, scratch, snapshot.resources, mode === "check" ? "overlay" : "sealed")) as Record<string, unknown>[];
   const artifact = mode === "check" ? record(request.artifact) : undefined;
   const candidate = mode === "check" ? source(request.source) : undefined;
   const spec = mode === "check" ? record(request.validation) : undefined;
@@ -140,7 +140,9 @@ async function check(request: Record<string, unknown>, scratch: string): Promise
     await host.ctx.get("agentProfiles")!.register(definition);
     const config = await host.ctx.get("application")!.resolve();
     const recipe = record(definition);
-    const captured = await host.ctx.get("agentProfiles")!.capture(`${recipe.id}@${recipe.version}`, config);
+    const base = validateSnapshot(request.base);
+    const captured = await host.ctx.get("agentProfiles")!.capture(`${recipe.id}@${recipe.version}`, config,
+      base.resources ? { resources: { cwd: host.workspace, skills: host.ctx.get("skills"), emptySkills: !host.ctx.get("skills"), memory: base.resources.memory } } : undefined);
     const { digest: _, ...body } = captured;
     const augmented = { ...body, candidate: { sourceDigest: String(record(request.validation).candidateDigest), artifactDigest: String(artifact.digest) } };
     const snapshot = validateSnapshot({ ...augmented, digest: digest(augmented) });

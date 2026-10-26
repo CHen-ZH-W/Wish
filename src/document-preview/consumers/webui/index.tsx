@@ -1,10 +1,11 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {} from "../../../apps/webui/client/plugins.js";
 import type { UiSessionSidebarViewProps } from "../../../apps/webui/client/slots.js";
 import type { ClientConnection } from "../../../apps/webui/client/connection.js";
 import { ErrorNotice, Icon, readableError } from "../../../apps/webui/client/ui/primitives.js";
 import { useText } from "../../../apps/webui/client/i18n.js";
+import { onRetainedNodeRemoval } from "../../../apps/webui/client/ui/retained-resource.js";
 import { WorkspaceFilesClient } from "../../../workspace-files/consumers/webui/index.js";
 import type { WorkspaceBinaryFileView, WorkspaceTextFileView } from "../../../workspace-files/types.js";
 import { parseOffice, type OfficePreviewData } from "./office.js";
@@ -21,21 +22,63 @@ type Loaded =
   | { readonly kind: "text"; readonly value: WorkspaceTextFileView }
   | { readonly kind: "bytes"; readonly value: WorkspaceBinaryFileView };
 
+/** Activity restarts subscriptions, not the identity's in-flight or completed read. */
+function useRetainedRead<T>(read: () => Promise<T>, dependencies: readonly unknown[]) {
+  const resource = useMemo(() => ({ read, pending: undefined as Promise<T> | undefined }), dependencies);
+  const [result, setResult] = useState<{ readonly resource: typeof resource; readonly value?: T; readonly error?: string }>();
+  useEffect(() => {
+    let active = true;
+    const pending = resource.pending ??= Promise.resolve().then(resource.read);
+    void pending.then(value => { if (active) setResult({ resource, value }); }, cause => {
+      if (active) setResult({ resource, error: readableError(cause instanceof Error ? cause.message : String(cause)) });
+    });
+    return () => { active = false; };
+  }, [resource]);
+  // Identity changes cannot paint the previous file before the new effect runs.
+  return result?.resource === resource ? result : undefined;
+}
+
+/** Effects pause under Activity; retained DOM still owns its URL until removal. */
+function useRetainedBlobUrl(contentBase64: string | undefined, mediaType: string) {
+  const element = useRef<HTMLElement | null>(null);
+  const resource = useRef<{ readonly content: string; readonly mediaType: string; readonly url: string } | undefined>(undefined);
+  const removeWatcher = useRef<(() => void) | undefined>(undefined);
+  const [url, setUrl] = useState<string>();
+  const bind = useCallback((node: HTMLElement | null) => { if (node) element.current = node; }, []);
+  useLayoutEffect(() => {
+    removeWatcher.current?.(); removeWatcher.current = undefined;
+    if (contentBase64 === undefined) {
+      if (resource.current) URL.revokeObjectURL(resource.current.url);
+      resource.current = undefined; setUrl(undefined); return;
+    }
+    if (resource.current?.content !== contentBase64 || resource.current.mediaType !== mediaType) {
+      if (resource.current) URL.revokeObjectURL(resource.current.url);
+      resource.current = { content: contentBase64, mediaType,
+        url: URL.createObjectURL(new Blob([decodeBase64(contentBase64)], { type: mediaType })) };
+    }
+    const current = resource.current;
+    setUrl(current.url);
+    return () => {
+      const dispose = () => { URL.revokeObjectURL(current.url); if (resource.current === current) resource.current = undefined; };
+      // Keep watching after Activity hides: later owner removal does not replay
+      // effect cleanup for an already hidden subtree.
+      if (element.current) removeWatcher.current = onRetainedNodeRemoval(element.current, dispose);
+      else dispose();
+    };
+  }, [contentBase64, mediaType]);
+  return { bind, url: resource.current?.content === contentBase64 && resource.current?.mediaType === mediaType ? url : undefined };
+}
+
 function DocumentPreview({ client, sessionId, tab }: { readonly client: WorkspaceFilesClient } & UiSessionSidebarViewProps) {
   const t = useText();
   const path = typeof tab.params?.path === "string" ? tab.params.path : "";
   const extension = suffix(path);
   const binary = extension in IMAGE_TYPES || extension === "pdf" || OFFICE_EXTENSIONS.has(extension) || LEGACY_OFFICE_EXTENSIONS.has(extension);
-  const [loaded, setLoaded] = useState<Loaded>();
-  const [error, setError] = useState<string>();
   const [revision, setRevision] = useState(0);
-  useEffect(() => {
-    let active = true;
-    setLoaded(undefined); setError(undefined);
-    const request = binary ? client.readBytes(sessionId, path).then(value => ({ kind: "bytes" as const, value })) : client.read(sessionId, path).then(value => ({ kind: "text" as const, value }));
-    void request.then(value => { if (active) setLoaded(value); }, cause => { if (active) setError(readableError(cause instanceof Error ? cause.message : String(cause))); });
-    return () => { active = false; };
-  }, [binary, client, path, revision, sessionId]);
+  const result = useRetainedRead<Loaded>(() => binary
+    ? client.readBytes(sessionId, path).then(value => ({ kind: "bytes", value }))
+    : client.read(sessionId, path).then(value => ({ kind: "text", value })), [binary, client, path, revision, sessionId]);
+  const loaded = result?.value, error = result?.error;
   return <section className="document-preview" data-document-kind={viewerKind(extension)}>
     <header className="document-preview-toolbar">
       <span className="document-preview-path" title={path}>{path}</span>
@@ -64,11 +107,10 @@ function DocumentBody({ client, sessionId, path, extension, loaded }: { readonly
 }
 
 function BinaryPreview({ file, mediaType, image }: { readonly file: WorkspaceBinaryFileView; readonly mediaType: string; readonly image: boolean }): ReactNode {
-  const url = useMemo(() => URL.createObjectURL(new Blob([decodeBase64(file.contentBase64)], { type: mediaType })), [file.contentBase64, mediaType]);
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  const { bind, url } = useRetainedBlobUrl(file.contentBase64, mediaType);
   return image
-    ? <div className="document-image-viewport"><img src={url} alt={file.path.split("/").at(-1) ?? file.path} draggable={false} /></div>
-    : <object className="document-pdf" data={url} type={mediaType}><a href={url}>Open PDF</a></object>;
+    ? <div className="document-image-viewport"><img ref={bind} src={url} alt={file.path.split("/").at(-1) ?? file.path} draggable={false} /></div>
+    : <object ref={bind} className="document-pdf" data={url} type={mediaType}><a href={url}>Open PDF</a></object>;
 }
 
 function OfficePreview({ extension, source }: { readonly extension: string; readonly source: string }): ReactNode {
@@ -103,22 +145,14 @@ function MarkdownPreview({ client, sessionId, path, source }: { readonly client:
 }
 
 function MarkdownImage({ client, sessionId, documentPath, source, alt }: { readonly client: WorkspaceFilesClient; readonly sessionId: string; readonly documentPath: string; readonly source: string; readonly alt: string }): ReactNode {
-  const [url, setUrl] = useState<string>();
-  useEffect(() => {
-    if (/^data:image\//iu.test(source) || source.startsWith("blob:")) { setUrl(source); return; }
-    if (/^[a-z][a-z\d+.-]*:/iu.test(source) || source.startsWith("//")) return;
-    let active = true, objectUrl: string | undefined;
-    const base = documentPath.includes("/") ? documentPath.slice(0, documentPath.lastIndexOf("/") + 1) : "";
-    const resolved = normalizeRelativePath(base + (source.split(/[?#]/u, 1)[0] ?? ""));
-    if (resolved === undefined) return;
-    void client.readBytes(sessionId, resolved).then(file => {
-      if (!active) return;
-      objectUrl = URL.createObjectURL(new Blob([decodeBase64(file.contentBase64)], { type: IMAGE_TYPES[suffix(resolved)] ?? "application/octet-stream" }));
-      setUrl(objectUrl);
-    }).catch(() => undefined);
-    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [client, documentPath, sessionId, source]);
-  return url ? <img src={url} alt={alt} loading="lazy" /> : <span className="document-markdown-image-missing"><Icon name="model" />{alt}</span>;
+  const direct = /^data:image\//iu.test(source) || source.startsWith("blob:") ? source : undefined;
+  const base = documentPath.includes("/") ? documentPath.slice(0, documentPath.lastIndexOf("/") + 1) : "";
+  const resolved = direct || /^[a-z][a-z\d+.-]*:/iu.test(source) || source.startsWith("//") ? undefined
+    : normalizeRelativePath(base + (source.split(/[?#]/u, 1)[0] ?? ""));
+  const result = useRetainedRead(() => resolved === undefined ? Promise.resolve(undefined) : client.readBytes(sessionId, resolved),
+    [client, documentPath, sessionId, source, resolved]);
+  const { bind, url } = useRetainedBlobUrl(result?.value?.contentBase64, IMAGE_TYPES[suffix(resolved ?? "")] ?? "application/octet-stream");
+  return direct || url ? <img ref={bind} src={direct ?? url} alt={alt} loading="lazy" /> : <span className="document-markdown-image-missing"><Icon name="model" />{alt}</span>;
 }
 
 function CodePreview({ source }: { readonly source: string }): ReactNode { return <div className="document-code">{source.split("\n").map((line, index) => <div key={index} className="document-code-line"><span>{index + 1}</span><code>{line || " "}</code></div>)}</div>; }

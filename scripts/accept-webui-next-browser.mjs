@@ -144,8 +144,10 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     assert.equal(await page.getByRole("button", { name: "打开会话侧栏", exact: true }).isVisible(), true);
     const contentViews = page.getByRole("navigation", { name: "会话内容", exact: true });
     assert.equal(await contentViews.getByRole("button", { name: "主会话", exact: true }).getAttribute("aria-current"), "page", "the main Session shows both content views and marks itself current");
+    const conversationNode = await page.locator(".conversation").elementHandle();
     await page.getByRole("button", { name: "工具调用", exact: true }).click();
     await page.locator(".tool-calls-page").waitFor();
+    assert.equal(await conversationNode.evaluate(node => node.isConnected), true, "the production composition retains the conversation while Tool calls is open");
     assert.equal(await contentViews.getByRole("button", { name: "工具调用", exact: true }).getAttribute("aria-current"), "page", "the same paired navigation marks Tool calls current");
     await page.setViewportSize({ width: 390, height: 844 });
     const mainTab = contentViews.getByRole("button", { name: "主会话", exact: true });
@@ -154,6 +156,7 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     assert.ok(mainTabBox && toolTabBox && mainTabBox.x >= 0 && toolTabBox.x + toolTabBox.width <= 390, "both conversation content tabs remain visible at mobile width");
     await mainTab.click();
     await page.locator("#wish-composer").waitFor();
+    assert.equal(await conversationNode.evaluate(node => node === document.querySelector(".conversation")), true, "returning through the real Host restores the same conversation DOM");
     assert.equal((await manager.list()).length, 1, "leaving a new intent keeps only the original Session");
   } finally { await browser?.close(); await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -284,13 +287,13 @@ test("global Archive navigation and active/archived workspace grouping work on d
     await archived.getByRole("button", { name: /^旧版界面/ }).waitFor();
     assert.equal(await active.count(), 0, "archive owns the sidebar; the active list is unmounted");
     assert.equal(await page.locator(".panel-navigation").count(), 0, "active business navigation must not remain in Archive");
-    await page.locator(".ledger-header h1").filter({ hasText: "旧版界面" }).waitFor();
+    await page.getByRole("heading", { name: "旧版界面", exact: true }).waitFor();
     await page.locator(".message-text").filter({ hasText: "旧版界面的独立历史记录" }).waitFor();
     await page.getByRole("button", { name: "工具调用", exact: true }).click();
     await page.locator(".tool-calls-page").waitFor();
     assert.equal(await page.getByRole("navigation", { name: "会话内容", exact: true }).getByRole("button", { name: "工具调用", exact: true }).getAttribute("aria-current"), "page");
     await page.getByRole("button", { name: "主会话", exact: true }).click();
-    await page.locator(".ledger-header h1").filter({ hasText: "旧版界面" }).waitFor();
+    await page.getByRole("heading", { name: "旧版界面", exact: true }).waitFor();
     assert.equal(await page.locator(".message-text").filter({ hasText: "检查文档" }).count(), 0);
     assert.equal(await page.locator("#wish-composer").count(), 0);
     assert.deepEqual(await archived.locator(".workspace-session-group").evaluateAll(nodes => nodes.map(node => ({ scope: node.dataset.workspace, count: node.querySelectorAll(".session-link").length }))), [{ scope: wish, count: 1 }, { scope: docs, count: 1 }]);
@@ -298,10 +301,10 @@ test("global Archive navigation and active/archived workspace grouping work on d
     await capture(page, "desktop-archive-groups");
     await archived.getByRole("button", { name: "发布记录", exact: true }).click();
     await rail.getByRole("button", { name: "会话", exact: true }).click();
-    await page.locator(".ledger-header h1").filter({ hasText: "检查文档" }).waitFor();
+    await page.getByRole("heading", { name: "检查文档", exact: true }).waitFor();
     assert.equal(await page.locator("#wish-composer").inputValue(), "普通会话草稿");
     await rail.getByRole("button", { name: "归档", exact: true }).click();
-    await page.locator(".ledger-header h1").filter({ hasText: "发布记录" }).waitFor();
+    await page.getByRole("heading", { name: "发布记录", exact: true }).waitFor();
     await archived.getByRole("button", { name: "更多操作：旧版界面", exact: true }).click();
     await page.getByRole("menuitem", { name: "取消归档", exact: true }).click();
     await archived.getByRole("button", { name: "旧版界面", exact: true }).waitFor({ state: "detached" });
@@ -508,7 +511,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     assert.equal(await page.getByRole("navigation", { name: "会话列表", exact: true }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "刷新状态", exact: true }).count(), 0);
     await skillNavigation.getByRole("button", { name: /sample/ }).click();
-    await page.locator(".skill-document").filter({ hasText: "Read the sample." }).waitFor();
+    await page.locator(".skill-markdown").filter({ hasText: "Read the sample." }).waitFor();
     const { sessions: [session] } = await (await fetch(booted.context.get("webManagementHost").url + "/api/sessions")).json();
     const plan = booted.surfaceContext.get("plan");
     await plan.enter({ sessionId: session.sessionId }); await plan.update({ sessionId: session.sessionId, markdown: "# 浏览器验收计划\n先验证，再实施。" });
@@ -690,7 +693,7 @@ test("conversation workbench streams live output, reloads the canonical answer a
     const configuration = { schemaVersion: 1, defaultModel: "fixture/primary", fallbackModels: [], maxRetries: 0,
       providers: [{ id: "fixture", protocol: "openai-chat-completions", baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, auth: { type: "none" }, developerRoleMode: "native", models: [{ id: "primary", status: "active", contextWindowTokens: 65536, maxOutputTokens: 4096, input: { text: true, image: false }, reasoning: false, toolCalling: true, developerRole: true }, { id: "secondary", status: "active", contextWindowTokens: 65536, maxOutputTokens: 4096, input: { text: true, image: false }, reasoning: false, toolCalling: true, developerRole: true }] }] };
     booted = await bootstrap({ surface: "webui", cwd: directory, homeDirectory: directory,
-      environment: { WISH_DATA_DIR: join(directory, "data"), WISH_WEBUI_WORKSPACE_ROOT: directory, WISH_MODELS_JSON: JSON.stringify(configuration), WISH_PERMISSION_PROFILE: "approval-required" },
+      environment: { WISH_DATA_DIR: join(directory, "data"), WISH_WEBUI_WORKSPACE_ROOT: directory, WISH_MODELS_JSON: JSON.stringify(configuration), WISH_PERMISSION_PROFILE: "approval-required", WISH_SESSION_TITLE_ENABLED: "0" },
       management: managedWebUi({ directory: join(directory, "management"), port: 0 }) });
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [];
@@ -733,19 +736,75 @@ test("conversation workbench streams live output, reloads the canonical answer a
     await capture(page, "desktop-model-usage");
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
+    const prompt = page.locator(".conversation:visible .system-prompt-disclosure");
+    await prompt.locator(":scope > summary").click();
+    await prompt.locator(".system-prompt-body").waitFor();
+    const promptNode = await prompt.elementHandle(), promptBody = await prompt.locator(".system-prompt-body").elementHandle();
+    const promptText = await promptBody.textContent();
+    assert.ok(promptText.length > 0, "the real first Run exposes its persisted System Prompt snapshot");
+    await page.evaluate(() => {
+      const row = document.querySelector(".system-prompt-disclosure"), body = row.querySelector(".system-prompt-body");
+      const audit = { row, body, removals: 0, closures: 0 };
+      const observer = new MutationObserver(records => {
+        for (const record of records) {
+          if (record.type === "attributes" && record.target === row && !row.open) audit.closures++;
+          for (const removed of record.removedNodes) if (removed === row || removed === body || removed.contains(row) || removed.contains(body)) audit.removals++;
+        }
+      });
+      observer.observe(document.querySelector(".workspace-content"), { childList: true, subtree: true, attributes: true, attributeFilter: ["open"] });
+      window.promptNavigationAudit = { ...audit, observer, read: () => ({ removals: audit.removals, closures: audit.closures }) };
+    });
+    const assertPromptRetained = async () => {
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await promptNode.evaluate(node => node.isConnected && node === document.querySelector(".system-prompt-disclosure") && node.open), true,
+        "the real Host keeps the same expanded System Prompt DOM through refresh and navigation");
+      assert.equal(await promptBody.evaluate(node => node.isConnected && node === document.querySelector(".system-prompt-body")), true,
+        "the prompt body never disappears while its owner remains available");
+      assert.equal(await promptBody.textContent(), promptText);
+      assert.deepEqual(await page.evaluate(() => window.promptNavigationAudit.read()), { removals: 0, closures: 0 });
+    };
+
+    // A real settings save broadcasts management SSE invalidation. Fail only
+    // its next prompt read: an available owner's last snapshot must stay on screen.
+    const promptControl = "**/api/sessions/*/controls/system-prompt-history";
+    await page.route(promptControl, route => route.fulfill({ status: 503, contentType: "application/json",
+      body: JSON.stringify({ error: { code: "fixture_transient_read", message: "temporary acceptance read failure" } }) }), { times: 1 });
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
+    await page.getByRole("button", { name: "通用设置", exact: true }).click();
+    const delivery = page.locator("select#webui-composer-busy-delivery"), initialDelivery = await delivery.inputValue();
+    const failedPromptRead = page.waitForResponse(response => response.url().endsWith("/controls/system-prompt-history") && response.status() === 503);
+    await delivery.selectOption(initialDelivery === "queue" ? "steer" : "queue");
+    await (await failedPromptRead).finished();
+    await page.locator(".settings-section").filter({ has: delivery }).locator(".setting-commit-status").filter({ hasText: "已应用" }).waitFor();
     await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
+    await assertPromptRetained();
+    await page.getByRole("button", { name: "工具调用", exact: true }).click();
+    await page.locator(".tool-calls-page:visible").waitFor();
+    await page.getByRole("button", { name: "主会话", exact: true }).click();
+    await assertPromptRetained();
+
+    // Recover through another actual settings invalidation and preserve the
+    // original preference before the rest of the workbench acceptance continues.
+    await page.getByRole("button", { name: "设置与插件", exact: true }).click();
+    await page.getByRole("button", { name: "通用设置", exact: true }).click();
+    const recoveredPromptRead = page.waitForResponse(response => response.url().endsWith("/controls/system-prompt-history") && response.status() === 200);
+    await delivery.selectOption(initialDelivery);
+    await (await recoveredPromptRead).finished();
+    await page.locator(".settings-section").filter({ has: delivery }).locator(".setting-commit-status").filter({ hasText: "已应用" }).waitFor();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
+    await assertPromptRetained();
+    await page.evaluate(() => window.promptNavigationAudit.observer.disconnect());
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
     await page.reload();
     await openFirstSession(page);
     await page.locator(".message-text").filter({ hasText: "这是一条本地验收回复。" }).waitFor();
     await page.locator(".final-answer .message-markdown h2").filter({ hasText: "Markdown 验收" }).waitFor();
-    assert.equal(await page.locator(".final-answer").count(), 1); assert.equal(requests, 1); assert.deepEqual(errors, []);
+    assert.equal(await page.locator(".final-answer").count(), 1, "one canonical final answer"); assert.equal(requests, 1, "one fixture model request"); assert.deepEqual(errors, []);
     await page.locator("#wish-composer").fill("将验收正文写入 approved.txt");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await page.getByRole("region", { name: "工具审批 write", exact: true }).waitFor({ timeout: 6000 }).catch(async error => { throw new Error(JSON.stringify({ errors, requests, body: await page.locator("body").innerText() }), { cause: error }); });
     await capture(page, "desktop-approval");
-    await page.getByRole("button", { name: "批准工具调用", exact: true }).click();
+    await page.getByRole("region", { name: "工具审批 write", exact: true }).getByRole("button", { name: "批准", exact: true }).click();
     await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
     await page.getByRole("button", { name: "工具调用", exact: true }).click();
     const writeTool = page.locator(".tool-call-row").filter({ hasText: "write" }).last();

@@ -21,9 +21,9 @@ export function actor(value: MemoryActor): MemoryActor {
     ...(value.runId === undefined ? {} : { runId: text(value.runId, "runId") }) });
 }
 export function content(value: MemoryContent): MemoryContent {
-  if (!Array.isArray(value?.keywords) || value.keywords.length > 32 || !Array.isArray(value.evidence) || value.evidence.length < 1 || value.evidence.length > 32) throw new TypeError("Memory requires bounded keywords and at least one evidence reference");
-  return Object.freeze({ title: text(value.title, "title", 200), content: text(value.content, "content", 32_000), appliesTo: text(value.appliesTo, "appliesTo", 1000),
-    keywords: Object.freeze([...new Set(value.keywords.map(word => text(word, "keyword", 100)))]),
+  if (!Array.isArray(value?.keywords) || !Array.isArray(value.evidence) || value.evidence.length < 1) throw new TypeError("Memory requires keywords and at least one evidence reference");
+  return Object.freeze({ ...(value.path === undefined ? {} : { path: memoryPath(value.path) }), title: text(value.title, "title", Infinity), content: value.path !== undefined && value.content === "" ? "" : text(value.content, "content", Infinity), appliesTo: text(value.appliesTo, "appliesTo", Infinity),
+    keywords: Object.freeze([...new Set(value.keywords.map(word => text(word, "keyword", Infinity)))]),
     evidence: Object.freeze(value.evidence.map(item => {
       if (!item || !["session", "workflow", "operator"].includes(item.kind) || !/^[a-f0-9]{64}$/u.test(item.digest)) throw new TypeError("Invalid Memory evidence");
       if (item.throughSequence !== undefined && (!version(item.throughSequence) || item.kind !== "session")) throw new TypeError("Invalid Memory evidence sequence");
@@ -53,16 +53,22 @@ export function snapshotState(value: unknown): MemoryState {
   const state = value as MemoryState;
   if (!state || state.schemaVersion !== 1 || !Array.isArray(state.documents) || !Array.isArray(state.candidates) || !Array.isArray(state.audit)) throw new TypeError("Invalid Memory state");
   version(state.revision);
-  if (state.documents.length > 1000 || state.candidates.length > 5000 || state.audit.length > 10_000 || state.audit.length !== state.revision) throw new TypeError("Memory state exceeds limits or has an incomplete audit");
+  if (state.audit.length !== state.revision) throw new TypeError("Memory state has an incomplete audit");
   const documents = state.documents.map(document), candidates = state.candidates.map(candidate);
   if (new Set(documents.map(item => item.id)).size !== documents.length || new Set(candidates.map(item => item.id)).size !== candidates.length) throw new TypeError("Duplicate Memory identity");
   const operations = new Set<string>();
   const audit = state.audit.map((item, index) => {
-    if (item.revision !== index + 1 || !["propose", "accept", "reject", "status"].includes(item.action) || !/^[a-f0-9]{64}$/u.test(item.requestDigest)) throw new TypeError("Invalid Memory audit");
+    if (item.revision !== index + 1 || !["propose", "accept", "reject", "status", "consolidate"].includes(item.action) || !/^[a-f0-9]{64}$/u.test(item.requestDigest)) throw new TypeError("Invalid Memory audit");
     const operationId = text(item.operationId, "operationId", 256);
     if (operations.has(operationId)) throw new TypeError("Duplicate Memory operation");
     operations.add(operationId);
     return Object.freeze({ revision: item.revision, operationId, requestDigest: item.requestDigest, action: item.action, targetId: identity(item.targetId), actor: actor(item.actor), reason: text(item.reason, "reason", 2000), at: date(item.at) });
   });
   return Object.freeze({ schemaVersion: 1, libraryId: identity(state.libraryId), revision: state.revision, documents: Object.freeze(documents), candidates: Object.freeze(candidates), audit: Object.freeze(audit) });
+}
+
+/** File identity, not a generation quota. Keep every artifact inside its memory workspace. */
+export function memoryPath(value: unknown): string {
+  if (typeof value !== "string" || !value || value.includes("\0") || value.includes("\\") || value.split("/").some(part => !part || part === "." || part === ".." || part.startsWith("."))) throw new TypeError("Invalid memory workspace path");
+  return value;
 }

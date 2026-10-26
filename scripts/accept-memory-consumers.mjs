@@ -25,10 +25,11 @@ function grant(tool, input, context = ctx) { return issueToolAuthorizationGrant(
   clock: { now: () => new Date(1000) }, issuedAtEpochMs: 1000, ttlMs: 60000 }); }
 function decode(result) { return JSON.parse(result.content[0].text.split("\n").slice(1).join("\n")); }
 
-test("Memory Tools bind exact input and Step authority; writes remain candidates", async () => {
+test("Memory Tools bind exact input and Step authority; writes append automatic notes", async () => {
   const memory = await prepared();
-  const tools = createMemoryTools(memory, { capture: async () => evidence });
-  assert.deepEqual(tools.map(tool => tool.name), ["memory_search", "memory_read", "memory_write"]);
+  const notes = [];
+  const tools = createMemoryTools(memory, { capture: async () => evidence }, { async addNote(input) { notes.push(input); return { noteId: "note-1", status: "recorded" }; } });
+  assert.deepEqual(tools.map(tool => tool.name), ["memory_search", "memory_read", "memory_list", "memory_write"]);
   const read = tools[1], input = parsed(read, { id: "tests", expectedVersion: 1, limit: 3 });
   const inactive = grant(read, input);
   await assert.rejects(read.execute(input, ctx, inactive), /not active/);
@@ -40,12 +41,13 @@ test("Memory Tools bind exact input and Step authority; writes remain candidates
   await assert.rejects(withActiveToolAuthorizationGrant(changed, () => read.execute({ ...input, id: "other" }, ctx, changed)), /exact request/);
   const wrongStep = grant(read, input);
   await assert.rejects(withActiveToolAuthorizationGrant(wrongStep, () => read.execute(input, { ...ctx, permissions: { ...ctx.permissions, subject: { ...ctx.permissions.subject, stepId: "other" } } }, wrongStep)), /exact request/);
-  const write = tools[2], proposed = parsed(write, { id: "tests", expectedVersion: 1, title: "Tests", content: "New candidate", appliesTo: "Wish", keywords: [], reason: "update" });
+  const write = tools[3], proposed = parsed(write, { note: "Remember to run focused tests after editing." });
   const writer = grant(write, proposed);
-  assert.equal(decode(await withActiveToolAuthorizationGrant(writer, () => write.execute(proposed, ctx, writer))).status, "pending");
+  assert.equal(decode(await withActiveToolAuthorizationGrant(writer, () => write.execute(proposed, ctx, writer))).status, "recorded");
+  assert.deepEqual(notes[0].evidence, evidence);
   assert.equal((await memory.read("tests")).content, proposal.content);
   for (const raw of [{ ...proposed, actor: { kind: "human" } }, { ...proposed, evidence }, { ...proposed, reviewSessionId: "other" }, { ...proposed, id: "../bad" }]) assert.equal(write.parse(raw).ok, false);
-  assert.deepEqual(createMemoryTools(memory).map(tool => tool.name), ["memory_search", "memory_read"]);
+  assert.deepEqual(createMemoryTools(memory).map(tool => tool.name), ["memory_search", "memory_read", "memory_list"]);
 });
 
 test("Memory projection is bounded reference data, excludes pending and does not invent Tool availability", async () => {

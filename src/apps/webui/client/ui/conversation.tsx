@@ -55,6 +55,7 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
   const contributions = useSnapshot(slots);
   const [error, setError] = useState<string | null>(null), [follow, setFollow] = useState(true);
   const scroll = useRef<HTMLDivElement>(null);
+  const followedSession = useRef(state.selectedId);
   const prependScrollHeight = useRef<number | null>(null);
   const [ledgerWindow, setLedgerWindow] = useState({ sessionId: state.selectedId, limit: LEDGER_PAGE_TURNS });
   const [requestedTurnId, setRequestedTurnId] = useState<string | null>(null);
@@ -98,7 +99,12 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
   const session = state.sessions.find(item => item.sessionId === state.selectedId);
   const archived = session?.status === "archived";
   const mode = preferences.sections.find(item => item.namespace === "webui-composer")?.value["busy-delivery"] === "steer" ? "steer" : "queue";
-  useEffect(() => { setFollow(true); }, [state.selectedId]);
+  useLayoutEffect(() => {
+    if (followedSession.current === state.selectedId) return;
+    followedSession.current = state.selectedId;
+    setFollow(true);
+    setRequestedTurnId(null);
+  }, [state.selectedId]);
   useEffect(() => slots.onOpenLedgerTurn(request => {
     if (request.sessionId !== state.selectedId) return;
     setFollow(false);
@@ -145,6 +151,7 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
       if (!wide && sidebarWide.current) setSidebarOpen(false);
       sidebarWide.current = wide;
     };
+    adapt();
     media.addEventListener("change", adapt);
     return () => media.removeEventListener("change", adapt);
   }, []);
@@ -182,8 +189,8 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
         <ConversationViewTabs slots={slots} current="conversation" archived={archived} />
         <div className="ledger-header-actions">{archived || active ? <span className={`run-state ${active ? "running" : ""}`}>{archived ? t("已归档", "Archived") : t("运行中", "Running")}</span> : null}{!sidebarOpen ? <button ref={sidebarToggle} className="icon-button session-sidebar-toggle" aria-label={t("打开会话侧栏", "Open session sidebar")} title={t("打开会话侧栏", "Open session sidebar")} aria-expanded={false} aria-controls="session-sidebar" onClick={openSidebar}><Icon name="panel-right-open" /></button> : null}</div>
       </header>
-      <div className="ledger-scroll" ref={scroll} onScroll={() => { const node = scroll.current; if (node) setFollow(node.scrollHeight - node.scrollTop - node.clientHeight < 96); }}>
-        {topContributions.length ? <section className="conversation-top-context" aria-label={t("会话上下文", "Conversation context")}>{topContributions.map(({ item, block }) => <IsolatedView key={item.id} View={item.View} block={block} />)}</section> : null}
+      <div className="ledger-scroll" ref={scroll} onScroll={() => { const node = scroll.current; if (node?.clientHeight) setFollow(node.scrollHeight - node.scrollTop - node.clientHeight < 96); }}>
+        {topContributions.length ? <section className="conversation-top-context" aria-label={t("会话上下文", "Conversation context")}>{topContributions.map(({ item, block }) => <IsolatedView key={`${state.selectedId}/${item.id}/${block.id}`} View={item.View} block={block} />)}</section> : null}
         <div className="conversation-ledger-layout">
           {historyReady && contributions.conversationCards.length ? <aside className="conversation-card-stack" aria-label={t("会话任务", "Session tasks")}>{contributions.conversationCards.map(item => <IsolatedView key={item.id} View={item.View} sessionId={state.selectedId!} />)}</aside> : null}
           <div className="conversation-ledger-feed">

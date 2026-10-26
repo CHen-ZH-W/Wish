@@ -38,7 +38,7 @@ export class StorageModelAttemptLedger extends ModelAttemptLedgerService {
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
-    this.currency = requireCurrency(config.currency ?? "USD");
+    this.currency = requireCurrency(config.currency ?? "CNY");
     const backendId = config.backendId ?? ctx.storageBackend.id;
     const lease = ctx.storageBackend.acquire(backendId, {
       journal: { atomicBatch: true, durability: "fsync" },

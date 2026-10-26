@@ -111,6 +111,34 @@ test("a draining Consumer can finish calls to its Provider before the Provider a
   });
 });
 
+test("configuration replacement cancels owner waits before draining admitted work", async () => {
+  const entered = deferred(), cancelled = deferred(); let cleaned = 0;
+  await fixture(async ({ root, inspection, stop }) => {
+    let owner;
+    root.loader.builtins.waiter = { apply(ctx) {
+      owner = new PluginWorkOwner(ctx, {
+        code: "waiter", codeReload: true,
+        beforeDrain: () => cancelled.resolve(),
+        close: () => { cleaned++; },
+      });
+    } };
+    await root.loader.create({ id: "waiter", name: "cordis:waiter" });
+    const admitted = owner.run(async () => { entered.resolve(); await cancelled.promise; return "cancelled"; });
+    await entered.promise;
+    try {
+      const result = await root.pluginChanges.run({ kind: "reconfigure", source: "configuration" }, async scope => {
+        await scope.phase("waiting-safe-point");
+        return stop.disableWithin(select(inspection, "waiter"), scope);
+      });
+      assert.equal(result.state.phase, "succeeded", JSON.stringify(result.state));
+      assert.equal(await admitted, "cancelled");
+      assert.equal(cleaned, 1);
+      assert.equal(root.loader.resolve("waiter").fiber, undefined);
+      await assert.rejects(owner.run(() => 1), /waiter_closed/);
+    } finally { cancelled.resolve(); await admitted; }
+  });
+});
+
 test("unconfigured Root rejects execution without changing runtime", async () => {
   await fixture(async ({ root, inspection, stop }) => {
     const state = reporter(root, "worker"); await root.loader.create({ id: "worker", name: "cordis:worker" });

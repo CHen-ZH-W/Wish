@@ -24,7 +24,8 @@ function sameSessions(left: readonly Session[], right: readonly Session[]): bool
     return item.schemaVersion === other.schemaVersion && item.sessionId === other.sessionId &&
       item.agentId === other.agentId && item.scope === other.scope && item.status === other.status &&
       item.createdAt === other.createdAt && item.updatedAt === other.updatedAt &&
-      item.historyRevision === other.historyRevision && item.title === other.title;
+      item.historyRevision === other.historyRevision && item.title === other.title &&
+      item.titleSource === other.titleSource && item.titleRevision === other.titleRevision;
   });
 }
 
@@ -163,7 +164,7 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
     let createdId: string | null = null;
     await this.mutate(async current => { const { session } = await this.connection.request<{ session: Session }>("/api/sessions", { workspaceRoot: root });
       if (!current()) return;
-      this.replaceSessions([...this.getSnapshot().sessions, session], session.sessionId, false); createdId = session.sessionId; });
+      this.replaceSessions([...this.getSnapshot().sessions, session], session.sessionId, false); createdId = session.sessionId; }, "background");
     if (!createdId) throw new Error("连接状态已变化，请检查会话列表后重试");
     return createdId;
   };
@@ -229,7 +230,7 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
         const accepted = await this.connection.request<WishWebRunAccepted>(`/api/sessions/${encodeURIComponent(selectedId)}/runs`, { text });
         if (this.getSnapshot().selectedId === selectedId) { this.publish({ ...this.getSnapshot(), runs: [...this.getSnapshot().runs, accepted.run] }); this.run.observe(accepted.run.runId); }
       }
-    });
+    }, "background");
   };
   abort = async (): Promise<void> => {
     const run = this.getSnapshot().runs.find(item => item.status === "running"); if (!run) return;
@@ -250,12 +251,19 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
     });
   };
   close(): void { this.closed = true; clearInterval(this.timer); this.removeConnection(); this.removeInvalidation(); this.queue.close(); this.run.close(); }
-  private async mutate(action: (current: () => boolean) => Promise<void>): Promise<void> {
+  private async mutate(action: (current: () => boolean) => Promise<void>, refresh: "wait" | "background" = "wait"): Promise<void> {
     if (this.closed || !this.getSnapshot().available || this.getSnapshot().working) throw new Error("会话当前不可操作，请检查连接和插件状态");
     this.mutationVersion++;
     const generation = this.generation;
     this.publish({ ...this.getSnapshot(), working: true, error: null });
-    try { await action(() => !this.closed && generation === this.generation); }
-    finally { if (!this.closed) { this.publish({ ...this.getSnapshot(), working: false }); await this.refresh(); } }
+    let succeeded = false;
+    try { await action(() => !this.closed && generation === this.generation); succeeded = true; }
+    finally {
+      if (!this.closed) {
+        this.publish({ ...this.getSnapshot(), working: false });
+        if (succeeded && refresh === "background") void this.refresh();
+        else await this.refresh();
+      }
+    }
   }
 }

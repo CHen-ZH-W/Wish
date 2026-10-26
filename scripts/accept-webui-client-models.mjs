@@ -513,6 +513,8 @@ test("Skills and Models own their global-rail and settings-area seats", async ()
   root.provide("wishNewSession", new NewSessionClientModel({ startCreate() {}, async create() { return "new"; }, async send() {} }, new ComposerDrafts()));
   const connection = new Probe({ online: true, instanceId: "root", businessAvailable: true, error: null });
   connection.onInvalidation = () => () => {};
+  connection.request = async () => ({ value: { schemaVersion: 1, workspace: { root: "/workspace", fingerprint: "workspace", revision: "one" },
+    catalogDigest: "empty", skills: [], issues: [] } });
   root.provide("wishConnection", connection);
   const skills = await root.plugin(SkillsClientUi), models = await root.plugin(ModelsClientUi);
   try {
@@ -530,25 +532,26 @@ test("Skills and Models own their global-rail and settings-area seats", async ()
     assert.equal(slots.getSnapshot().panels.some(panel => panel.id === "models"), true);
   } finally { await models.dispose(); assert.deepEqual(slots.getSnapshot().composerItems, []); assert.deepEqual(slots.getSnapshot().newSessionComposerItems, []); await root.fiber.dispose(); }
 });
-test("Skills client projects a module-owned catalog and selects through the generic feature port", async () => {
+test("Skills client reads a global catalog and selects without a Session feature port", async () => {
   const entry = { packageId: "package", name: "inspect", description: "Inspect first", source: "workspace", digest: "digest", modelInvocable: true };
-  const data = { schemaVersion: 1, workspace: { fingerprint: "workspace", revision: "one" }, skills: [entry], issues: [], selectionChanged: false };
-  class FeaturesProbe extends SnapshotStore {
+  const data = { schemaVersion: 1, workspace: { root: "/workspace", fingerprint: "workspace", revision: "one" }, catalogDigest: "catalog", skills: [entry], issues: [] };
+  class ConnectionProbe extends SnapshotStore {
     calls = [];
-    async refresh() {}
-    async act(sessionId, view, action, feedback) {
-      this.calls.push({ sessionId, action, feedback });
-      this.publish({ ...this.getSnapshot(), views: [{ ...view, data: { ...data, selected: { entry, content: "Complete instructions" } } }] });
+    onInvalidation() { return () => {}; }
+    async request(path, body) {
+      this.calls.push({ path, body });
+      return { value: body ? { schemaVersion: 1, entry, content: "Complete instructions" } : data };
     }
   }
-  const feature = { key: "skills", title: "Skills", text: "", data, token: { reviewId: "one" }, actions: [{ name: "inspect", label: "查看", feedback: true }] };
-  const features = new FeaturesProbe({ sessionId: "session", views: [feature], error: null, available: true, pending: false });
-  const model = new SkillsClientModel(features);
+  const connection = new ConnectionProbe({ online: true, businessAvailable: true, instanceId: "root", error: null });
+  const model = new SkillsClientModel(connection);
   try {
+    await model.refresh();
     assert.equal(model.getSnapshot().skills[0].name, "inspect");
-    assert.equal(parseSkillFeatureData({ ...data, skills: [{ ...entry, source: "remote" }] }), undefined);
+    assert.equal(parseSkillFeatureData({ ...data, selectionChanged: false, skills: [{ ...entry, source: "remote" }] }), undefined);
     await model.select("inspect");
-    assert.deepEqual(features.calls, [{ sessionId: "session", action: "inspect", feedback: "inspect" }]);
+    assert.deepEqual(connection.calls.at(-1), { path: "/api/queries/skills/default",
+      body: { name: "inspect", expectedDigest: "digest", expectedPackageId: "package" } });
     assert.equal(model.getSnapshot().selected.content, "Complete instructions");
   } finally { model.close(); }
 });

@@ -260,6 +260,7 @@ test("stable Agent config updates replace the downstream Application generation"
     });
     await root.plugin(JournalRuntimeLifecycleProvider, { backendId: "file" });
     await root.plugin(StorageModelAttemptLedger, { backendId: "file" });
+    assert.equal(root.modelAttemptLedger.currency, "CNY");
     await root.plugin(BlobToolResultArchiveProvider, { backendId: "file" });
     await root.plugin(FileSessionPersistence);
     await root.plugin(Sessions, { dataDirectory: "./session-state" });
@@ -328,6 +329,32 @@ test("stable Agent config updates replace the downstream Application generation"
   assert.equal(disposals, 2);
 });
 
+test("the built-in profile defaults missing and empty pricing currency to official CNY rates", async () => {
+  for (const value of [undefined, ""]) {
+    const directory = await mkdtemp(join(tmpdir(), "wish-default-cny-"));
+    let booted;
+    try {
+      booted = await bootstrap({ surface: "cli", argv: ["--version"], cwd: repositoryRoot,
+        homeDirectory: directory, environment: { WISH_DATA_DIR: join(directory, "data"),
+          ...(value === undefined ? {} : { WISH_MODEL_PRICING_CURRENCY: value }) } });
+      assert.equal(await booted.completion, 0);
+      const ctx = booted.surfaceContext;
+      assert.equal(ctx.get("modelAttemptLedger").currency, "CNY");
+      const quote = ctx.get("models").pricing.resolve({
+        requestedModel: { provider: "deepseek", model: "deepseek-flash" },
+        requestedAt: Date.parse("2026-10-19T02:00:00.000Z"),
+        currency: ctx.get("modelAttemptLedger").currency,
+      });
+      assert.equal(quote.currency, "CNY");
+      assert.equal(quote.period, "peak");
+      assert.equal(quote.inputPerMillionTokens, 2);
+    } finally {
+      await booted?.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("the built-in profile translates compatibility environment at Loader", async () => {
   const directory = await mkdtemp(join(tmpdir(), "built-in-config-root-"));
   const environment = {
@@ -336,7 +363,7 @@ test("the built-in profile translates compatibility environment at Loader", asyn
     WISH_MODEL: "deepseek/deepseek-v4-pro",
     WISH_FALLBACK_MODELS: "openai/gpt-5.2, anthropic/claude-opus-4-6",
     WISH_MODEL_MAX_RETRIES: "3",
-    WISH_MODEL_PRICING_CURRENCY: "CNY",
+    WISH_MODEL_PRICING_CURRENCY: "USD",
     WISH_AGENT_ID: "configured-agent",
     WISH_AGENT_INSTRUCTIONS: "Follow the configured instructions.",
     WISH_PERMISSION_PROFILE: "read-only",
@@ -389,7 +416,7 @@ test("the built-in profile translates compatibility environment at Loader", asyn
     assert.equal(configuration.models.maxRetries, 3);
     assert.equal(
       application.surfaceContext.get("modelAttemptLedger").currency,
-      "CNY",
+      "USD",
     );
     assert.equal(configuration.agentId, "configured-agent");
     assert.equal(

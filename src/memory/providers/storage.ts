@@ -6,7 +6,7 @@ import { MemoryService } from "../service.js";
 import { MemoryRuntime } from "../memory.js";
 import { JournalMemoryStore } from "../store.js";
 import { identity } from "../validation.js";
-import type { ChangeMemoryStatusRequest, DecideMemoryRequest, MemoryQuery, ProposeMemoryRequest } from "../types.js";
+import type { ChangeMemoryStatusRequest, ConsolidateMemoryRequest, DecideMemoryRequest, MemoryQuery, ProposeMemoryRequest } from "../types.js";
 export interface Config { readonly backendId?: string; readonly libraryId?: string }
 export const Config: s<Config> = s.object({ backendId: s.string(), libraryId: s.string() });
 export default class StorageMemoryService extends MemoryService {
@@ -35,6 +35,7 @@ export default class StorageMemoryService extends MemoryService {
   propose(input: ProposeMemoryRequest) { return this.work.run(() => this.runtime.propose(input)); }
   decide(input: DecideMemoryRequest) { return this.work.run(() => this.runtime.decide(input)); }
   changeStatus(input: ChangeMemoryStatusRequest) { return this.work.run(() => this.runtime.changeStatus(input)); }
+  consolidate(input: ConsolidateMemoryRequest) { return this.work.run(() => this.runtime.consolidate(input)); }
   snapshot(input?: MemoryQuery) { return this.work.run(() => this.runtime.snapshot(input)); }
   close() { return this.work.close(); }
 }

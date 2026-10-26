@@ -1,8 +1,9 @@
-import type { ChangeMemoryStatusRequest, DecideMemoryRequest, Memory, MemoryAudit, MemoryCandidate, MemoryDocument, MemoryOperation, MemoryQuery, MemoryState, MemoryStateStore, ProposeMemoryRequest } from "./types.js";
+import type { ChangeMemoryStatusRequest, ConsolidateMemoryRequest, DecideMemoryRequest, Memory, MemoryAudit, MemoryCandidate, MemoryDocument, MemoryOperation, MemoryQuery, MemoryState, MemoryStateStore, ProposeMemoryRequest } from "./types.js";
+import { MemoryRevisionConflictError } from "./types.js";
 import { actor, candidate, content, document, hash, identity, snapshotState, text, version } from "./validation.js";
 import { retrieve } from "./retrieval.js";
 
-/** Domain authority. Only explicit human decisions can publish persistent knowledge. */
+/** Domain authority for human review and automatic, audited memory consolidation. */
 export class MemoryRuntime implements Memory {
   readonly libraryId: string;
   private tail = Promise.resolve();
@@ -68,6 +69,42 @@ export class MemoryRuntime implements Memory {
       const at = this.now().toISOString();
       const next = document({ ...content(current), id, digest: current.digest, version: current.version + 1, status: input.status, updatedAt: at, ...(supersededBy === undefined ? {} : { supersededBy }) });
       return { result: next, state: commitState(state, { ...state, documents: state.documents.map(item => item.id === id ? next : item) }, { ...operation, requestDigest, action: "status", targetId: id, at }) };
+    });
+  }
+  consolidate(input: ConsolidateMemoryRequest): Promise<number> {
+    const operation = normalizeOperation(input), expectedRevision = version(input.expectedRevision);
+    if (operation.actor.kind !== "curation") throw new Error("Only the curation Host can consolidate Memory");
+    const upserts = input.upserts.map(item => ({ ...content(item), id: identity(item.id), expectedVersion: version(item.expectedVersion) }));
+    const retirements = input.retirements.map(item => ({ id: identity(item.id), expectedVersion: version(item.expectedVersion),
+      ...(item.supersededBy === undefined ? {} : { supersededBy: identity(item.supersededBy) }) }));
+    const ids = [...upserts, ...retirements].map(item => item.id);
+    if (new Set(ids).size !== ids.length) throw new Error("Duplicate consolidation target");
+    const requestDigest = hash({ ...operation, expectedRevision, upserts, retirements });
+    return this.transact(input.signal, state => {
+      const replay = receipt(state, operation.operationId, requestDigest);
+      if (replay) return { result: replay.revision };
+      if (state.revision !== expectedRevision) throw new MemoryRevisionConflictError();
+      const at = this.now().toISOString(), documents = new Map(state.documents.map(item => [item.id, item]));
+      for (const item of upserts) {
+        const previous = documents.get(item.id);
+        if ((previous?.version ?? 0) !== item.expectedVersion || (previous && previous.status !== "accepted" && !previous.path)) throw new MemoryRevisionConflictError();
+        const body = content(item);
+        documents.set(item.id, document({ ...body, id: item.id, version: item.expectedVersion + 1, status: "accepted", digest: hash(body), updatedAt: at }));
+      }
+      for (const item of retirements) {
+        const previous = documents.get(item.id);
+        if (!previous || previous.version !== item.expectedVersion || previous.status !== "accepted") throw new MemoryRevisionConflictError();
+        documents.set(item.id, document({ ...content(previous), id: item.id, digest: previous.digest, version: previous.version + 1,
+          status: item.supersededBy ? "superseded" : "stale", updatedAt: at,
+          ...(item.supersededBy === undefined ? {} : { supersededBy: item.supersededBy }) }));
+      }
+      for (const item of retirements) {
+        if (item.supersededBy && (item.supersededBy === item.id || documents.get(item.supersededBy)?.status !== "accepted")) throw new Error("Consolidation replacement must remain accepted");
+      }
+      const next = commitState(state, { ...state, documents: [...documents.values()] }, {
+        ...operation, requestDigest, action: "consolidate", targetId: this.libraryId, at,
+      });
+      return { result: next.revision, state: next };
     });
   }
   async close() { this.closed = true; await this.tail; await this.store.close(); }

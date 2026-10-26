@@ -3,12 +3,13 @@ import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import { resolve } from "node:path";
 import { FileSubagentExchange } from "../../subagents/files.js";
 import type { SubagentResourceManifest } from "../../subagents/resources.js";
-import { childMemoryInput, childMemoryState, MEMORY_CANDIDATES_RESOURCE, type ChildMemoryInput } from "../child-resources.js";
+import { childMemoryState, MEMORY_CANDIDATES_RESOURCE, type ChildMemoryInput } from "../child-resources.js";
+import { readChildMemorySnapshot } from "../adapters/child-snapshot-file.js";
 import { MemoryRuntime } from "../memory.js";
 import { retrieve } from "../retrieval.js";
 import { MemoryService } from "../service.js";
 import { emptyState } from "../validation.js";
-import type { ChangeMemoryStatusRequest, DecideMemoryRequest, MemoryQuery, MemoryState, MemoryStateStore, ProposeMemoryRequest } from "../types.js";
+import type { ChangeMemoryStatusRequest, ConsolidateMemoryRequest, DecideMemoryRequest, MemoryQuery, MemoryState, MemoryStateStore, ProposeMemoryRequest } from "../types.js";
 
 class ChildProposalStore implements MemoryStateStore {
   readonly libraryId: string;
@@ -28,7 +29,7 @@ export class ChildSnapshotMemory {
   readonly libraryId: string;
   private constructor(private readonly runtime: MemoryRuntime, private readonly input: ChildMemoryInput, private readonly manifest: SubagentResourceManifest) { this.libraryId = input.snapshot.libraryId; }
   static async open(exchange: FileSubagentExchange, manifest: SubagentResourceManifest): Promise<ChildSnapshotMemory> {
-    const input = childMemoryInput(manifest);
+    const input = await readChildMemorySnapshot(exchange, manifest);
     const output = await exchange.readOutputResource(manifest, MEMORY_CANDIDATES_RESOURCE);
     if (output && output.schemaVersion !== 1) throw new Error("Invalid child Memory candidate resource version");
     const state = childMemoryState(output?.payload ?? { ...emptyState(input.snapshot.libraryId), documents: input.snapshot.documents }, input, manifest);
@@ -48,6 +49,7 @@ export class ChildSnapshotMemory {
   }
   async decide(_input: DecideMemoryRequest): Promise<never> { throw new Error("Child Memory snapshot cannot accept or reject knowledge"); }
   async changeStatus(_input: ChangeMemoryStatusRequest): Promise<never> { throw new Error("Child Memory snapshot cannot mutate accepted knowledge"); }
+  async consolidate(_input: ConsolidateMemoryRequest): Promise<never> { throw new Error("Child Memory snapshot cannot consolidate knowledge"); }
   close() { return this.runtime.close(); }
 }
 
@@ -81,6 +83,7 @@ export default class ChildSnapshotMemoryService extends MemoryService {
   propose(input: ProposeMemoryRequest) { return this.work.run(() => this.runtime!.propose(input)); }
   decide(input: DecideMemoryRequest) { return this.work.run(() => this.runtime!.decide(input)); }
   changeStatus(input: ChangeMemoryStatusRequest) { return this.work.run(() => this.runtime!.changeStatus(input)); }
+  consolidate(input: ConsolidateMemoryRequest) { return this.work.run(() => this.runtime!.consolidate(input)); }
   close() { return this.work.close(); }
   private ready() { this.work.assertAttached(); if (!this.runtime) throw new Error("Child Memory snapshot is not active"); return this.runtime; }
 }

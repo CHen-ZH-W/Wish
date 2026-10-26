@@ -12,6 +12,26 @@ async function fixture(run) {
 const operation = (overrides = {}) => ({ id: "operation-one", kind: "disable", source: "management", requestId: "request-one",
   entryIds: ["include:feature"], fingerprint: "a".repeat(64), submittedRevision: "initial", phase: "queued", code: null,
   cancellable: true, ...overrides });
+
+test("restart repairs an old rejected operation that still owns an unresolved intent and preserves stop diagnostics", async () => fixture(async filename => {
+  const pending = { requestId: "request-one", revision: "initial", preference: "disabled",
+    selection: { instanceId: "old-root", entryIds: ["include:feature"] },
+    failure: { stage: "stop", operationId: "stop-one", code: "stop_cleanup_failed", runtime: "changed", cleanup: "failed" } };
+  await writeFile(filename, JSON.stringify({ schemaVersion: 2, revision: "saved", preferences: {}, pending, receipts: [],
+    operations: [operation({ phase: "rejected", code: "management_recovery_required", cancellable: false })] }));
+  const store = await ManagedPluginStore.open(filename);
+  try {
+    assert.deepEqual(store.snapshot().pending, pending);
+    assert.equal(store.snapshot().operations[0].phase, "recovery-required");
+    assert.equal(store.snapshot().operations[0].code, "stop_cleanup_failed");
+    const persisted = JSON.parse(await readFile(filename, "utf8"));
+    assert.equal(persisted.operations[0].phase, "recovery-required");
+    const invalid = structuredClone(pending);
+    invalid.failure.code = "private stack trace /secret/path";
+    await assert.rejects(store.commit(store.snapshot().revision, { preferences: {}, pending: invalid, receipts: [] }),
+      { code: "management_store_corrupt" });
+  } finally { await store.close(); }
+}));
 test("managed preferences are separate, durable, immutable and single-writer", async () => fixture(async filename => {
   const store = await ManagedPluginStore.open(filename);
   try {

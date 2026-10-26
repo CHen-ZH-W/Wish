@@ -163,7 +163,9 @@ export class ApplicationFacade implements WishApplication {
     input: UpdateSessionMetadataInput,
   ): Promise<Session> {
     await this.getSession(input);
-    return this.options.sessions.updateMetadata(input);
+    const session = await this.options.sessions.updateMetadata(input);
+    await this.sessionFeatures?.metadataUpdated?.(session);
+    return session;
   }
 
   async archiveSession(input: ArchiveSessionInput): Promise<Session> {
@@ -288,7 +290,10 @@ export class ApplicationFacade implements WishApplication {
       ...(selectedEffort === undefined ? {} : { reasoningEffort: selectedEffort }),
       ...(selectedPermission === undefined ? {} : { permissionProfile: selectedPermission }),
     });
-    await this.sessionFeatures?.beforeInput(input.sessionId, payload.text);
+    await this.sessionFeatures?.beforeInput(input.sessionId, payload.text, Object.freeze({ kind: "start" as const,
+      ...(input.runId === undefined ? {} : { runId: input.runId }),
+      ...(input.inputSource === undefined ? {} : { inputSource: input.inputSource }),
+    }));
     const profile = this.options.executionProfile;
     const runId = input.runId ?? (profile ? randomUUID() : undefined);
     if (profile && runId !== undefined) await profile.admit(session.sessionId, runId);
@@ -325,6 +330,24 @@ export class ApplicationFacade implements WishApplication {
       if (!pending.size && active.get(input.sessionId) === pending) active.delete(input.sessionId);
     };
     void handle.completion.then(settled, settled);
+    try {
+      await this.sessionFeatures?.runStarted?.(this, handle, Object.freeze({
+        text: payload.text,
+        model: payload.model,
+        ...(input.inputSource === undefined ? {} : { inputSource: input.inputSource }),
+      }));
+    } catch (error) {
+      // A failed observer must not leave a Run executing behind a rejected start.
+      // Drain the public handle, including profile and feature cleanup, before
+      // allowing the caller to retry or remove this Session.
+      const failures: unknown[] = [error];
+      try { this.controlRun(handle.runId, { type: "abort", source: "session-feature", reason: "Run-start observation failed" }); }
+      catch (stopError) { failures.push(stopError); }
+      try { await handle.completion; }
+      catch (cleanupError) { failures.push(cleanupError); }
+      if (failures.length > 1) throw new AggregateError(failures, "Run-start observation failed; termination or cleanup also failed");
+      throw error;
+    }
     return handle;
   }
 

@@ -36,6 +36,7 @@ import type {
   WishApplication,
   WishOutputEvent,
   WishRunControl,
+  WishRunHandle,
   WishRuntimeRecovery,
 } from "../types.js";
 import { WishApplicationRequestError } from "../errors.js";
@@ -387,10 +388,27 @@ async function routeRequest(
     }
 
     const defaultControl = /^\/api\/controls\/([a-z][a-z0-9-]{0,79})\/default$/u.exec(url.pathname)?.[1];
-    if (method === "GET" && defaultControl !== undefined) {
+    if (defaultControl !== undefined && (method === "GET" || method === "POST")) {
       const control = state.controls?.get(defaultControl);
-      if (!control?.inspectDefault) throw apiError(404, "control_not_found", "WebUI control is unavailable");
-      sendJson(response, 200, { value: await control.inspectDefault(state.application, operation.signal) });
+      const scope = Object.freeze({ workspaceRoot: state.workspaceRoot });
+      if (method === "GET") {
+        if (!control?.inspectDefault) throw apiError(404, "control_not_found", "WebUI control is unavailable");
+        sendJson(response, 200, { value: await control.inspectDefault(state.application, operation.signal, scope) });
+        return;
+      }
+      if (!control?.updateDefault) throw apiError(404, "control_not_found", "WebUI control is unavailable");
+      const body = await readJsonObject(request, state.maxJsonBodyBytes);
+      sendJson(response, 200, { value: await control.updateDefault(state.application, body, operation.signal, scope) });
+      return;
+    }
+
+    const defaultQuery = /^\/api\/queries\/([a-z][a-z0-9-]{0,79})\/default$/u.exec(url.pathname)?.[1];
+    if (method === "POST" && defaultQuery !== undefined) {
+      const control = state.controls?.get(defaultQuery);
+      if (!control?.queryDefault) throw apiError(404, "control_not_found", "WebUI query is unavailable");
+      const body = await readJsonObject(request, state.maxJsonBodyBytes);
+      sendJson(response, 200, { value: await control.queryDefault(state.application, body, operation.signal,
+        Object.freeze({ workspaceRoot: state.workspaceRoot })) });
       return;
     }
 
@@ -407,7 +425,9 @@ async function routeRequest(
       if (!control?.updateSession) throw apiError(404, "control_not_found", "WebUI control is unavailable");
       if (session.status !== "active") throw apiError(409, "session_archived", "Archived Session is read-only");
       const body = await readJsonObject(request, state.maxJsonBodyBytes);
-      sendJson(response, 200, { value: await control.updateSession(state.application, sessionId, body, operation.signal) });
+      // Capability controls may start ordinary Runs. Use the same observation
+      // ledger as the conversation endpoint so they remain visible and stoppable.
+      sendJson(response, 200, { value: await control.updateSession(observedApplication(state, sessionId), sessionId, body, operation.signal) });
       return;
     }
 
@@ -505,35 +525,7 @@ async function routeRequest(
         metadata: Object.freeze({ source: "wish-webui" }),
         signal: operation.signal,
       });
-      const accepted = wishWebRunAccepted(
-        handle,
-        validDate(state.now(), "WebUI clock").toISOString(),
-      );
-      state.runs.set(handle.runId, accepted.run);
-      const completion = handle.completion.then(
-        (completion) => {
-          state.runs.set(handle.runId, Object.freeze({
-            ...accepted.run,
-            status: completion.status,
-            completion,
-          }));
-          pruneRuns(state);
-        },
-        (error) => {
-          state.runs.set(handle.runId, Object.freeze({
-            ...accepted.run,
-            status: "failed",
-            cleanupError: error instanceof Error ? error.message : String(error),
-          }));
-          pruneRuns(state);
-        },
-      ).finally(() => {
-        state.runCompletions.delete(handle.runId);
-      });
-      state.runCompletions.set(handle.runId, completion);
-      void completion.catch(() => {
-        // Both branches above settle normally; retain a final safety handler.
-      });
+      const accepted = observeStartedRun(state, handle);
       sendJson(response, 202, accepted);
       return;
     }
@@ -601,7 +593,8 @@ async function routeRequest(
       const control = webRunControl(body);
       const run = state.runs.get(runControls);
       if (run && control.type !== "abort") {
-        await state.application.sessionFeatures?.beforeInput(run.sessionId, control.type === "follow_up" ? control.payload.text : control.text);
+        await state.application.sessionFeatures?.beforeInput(run.sessionId, control.type === "follow_up" ? control.payload.text : control.text,
+          { kind: control.type, runId: runControls, inputSource: "user" });
       }
       const receipt = state.application.controlRun(
         runControls,
@@ -1204,6 +1197,40 @@ function abortRunningRuns(state: WebServerState): void {
       // A terminal/pruned Run needs no shutdown action.
     }
   }
+}
+
+/** Preserve the facade contract while binding capability-started work to its
+ * route Session and the server's existing Run observation lifecycle. */
+function observedApplication(state: WebServerState, sessionId: string): WishApplication {
+  // An embedding may freeze its facade. A separate proxy target preserves that
+  // facade's property invariants while still delegating every ordinary method.
+  return new Proxy({} as WishApplication, {
+    get(_target, property) {
+      const target = state.application;
+      if (property === "startRun") return async (input: Parameters<WishApplication["startRun"]>[0]) => {
+        requireServing(state);
+        if (input.sessionId !== sessionId) throw apiError(409, "session_changed", "Control cannot start work in another Session");
+        const handle = await target.startRun(input);
+        observeStartedRun(state, handle);
+        return handle;
+      };
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function observeStartedRun(state: WebServerState, handle: WishRunHandle) {
+  const accepted = wishWebRunAccepted(handle, validDate(state.now(), "WebUI clock").toISOString());
+  if (state.runs.has(handle.runId)) return accepted;
+  state.runs.set(handle.runId, accepted.run);
+  const completion = handle.completion.then(
+    result => { state.runs.set(handle.runId, Object.freeze({ ...accepted.run, status: result.status, completion: result })); pruneRuns(state); },
+    error => { state.runs.set(handle.runId, Object.freeze({ ...accepted.run, status: "failed", cleanupError: error instanceof Error ? error.message : String(error) })); pruneRuns(state); },
+  ).finally(() => { state.runCompletions.delete(handle.runId); });
+  state.runCompletions.set(handle.runId, completion);
+  void completion.catch(() => {});
+  return accepted;
 }
 
 function requireServing(state: WebServerState): void {

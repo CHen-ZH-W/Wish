@@ -1,4 +1,5 @@
 import { IsolatedView } from "./isolated-view.js";
+import { PanelContent } from "./panel-content.js";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { UiSlots } from "../slots.js";
 import type { ConnectionSnapshot } from "../connection.js";
@@ -76,7 +77,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
       {!status.online && status.error ? <p className="connection-notice" role="status">{status.error}</p> : null}
       {status.online && !status.businessAvailable ? <p className="connection-notice" role="status">{t("业务服务暂不可用。设置和插件管理仍可操作。", "Agent service is temporarily unavailable. Settings and plugins remain available.")}</p> : null}
       {contributions.notices.map(item => <IsolatedView key={item.id} View={item.View} />)}
-      <div className="workspace-content">{panel ? <IsolatedView View={panel.View} /> : <section className="empty-state"><Icon name="trace" /><h1>{t("会话", "Conversation")}</h1><p>{t("消息、工具调用和子 Agent 工作会按轮次显示在这里。", "Messages, tool calls, and subagent work appear here by turn.")}</p><p className="muted">{t("当前没有可用的会话界面，请检查插件状态。", "No conversation view is available. Check plugin status.")}</p><button className="primary" onClick={() => openArea("settings")}>{t("打开设置与插件", "Open settings and plugins")}</button></section>}</div>
+      <div className="workspace-content"><PanelContent panels={contributions.panels} active={panel} />{!panel ? <section className="empty-state"><Icon name="trace" /><h1>{t("会话", "Conversation")}</h1><p>{t("消息、工具调用和子 Agent 工作会按轮次显示在这里。", "Messages, tool calls, and subagent work appear here by turn.")}</p><p className="muted">{t("当前没有可用的会话界面，请检查插件状态。", "No conversation view is available. Check plugin status.")}</p><button className="primary" onClick={() => openArea("settings")}>{t("打开设置与插件", "Open settings and plugins")}</button></section> : null}</div>
     </main>
   </div>;
 }

@@ -6,11 +6,11 @@ import { SkillsNavigation, SkillsPage } from "./view.js";
 
 /** Skills owns this contribution; the shell knows neither its name nor its content. */
 export const SkillsClientUi = {
-  name: "ui-skills", inject: ["wishUiSlots", "wishFeatures"],
+  name: "ui-skills", inject: ["wishUiSlots", "wishConnection"],
   apply(ctx: Context): void {
-    const model = new SkillsClientModel(ctx.wishFeatures), slots = ctx.wishUiSlots;
+    const model = new SkillsClientModel(ctx.wishConnection), slots = ctx.wishUiSlots;
     ctx.effect(() => () => model.close(), "Skills client model");
-    ctx.effect(() => slots.panel({ id: "skills", label: "Skills", area: "workspace", navigation: "rail", Icon: () => <Icon name="book" />,
+    ctx.effect(() => slots.panel({ id: "skills", label: "Skills", area: "workspace", navigation: "rail", preserveState: true, Icon: () => <Icon name="book" />,
       onOpen: () => { void model.refresh(); }, Sidebar: () => <SkillsNavigation model={model} slots={slots} />, View: () => <SkillsPage model={model} /> }), "Skills UI contribution");
   },
 };

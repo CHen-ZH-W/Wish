@@ -1,80 +1,103 @@
 # Memory Curation
 
-本模块只管理记忆候选的形成任务。它不替代 Runtime／Workflow Scheduler，不接受候选，
-也不把 Run 完成等同于测试通过。关闭自动整理不影响 Memory 的读取或人工审核。
+根应用的后台记忆链路由用户活动触发，读取已提交会话，提炼原始记忆，再由内部 Agent
+增量维护记忆工作区。后续任务读取摘要、检索正文并引用来源；使用记录影响来源保留。
+显式记住、修改和忘记也进入这条链路，不创建待人工采纳的候选。
 
-## 独立接口与装配
+## 触发与来源
 
-- `CurationEvidenceSource.scan(signal)` 补扫已提交事实，返回冻结、有界的证据包。
-- `MemoryCandidateExtractor.extract(evidence, signal)` 产生候选正文，不拥有写入或审核权限。
-- `MemoryCurationScheduler` 持久化任务、预算、提炼结果及候选提交进度。
-- `DomainCurationStore` 使用现有 Storage KV Domain，namespace 为 `memory/curation`，
-  key 为 Memory `libraryId`，不修改 `MemoryState`。
-- `providers/curation.ts` 提供 `ctx.memoryCuration`；Runtime／Workflow 证据来源分别由
-  `consumers/runtime-evidence.ts`、`consumers/workflow-evidence.ts` 注册。Workflow 是可选依赖。
+非空人类输入的新 Run admission 后发送非阻塞唤醒，Run 完成后再次唤醒；steer、内部
+续跑和 child 不触发。扫描在后续事件循环执行，前台不等待磁盘或模型，后台不要求
+前台空闲。打开应用仅恢复持久状态；没有独立周期轮询。
 
-默认提炼器是 `RecapMemoryCandidateExtractor`：保留执行结果和来源的确定性回顾，不调用
-LLM，也不宣称完成了语义去重或知识验证。`ModelMemoryCandidateExtractor` 可由 Host 注入
-已经配置的 `Model` 和 `ModelRef`，不依赖 AgentLoop，不继承会话系统提示词，不提供 Tools。
-模型请求最多包含 24,000 字符证据，输出上限 2,048 tokens／24,000 字符；固定指令要求把
-证据视为不可信数据、保留失败与不确定性，模型产生 Tool Call 或不完整终态会失败。
+会话提取排除触发会话、仍有活动 Run 的会话、归档／删除会话和时间窗口外的会话。
+默认至少闲置 6 小时、最近 10 天有活动。每个来源是完整已提交会话快照，包含其多个
+Run；system／developer 消息不进入提炼材料。新消息改变来源摘要，允许重新提炼；
+旧快照不会与新版并列作为当前来源。Workflow Adapter 提供终态 Attempt 的独立证据。
+来源、运行状态与实际验证结果分别保存，Run completed 不能推出任务成功。
 
-## 配置与手动入口
+## 提取与增量整理
 
-| 配置 | 默认值 | 含义 |
+`ModelMemoryExtractor` 使用 Models 的 measured 请求，返回 `raw_memory`、
+`rollout_summary` 和 `rollout_slug`。结果先持久化；空结果表示没有可复用知识，不
+反复提取同一快照。旧模型返回的 memories 数组及旧 proposing 状态仍可恢复。
+
+`WorkspaceMemoryConsolidator` 同步当前选中的原始记忆和会话摘要，对比上一次成功
+整理的完整文件基线，生成 `phase2_workspace_diff.md`。新增、修改、删除和用户直接
+编辑都会进入变化集。首轮创建最小记忆结构；没有输入或文件变化时跳过模型。
+来源退出保留范围时，即使没有新会话，也会执行整理和清理。
+
+第二阶段使用独立 Core Runtime／AgentLoop。Agent 可以列出、读取、搜索、创建、编辑
+和删除记忆工作区文件，实际修改文件后结束；不要求返回文档变更 JSON。它没有用户
+Session，不注册前台触发器，不递归提炼自身执行。工作目录是独立暂存目录，文件 Tools
+不能越过该目录或跟随 symlink，没有网络工具。生成 Skill 不执行其中脚本。
+
+工作区产物包括：
+
+- `MEMORY.md`：按项目／任务组织的知识、偏好、流程、失败经验及来源引用。
+- `memory_summary.md`：首行为 `v1` 的用户摘要、通用经验和导航索引。
+- `raw_memories.md`、`rollout_summaries/`：当前选中的提炼结果与来源摘要。
+- `skills/<name>/SKILL.md` 及其脚本、参考、模板等资源：可复用操作流程；后续整理
+  可以更新、合并或删除。通过 Memory 的文件读取链路使用，不自动安装到用户 Skills 库。
+- `extensions/ad_hoc/notes/`：显式记忆变更的追加笔记。
+
+整理要求依据实际证据合并、纠错、去重，处理来源删除后的失效内容，保留仍有其他
+证据支持的部分，最后更新摘要和相关 Skills。模型不得伪造验证或保存秘密。正文语义
+由模型判断；文件路径、文档版本、证据身份、完整输出和批次一致性由 Host 检查。
+
+提炼条数、每轮任务数、正文长度、模型请求次数、输出 tokens、执行超时和尝试次数
+均无 Memory 自设预算。模型实际上下文和生成能力沿用 Models／Provider 配置。
+同一个库串行整理，避免并发覆盖，不截断待处理材料。
+
+## 显式笔记、读取与遗忘
+
+`memory_write` 在用户明确请求记住、修改或忘记时追加笔记。返回 recorded 表示请求
+已持久化，不表示整理已经结束；后台自动处理，不需要人工接受。笔记绕过会话闲置
+筛选，不再重复走模型提取。重复操作身份返回原回执，不同内容使用同一身份会冲突。
+笔记索引保留记录时间，后续更正优先；直接编辑或删除笔记也进入变化集，不在后续轮次复活旧内容。
+
+新 Step 注入已提交的 `memory_summary.md`；模型按摘要 → `MEMORY.md` → 对应会话
+摘要／Skill 的顺序按需读取。`memory_list` 列出文件，`memory_search` 检索，
+`memory_read` 按路径或旧文档 ID 读取，支持可选分页和版本固定。
+
+前台助手引用 `<wish-memory-citation>` 中准确的 `rollout_summaries/<source-id>.md`
+路径后，完成钩子记录该来源的使用次数和最后使用时间。仅注入摘要不计作所有来源被使用。
+默认未使用窗口为 30 天；从未引用的来源以来源更新时间计算。显式笔记持续保留。
+来源删除、归档、被新版会话快照替代或退出保留集合后，变化集通知整理 Agent 清理依赖。
+成功后清除过时原始提取正文，保留去重身份，避免重扫又重新提取同一份过期材料。
+
+## 持久化与恢复
+
+`memory/curation` KV Domain 保存任务、原始提取、使用记录、选择基线和待提交整理计划。
+Memory Journal 原子保存当前文件文档与审计；物理 Markdown 工作区是可恢复的文件镜像，
+用户编辑作为下一轮整理输入。二者不会各自独立修改当前有效文档。
+
+先持久化完整计划，再提交 Journal，最后发布文件镜像和成功基线。提交成功但完成状态
+丢失时，通过原 operation ID 恢复文件发布，不再次调用模型。文件镜像发布中断可以
+重放；提交后新出现的用户编辑会被保留，继续作为下一轮变化。目录默认位于 Sessions
+数据根的 `memories/<libraryId>`。
+
+提取失败保留 queued，整理失败保留原始记忆，后续唤醒重试；同一次唤醒不循环重试
+失败阶段。库版本或模型执行期间的文件变化使旧计划失效，下一次按新状态重新整理。
+写入前再次核对来源可用性。关闭／替换停止新工作，取消迟到输出，并等待实际 Provider
+请求和来源读取退出后释放租约。旧人工候选保留为历史记录，不参与新自动流程。
+
+## 配置与验证
+
+| 配置 | 默认值 | 环境变量 |
 | --- | --- | --- |
-| `automatic` | `false` | 是否启用周期补扫与一个有界执行批次 |
-| `intervalMs` | `5000` | 自动触发间隔；允许 1–3,600,000 ms |
-| `maxConcurrent` | `1` | 每个批次最多并发任务数，范围 1–16 |
-| `maxAttempts` | `3` | 正常失败重试上限，范围 1–32 |
-| `timeoutMs` | `30000` | 单个来源扫描与单任务执行时间预算，最多 300,000 ms |
-| `backendId` | 当前 Storage Backend | 绑定独立 KV 租约，退出排空后释放 |
+| automatic | 根应用开启 | `WISH_MEMORY_AUTO_CURATION` |
+| model | 当前默认模型 | `WISH_MEMORY_CURATION_MODEL` |
+| consolidationModel | 提炼模型 | `WISH_MEMORY_CONSOLIDATION_MODEL` |
+| minIdleMs | 21600000 | `WISH_MEMORY_CURATION_MIN_IDLE_MS` |
+| maxAgeMs | 864000000 | `WISH_MEMORY_CURATION_MAX_AGE_MS` |
+| maxUnusedDays | 30 | `WISH_MEMORY_MAX_UNUSED_DAYS` |
+| directory | 数据根下的 memories/libraryId | `WISH_MEMORY_DIRECTORY` |
 
-Host 可以显式调用 `scheduler.scan()`、`tick()`、`state()`、`cancel(jobId)`。
-`tick()` 只处理当前一个有界批次；不会隐式启动一个 Run 或接管普通 Shell 命令。
-重复注册来源 ID 会失败；注销来源会中止并排空正在进行的读取，然后才能释放来源租约。
+`WISH_MEMORY_CURATION_ENABLED=0` 关闭整理能力及依赖它的笔记 Tool。Memory 总开关和
+child 隔离优先。旧每轮配额、并发、尝试次数、超时、重试间隔配置不再使用。
 
-## 持久状态与恢复
-
-```text
-queued → running → proposing → completed
-   │         │          │
-   └─────────┴──────────┴→ cancelled
-             └→ queued（未超重试预算）／failed
-```
-
-任务 ID 绑定完整规范证据包。提炼后的全部正文先持久化，再以 `jobId:index` 作为 Memory
-操作 ID 提交候选；每次成功提交后记录 candidate ID。因此在 Memory 已写入、任务进度未写入
-之间崩溃，恢复使用原有提炼结果和同一幂等操作 ID，不再次调用模型生成不同候选。
-
-初始化将中断的 `running`／`proposing` 任务恢复为可重试队列；无提炼结果且已耗尽预算的任务
-转为失败。已有提炼结果的中断任务允许恢复幂等提交，不因此进行新的模型提炼。
-关闭 scheduler 会取消活动操作、等待执行退出，未完成任务保留为持久队列；显式取消的任务
-保持 `cancelled`，不会自动恢复。超时或卸载后才返回的提炼内容不会写入 Memory。
-取消不会回滚已经提交的 pending 候选，也不会替代人工拒绝；已发生的写入以持久审计为准。
-
-Memory 的 `decide()` 才是采纳入口，且仅接受 human actor。Scheduler 只能 `propose()`，
-失败／取消／unknown 的证据同样只能产生明确标识的 pending 候选。
-
-## 证据与限制
-
-Session adapter 根据 Lifecycle 的 `run.opened` 和终态事件补扫，读取该 Run 已提交的
-Session records；没有终态的 Run 不整理。原始证据 digest 绑定该 Run 的记录，引用包含
-`sessionId:runId` 与 `throughSequence`，后续其他 Run 的聊天不会造成重复整理。
-证据正文不包含 system／developer 指令；user role 仍保留独立 `inputSource`，旧记录为
-unknown，不能重新认定为人类指令。其他 Session 数据根中不可见的 Session 不越权读取。
-默认装配只扫描配置中的 Sessions 根；不保证发现其他 Application 自定义 `dataDirectory`
-的终态 Run。此类跨根自动恢复需要 Host 提供持久的 Run／存储身份映射，不能靠遍历任意目录。
-证据正文超限会显示 `TRUNCATED EVIDENCE` 与原字符数；完整源记录的 digest 不随裁剪改变。
-
-Workflow adapter 根据已提交的终态 Attempt 生成证据，不根据整个 Workflow revision
-重复生成旧 Attempt 的候选。完成状态只是执行事实，不证明测试、浏览器或外部 Provider 已验证。
-
-每个库最多保留 1,000 个整理任务，每任务最多 8 个候选，证据正文最多 32,000 字符。
-达到保留预算会明确失败，目前没有自动清理、语义合并或任务游标压缩。原始事件采用全量补扫；
-记录规模过大时应更换分页来源和存储实现，而不是关闭去重。默认 File Backend 只保证进程内
-写入安全，不能让多个进程共享一个整理状态目录进行并发写入。
-
-验证入口：`scripts/accept-memory-evidence.mjs`、`scripts/accept-memory-curation.mjs`。
-测试覆盖漏通知补扫、稳定证据指纹、持久任务恢复、提交响应丢失、预算、取消、来源排空及模型
-输入边界；不代表真实外部 Provider 或浏览器端到端验收。
+运行 `npm run test:memory`。`accept-memory-workspace.mjs` 覆盖 Agent 文件操作、Skills、
+摘要读取、无新来源的遗忘、显式笔记、使用窗口和发布恢复；Provider 验收通过真实
+Application Run 触发完整链路。确定性模型验收不代表外部模型的记忆质量。
+当前存储仍全量读取；默认 File Backend 只支持单写 Host，不支持多个进程共享写入根。

@@ -402,6 +402,11 @@ pending/failed Fiber，可以直接更新或删除；有预激活资源的 pendi
 保留的前版配置和偏好重建旧代；只有结构、Fiber/Owner、偏好和持久回执均核验成功，才清除
 pending 并记录 `management_configuration_rolled_back`。清理结果未知、保存结果不确定、恢复失败
 或受影响依赖无法证明恢复时，继续保留 pending 与隔离状态。
+停止旧代失败时，配置事务保留 `recovery-required`，并在 `pending.failure` 保存
+`stage: stop`、停止操作 ID、稳定错误码、运行态与清理结果；不保存异常正文或用户内容。
+失败诊断写入失败也保持隔离，原停止结果仍可在本进程查询。重启恢复配置诊断，不重放清理；
+旧格式中 rejected 操作若仍拥有 pending，则重新分类为 recovery-required。
+诊断字段不参与原请求指纹，保持原有幂等身份。
 重启优先接受记录中的前版或后版部署。若部署后来又变化，则逐项核对每个不确定目标仍是记录中的
 前版或后版插件身份／类型；核对通过后，仍存在的普通目标同样在激活前隔离停用，按任一记录版本
 应不存在的目标允许缺席。新增的无关条目不绕过这些隔离；目标被第三次替换或改型仍拒绝启动。
@@ -549,6 +554,10 @@ npm run test:module-boundaries
 普通 Tool/Provider 用 `PluginWorkOwner`；显式调用句柄由其调用者释放，不能把 Session、
 Step 或 Archive 的调用方租约错误改成 Provider 强制关闭。Consumer 完整收尾后才封住 Provider。
 
+拥有后台调度器的模块可通过 `PluginWorkOwner.suspendAdmissions` 同步暂停领域接纳。
+准备停用或换代时先暂停，再封住公开入口；变更回滚时幂等恢复，正式关闭后不再恢复。
+这一暂停不替代领域自身的取消和排空，避免准备阶段仍调度新任务消耗失败或重试预算。
+
 当前第一方 Run/Session/进程业务 Owner 均支持同进程停启与代码换代。Runtime 创建并拥有
 Run generation；CLI/WebUI 退役各自通过 Application 打开的 generation；Agents/Application
 只封住 factory/facade 准入与旧引用，不重复退役同一代。Approval 取消待决请求，Journal
@@ -558,6 +567,14 @@ Run generation；CLI/WebUI 退役各自通过 Application 打开的 generation�
 在线更新不支持任意领域 schema 迁移、任意自定义 carrier，以及未经声明的外部引用；
 这些范围不能仅靠 `codeReload: true` 获得安全保证。
 
+`npm run test:plugin-hot-update` 检查停止排空、状态持久化以及完整 managed WebUI 升级。
+验收使用独立构建副本、临时数据和确定性模型，覆盖标题功能局部新增、旧布局迁移、配置／代码
+替换、候选失败回滚，以及旧代清理失败后的重启隔离和显式业务恢复。成功条件包含业务接口
+可用、会话保留和实际 Run 执行；不以清除 pending 代替业务恢复，也不代表真实 Provider 或浏览器验收。
+
 ## 插件私有状态
 
 版本化业务状态通过独立的[插件私有状态协议](../../plugin-state/README.md)接入。Root 变更队列、Step 边界和原生 HMR 在旧 Owner 排空后等待状态 flush；后继迁移先暂存，成功 receipt 持久化后才发布，失败补偿使用保留检查点。`ManagedPluginStore` 继续只持有管理状态和回执；Session / Runtime 的任务状态也不迁入私有状态域。
+配置拒绝或回滚后的私有状态收尾保存失败，也会让当前进程保持 `recovery-required`，
+即使管理 pending 已经清除，仍不放行 Step 或后续更新。重启由状态 Registry 根据持久回执
+核对检查点，不重放插件更新或业务调用。

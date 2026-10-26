@@ -1,11 +1,12 @@
 import type { DurableRuntimeLifecycleEvent } from "../../core/runtime/durability/types.js";
-import type { ReadSessionHistoryInput, SessionHistorySnapshot } from "../../sessions/types.js";
+import type { ReadSessionHistoryInput, SessionHistorySnapshot, Session, GetSessionInput } from "../../sessions/types.js";
 import { SessionNotFoundError } from "../../sessions/types.js";
 import { hash } from "../validation.js";
-import type { CurationEvidence, CurationEvidenceSource } from "../curation/types.js";
-import { clipEvidenceText, snapshotEvidence } from "../curation/validation.js";
+import type { CurationEvidence, CurationEvidenceSource, CurationScanContext } from "../curation/types.js";
+import { snapshotEvidence } from "../curation/validation.js";
 
 export interface SessionEvidenceAccess {
+  get?(input: GetSessionInput): Promise<Session>;
   readHistory(input: ReadSessionHistoryInput): Promise<SessionHistorySnapshot>;
 }
 export interface RuntimeEvidenceAccess {
@@ -32,30 +33,44 @@ export async function captureSessionEvidence(input: {
   const packageDigest = hash({ sessionId: input.sessionId, runId: input.runId, terminal: { type: terminal.type, occurredAt: terminal.occurredAt }, digest });
   const outcome = terminal.type === "run.completed" ? "completed" : terminal.type === "run.failed" ? "failed" : terminal.type === "run.aborted" ? "cancelled" : "unknown";
   return snapshotEvidence({ id: `session-${packageDigest}`, sourceId: input.sourceId ?? "runtime-sessions", sessionId: input.sessionId, runId: input.runId, outcome,
+    occurredAt: terminal.occurredAt,
     appliesTo: `Session ${input.sessionId}; Run ${input.runId}. Recheck workspace and applicability before reuse.`,
-    text: clipEvidenceText(JSON.stringify({ untrustedCommittedMessages: records.map(record => ({ ...record, message: {
-      role: record.message.role, content: clipEvidenceText(record.message.content, 12_000),
-      originalContentChars: record.message.content.length, truncated: record.message.content.length > 12_000,
-      ...(record.message.toolCallId ? { toolCallId: record.message.toolCallId } : {}),
-    } })) })),
+    text: JSON.stringify({ untrustedCommittedMessages: records }),
     references: [{ kind: "session", id: `${input.sessionId}:${input.runId}`, revision: `run:${digest}`, digest, throughSequence }] });
 }
 export class SessionRunEvidenceSource implements CurationEvidenceSource {
   readonly id = "runtime-sessions";
   constructor(private readonly sessions: SessionEvidenceAccess, private readonly lifecycle: RuntimeEvidenceAccess) {}
-  async scan(signal?: AbortSignal): Promise<readonly CurationEvidence[]> {
+  async scan(signal?: AbortSignal, context?: CurationScanContext): Promise<readonly CurationEvidence[]> {
     const events = await this.lifecycle.readEvents(undefined, signal), scopes = new Map<string, string>(), terminals = new Map<string, DurableRuntimeLifecycleEvent>();
     for (const event of events) {
       if (event.type === "run.opened" && event.scope) scopes.set(event.runId, event.scope);
       if (["run.completed", "run.failed", "run.aborted", "run.interrupted"].includes(event.type)) terminals.set(event.runId, event);
     }
     const result: CurationEvidence[] = [];
-    for (const [runId, terminal] of terminals) {
+    const activeSessions = new Set([...scopes].filter(([runId]) => !terminals.has(runId)).map(([, sessionId]) => sessionId));
+    const candidates = [...terminals].sort((a, b) => Date.parse(b[1].occurredAt) - Date.parse(a[1].occurredAt));
+    const seen = new Set<string>();
+    for (const [runId, terminal] of candidates) {
       signal?.throwIfAborted();
-      const sessionId = scopes.get(runId); if (!sessionId) continue;
+      const sessionId = scopes.get(runId); if (!sessionId || seen.has(sessionId) || activeSessions.has(sessionId)) continue;
+      seen.add(sessionId);
+      if (context && (Date.parse(terminal.occurredAt) < context.oldestAt || !await context.acceptsSession(sessionId))) continue;
       try {
-        const evidence = await captureSessionEvidence({ sessions: this.sessions, sessionId, runId, terminal, sourceId: this.id, ...(signal ? { signal } : {}) });
-        if (evidence) result.push(evidence);
+        const history = await this.sessions.readHistory({ sessionId, ...(signal ? { signal } : {}) });
+        const records = history.records.filter(record => record.kind === "message" && record.message.role !== "system" && record.message.role !== "developer");
+        if (!records.length) continue;
+        // Legacy provenance remains readable; known internal-only conversations are not learning sources.
+        if (!records.some(record => record.kind === "message" && record.message.role === "user" && (record.inputSource === undefined || ["user", "unknown"].includes(record.inputSource)))) continue;
+        const metadata = await this.sessions.get?.({ sessionId, ...(signal ? { signal } : {}) });
+        if (metadata && metadata.status !== "active") continue;
+        const digest = hash(records), throughSequence = records.at(-1)!.sequence;
+        const evidence = snapshotEvidence({ id: `session-${hash({ sessionId, digest })}`, sourceId: this.id, sessionId, runId,
+          occurredAt: terminal.occurredAt, outcome: terminal.type === "run.completed" ? "completed" : terminal.type === "run.failed" ? "failed" : "unknown",
+          appliesTo: metadata?.scope ?? `Session ${sessionId}; verify workspace applicability`,
+          text: JSON.stringify({ sessionId, workspace: metadata?.scope, untrustedCommittedMessages: records }),
+          references: [{ kind: "session", id: sessionId, revision: `rollout:${digest}`, digest, throughSequence }] });
+        if (!context?.knownEvidenceIds.has(evidence.id)) result.push(evidence);
       } catch (error) {
         // Other Application data roots are outside this adapter's Session lease.
         if (!(error instanceof SessionNotFoundError)) throw error;

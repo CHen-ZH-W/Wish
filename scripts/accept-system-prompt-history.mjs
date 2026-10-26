@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Context } from "@deepseek-ai/cordis";
 
 import { SnapshotStore } from "../dist/apps/webui/client/model/store.js";
+import { ClientApiError } from "../dist/apps/webui/client/connection.js";
 import { projectLedger } from "../dist/apps/webui/client/projection/ledger.js";
 import { UiSlots } from "../dist/apps/webui/client/slots.js";
 import { registerManagedContextObserver } from "../dist/context/managed.js";
@@ -140,4 +141,173 @@ test("client contributes collapsed initial and changed prompts in conversation o
     remove();
     assert.deepEqual(slots.getSnapshot().ledgerContributions, []);
   } finally { source.close(); }
+});
+
+function promptResponse(sessionId) {
+  return { value: { schemaVersion: 1, sessionId, snapshots: [{
+    schemaVersion: 1, ...projectSystemPromptSnapshot({ ...contextInput, sessionId }, projection()),
+  }] } };
+}
+
+function promptClient() {
+  const connection = new SnapshotStore({ online: true, businessAvailable: true, instanceId: "host-a", error: null });
+  connection.onInvalidation = () => () => {};
+  let read = async sessionId => promptResponse(sessionId);
+  connection.request = path => read(decodeURIComponent(path.split("/")[3]));
+  const sessions = new SnapshotStore({ selectedId: "session-a" });
+  sessions.run = new SnapshotStore({ runId: null, events: [], terminal: false });
+  const source = new SystemPromptHistoryClientModel(connection, sessions);
+  return { connection, sessions, source, readWith(handler) { read = handler; } };
+}
+
+test("a transient prompt freshness failure does not unmount a verified disclosure", async () => {
+  const fixture = promptClient(), { source } = fixture;
+  try {
+    await source.refresh();
+    const verified = source.getSnapshot(), block = verified[0];
+    source.disclosure(block.id).setOpen(true);
+    const visibleLengths = [];
+    const remove = source.subscribe(() => visibleLengths.push(source.getSnapshot().length));
+    for (const error of [new TypeError("Failed to fetch"), new ClientApiError("internal_error", 500)]) {
+      fixture.readWith(async () => { throw error; });
+      await source.refresh();
+      assert.strictEqual(source.getSnapshot(), verified, "failed freshness reads retain the verified blocks, keeping their React subtree mounted");
+      assert.equal(source.disclosure(block.id).open, true);
+    }
+    assert.deepEqual(visibleLengths, [], "there is no empty-state publication between verified reads");
+    remove();
+  } finally { source.close(); }
+});
+
+test("returning from a new intent or another Session restores the cached prompt before its HTTP refresh", async () => {
+  const fixture = promptClient(), { source, sessions } = fixture;
+  let release;
+  try {
+    await source.refresh();
+    const verified = source.getSnapshot(), block = verified[0];
+    source.disclosure(block.id).setOpen(true);
+    sessions.publish({ selectedId: null });
+    assert.equal(source.getSnapshot().length, 0, "a new intent does not display the previous Session prompt");
+    sessions.publish({ selectedId: "session-b" });
+    await source.refresh();
+    assert.equal(source.disclosure(source.getSnapshot()[0].id).open, false, "another Session does not inherit expansion, even with identical run/Step/digest IDs");
+    const gate = new Promise(resolve => { release = resolve; });
+    fixture.readWith(async sessionId => { await gate; return promptResponse(sessionId); });
+    sessions.publish({ selectedId: "session-a" });
+    assert.strictEqual(source.getSnapshot(), verified, "the original prompt is restored synchronously while its freshness request is blocked");
+    assert.equal(source.disclosure(block.id).open, true, "the owner restores the original disclosure after its view was unmounted");
+    release(); await source.refresh();
+  } finally { release?.(); source.close(); }
+});
+
+test("prompt cache and disclosure state are fenced by Host, availability and owner lifetime", async () => {
+  const fixture = promptClient(), { source, connection } = fixture;
+  let release;
+  try {
+    await source.refresh();
+    const block = source.getSnapshot()[0], previousDisclosure = source.disclosure(block.id);
+    previousDisclosure.setOpen(true);
+    const gate = new Promise(resolve => { release = resolve; });
+    fixture.readWith(async sessionId => { await gate; return promptResponse(sessionId); });
+    connection.publish({ ...connection.getSnapshot(), instanceId: "host-b" });
+    assert.equal(source.getSnapshot().length, 0, "the same Session ID in a replacement Host cannot reuse previous data");
+    release(); await source.refresh();
+    previousDisclosure.setOpen(true);
+    assert.equal(source.disclosure(source.getSnapshot()[0].id).open, false, "late toggle handlers from a retired Host are ignored");
+    for (const state of [{ online: false }, { online: true, businessAvailable: false }]) {
+      connection.publish({ ...connection.getSnapshot(), ...state });
+      assert.equal(source.getSnapshot().length, 0);
+      connection.publish({ ...connection.getSnapshot(), online: true, businessAvailable: true });
+      assert.equal(source.getSnapshot().length, 0, "reconnection performs a new read instead of restoring revoked cached data");
+      await source.refresh();
+    }
+    fixture.readWith(async () => { throw new ClientApiError("control_not_found", 404); });
+    await source.refresh();
+    assert.equal(source.getSnapshot().length, 0, "adapter removal still removes the prompt contribution");
+    source.close();
+    assert.equal(source.getSnapshot().length, 0);
+  } finally { release?.(); source.close(); }
+});
+
+test("prompt caches evict old Sessions and suppress a late response from a previous selection", async () => {
+  const fixture = promptClient(), { source, sessions } = fixture;
+  let release;
+  try {
+    await source.refresh();
+    for (let index = 1; index <= 6; index++) { sessions.publish({ selectedId: "session-" + index }); await source.refresh(); }
+    const latest = source.getSnapshot();
+    const gate = new Promise(resolve => { release = resolve; });
+    fixture.readWith(async sessionId => { await gate; return promptResponse(sessionId); });
+    sessions.publish({ selectedId: "session-a" });
+    assert.equal(source.getSnapshot().length, 0, "a seventh Session evicts the oldest cached prompt");
+    sessions.publish({ selectedId: "session-6" });
+    assert.strictEqual(source.getSnapshot(), latest);
+    release(); await source.refresh();
+    assert.equal(source.getSnapshot()[0].data.snapshot.sessionId, "session-6", "the stale request cannot overwrite the restored Session");
+  } finally { release?.(); source.close(); }
+});
+
+test("empty or truncated successful reads cannot erase a verified append-only prompt history", async () => {
+  const fixture = promptClient(), { source } = fixture;
+  try {
+    fixture.readWith(async sessionId => ({ value: { schemaVersion: 1, sessionId, snapshots: [] } }));
+    await source.refresh();
+    assert.equal(source.getSnapshot().length, 0, "a genuinely empty first read is valid");
+    const original = promptResponse("session-a");
+    const changed = { ...original.value.snapshots[0], stepId: "step-b", capturedAt: "2026-10-10T10:01:00.000Z", digest: "b".repeat(64),
+      sections: [{ channel: "instructions", role: "system", content: "Changed historical prompt" }] };
+    fixture.readWith(async () => ({ value: { ...original.value, snapshots: [...original.value.snapshots, changed] } }));
+    await source.refresh();
+    const verified = source.getSnapshot();
+    assert.equal(verified.length, 2);
+    source.disclosure(verified[1].id).setOpen(true);
+    for (const snapshots of [[], original.value.snapshots, [changed]]) {
+      fixture.readWith(async () => ({ value: { ...original.value, snapshots } }));
+      await source.refresh();
+      assert.strictEqual(source.getSnapshot(), verified, "a successful but regressive read does not remove a verified historical snapshot");
+      assert.equal(source.disclosure(verified[1].id).open, true);
+    }
+  } finally { source.close(); }
+});
+
+test("complete unchanged reads retain identity and earlier same-digest snapshots do not block new history", async () => {
+  const fixture = promptClient(), { source } = fixture;
+  try {
+    await source.refresh();
+    const verified = source.getSnapshot();
+    await source.refresh();
+    assert.strictEqual(source.getSnapshot(), verified, "an unchanged full response does not republish identical prompt UI");
+    const original = promptResponse("session-a");
+    const earlier = { ...original.value.snapshots[0], stepId: "step-earlier", capturedAt: "2026-10-10T09:59:00.000Z" };
+    const newest = { ...original.value.snapshots[0], stepId: "step-newest", capturedAt: "2026-10-10T10:02:00.000Z", digest: "c".repeat(64),
+      sections: [{ channel: "instructions", role: "system", content: "Newest verified snapshot" }] };
+    fixture.readWith(async () => ({ value: { ...original.value, snapshots: [earlier, ...original.value.snapshots, newest] } }));
+    await source.refresh();
+    assert.equal(source.getSnapshot()[0].stepId, "step-earlier", "projection may now coalesce an older identical digest without making the raw history incomplete");
+    assert.equal(source.getSnapshot().at(-1).stepId, "step-newest", "a genuinely new snapshot remains visible");
+  } finally { source.close(); }
+});
+
+test("the latest digest for an existing Step and later Steps follow the Journal list contract", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-prompt-step-replacement-"));
+  const backend = new FileJournalStorageBackend({ backendId: "step-replacement", rootDirectory: directory });
+  const history = new JournalSystemPromptHistory(backend.open({ namespace: SYSTEM_PROMPT_HISTORY_NAMESPACE }), "step-replacement");
+  const fixture = promptClient(), { source } = fixture;
+  fixture.readWith(async sessionId => ({ value: { schemaVersion: 1, sessionId, snapshots: await history.list(sessionId) } }));
+  try {
+    await history.record(projectSystemPromptSnapshot(contextInput, projection()));
+    await source.refresh();
+    const firstBlock = source.getSnapshot()[0];
+    await history.record(projectSystemPromptSnapshot(contextInput, projection("Replacement prompt", "New tool rules")));
+    await source.refresh();
+    assert.equal(source.getSnapshot().length, 1, "Journal.list returns only the latest snapshot for this Run/Step");
+    assert.equal(source.getSnapshot()[0].stepId, firstBlock.stepId);
+    assert.notEqual(source.getSnapshot()[0].id, firstBlock.id, "a replacement digest updates the displayed snapshot instead of being rejected as an incomplete read");
+    assert.equal(source.getSnapshot()[0].data.snapshot.sections[0].content, "Replacement prompt");
+    const nextInput = { ...contextInput, stepId: "step-next", runtime: { ...contextInput.runtime, capturedAt: "2026-10-10T10:03:00.000Z" } };
+    await history.record(projectSystemPromptSnapshot(nextInput, projection("Later Step prompt", "Later rules")));
+    await source.refresh();
+    assert.equal(source.getSnapshot().length, 2);
+    assert.equal(source.getSnapshot().at(-1).stepId, "step-next", "subsequent complete history updates still publish after a same-Step replacement");
+  } finally { source.close(); await history.close(); await backend.close(); await rm(directory, { recursive: true, force: true }); }
 });

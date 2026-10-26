@@ -4,6 +4,7 @@ import { Terminal } from "@xterm/xterm";
 import type { TerminalRenderFrame } from "./model.js";
 import { observeUserTerminalCursor } from "./terminal-cursor.js";
 import { UserTerminalTheme } from "./terminal-theme.js";
+import { onRetainedNodeRemoval } from "../../../apps/webui/client/ui/retained-resource.js";
 
 export interface TerminalScreenProps {
   readonly terminalId: string;
@@ -25,29 +26,45 @@ export function TerminalScreen({ terminalId, render, active, writable, label, on
   const latest = useRef({ onData, onResize, onRendered, active, writable });
   const rendered = useRef(0);
   const requestedSize = useRef<{ readonly columns: number; readonly rows: number } | undefined>(undefined);
+  const shown = useRef(false);
+  const owner = useRef<{ readonly terminalId: string; readonly node: HTMLElement; dispose(): void } | null>(null);
+  const stopRemovalWatch = useRef<(() => void) | undefined>(undefined);
   latest.current = { onData, onResize, onRendered, active, writable };
 
   useLayoutEffect(() => {
     const node = element.current;
     if (!node) return;
-    const terminal = new Terminal({
-      cursorBlink: true,
-      cursorStyle: "block",
-      fontFamily: 'ui-monospace, "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace',
-      fontSize: 13,
-      lineHeight: 1.25,
-      minimumContrastRatio: 4.5,
-      scrollback: 500,
-    });
-    const addon = new FitAddon();
-    terminal.loadAddon(addon);
-    terminal.open(node);
-    const palette = new UserTerminalTheme(terminal);
-    colors.current = palette;
+    stopRemovalWatch.current?.(); stopRemovalWatch.current = undefined;
+    if (owner.current && (owner.current.terminalId !== terminalId || owner.current.node !== node)) owner.current.dispose();
+    if (!emulator.current) {
+      const terminal = new Terminal({
+        cursorBlink: true,
+        cursorStyle: "block",
+        fontFamily: 'ui-monospace, "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace',
+        fontSize: 13,
+        lineHeight: 1.25,
+        minimumContrastRatio: 4.5,
+        scrollback: 500,
+      });
+      const addon = new FitAddon();
+      terminal.loadAddon(addon);
+      terminal.open(node);
+      const palette = new UserTerminalTheme(terminal);
+      const input = terminal.onData(data => { if (shown.current && latest.current.writable) latest.current.onData(data); });
+      emulator.current = terminal; fit.current = addon; colors.current = palette;
+      rendered.current = 0; requestedSize.current = undefined;
+      owner.current = { terminalId, node, dispose() {
+        input.dispose(); palette.dispose(); terminal.dispose();
+        if (emulator.current !== terminal) return;
+        emulator.current = null; fit.current = null; colors.current = null; owner.current = null;
+        rendered.current = 0; requestedSize.current = undefined;
+      } };
+    }
+    const terminal = emulator.current!, addon = fit.current!, palette = colors.current!, retained = owner.current!;
+    shown.current = true;
     updateTerminalTheme(palette, node);
     const cursor = observeUserTerminalCursor(terminal, node, () => palette.cursor);
     terminal.textarea?.setAttribute("aria-label", label);
-    const input = terminal.onData(data => latest.current.onData(data));
     const resize = (): void => {
       if (!latest.current.writable || !node.clientWidth || !node.clientHeight) return;
       const dimensions = addon.proposeDimensions();
@@ -60,12 +77,13 @@ export function TerminalScreen({ terminalId, render, active, writable, label, on
     };
     const observer = new ResizeObserver(resize);
     observer.observe(node);
-    emulator.current = terminal; fit.current = addon; rendered.current = 0; requestedSize.current = undefined;
     resize();
-    queueMicrotask(() => { if (latest.current.writable) terminal.focus(); });
+    queueMicrotask(() => { if (shown.current && emulator.current === terminal && latest.current.writable) terminal.focus(); });
     return () => {
-      observer.disconnect(); input.dispose(); cursor.dispose(); palette.dispose(); terminal.dispose();
-      emulator.current = null; fit.current = null; colors.current = null; rendered.current = 0; requestedSize.current = undefined;
+      shown.current = false;
+      terminal.options.disableStdin = true; terminal.options.cursorBlink = false;
+      observer.disconnect(); cursor.dispose();
+      stopRemovalWatch.current = onRetainedNodeRemoval(node, () => retained.dispose());
     };
   }, [terminalId]);
 
@@ -80,14 +98,16 @@ export function TerminalScreen({ terminalId, render, active, writable, label, on
       terminal.options.cursorStyle = "block";
       terminal.resize(render.frame.terminal.columns, render.frame.terminal.rows);
       terminal.write(render.frame.screen, () => {
+        if (emulator.current !== terminal) return;
         latest.current.onRendered(render.revision);
-        if (latest.current.writable) terminal.focus();
+        if (shown.current && latest.current.writable) terminal.focus();
       });
       return;
     }
     terminal.write(render.frame.data, () => {
+      if (emulator.current !== terminal) return;
       latest.current.onRendered(render.revision);
-      if (latest.current.writable) terminal.focus();
+      if (shown.current && latest.current.writable) terminal.focus();
     });
   }, [render]);
 

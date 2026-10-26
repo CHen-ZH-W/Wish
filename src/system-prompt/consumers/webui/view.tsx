@@ -2,13 +2,14 @@ import { useState } from "react";
 import type { LedgerBlock } from "../../../apps/webui/client/projection/ledger.js";
 import { useText } from "../../../apps/webui/client/i18n.js";
 import type { SystemPromptSnapshot, SystemPromptSnapshotSection } from "../../history/types.js";
+import type { SystemPromptDisclosureState } from "./model.js";
 
 interface PromptBlockData { readonly snapshot: SystemPromptSnapshot; readonly update: boolean; }
 
-export function SystemPromptHistoryRow({ block }: { block: LedgerBlock }) {
+export function SystemPromptHistoryRow({ block, disclosure }: { block: LedgerBlock; disclosure?: SystemPromptDisclosureState }) {
   const t = useText();
   const data = promptData(block.data);
-  const [open, setOpen] = useState(false), [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(disclosure?.open ?? false), [copied, setCopied] = useState(false);
   if (!data) return null;
   const { snapshot, update } = data;
   const sections = coalescePromptSections(snapshot.sections);
@@ -18,7 +19,7 @@ export function SystemPromptHistoryRow({ block }: { block: LedgerBlock }) {
       setCopied(true); window.setTimeout(() => setCopied(false), 1600);
     } catch { setCopied(false); }
   };
-  return <details className="system-prompt-disclosure" onToggle={event => setOpen(event.currentTarget.open)}>
+  return <details className="system-prompt-disclosure" open={open || undefined} onToggle={event => { const open = event.currentTarget.open; setOpen(open); disclosure?.setOpen(open); }}>
     <summary><span className="system-prompt-title">{update ? t("系统提示词更新", "System prompt update") : t("系统提示词", "System prompt")}</span><span className="system-prompt-model">{snapshot.model.provider} / {snapshot.model.model}</span></summary>
     {open ? <div className="system-prompt-body">
       <div className="system-prompt-actions"><span>{t("此处保留该 Step 实际采用的只读快照。", "Read-only snapshot used by this Step.")}</span><button type="button" onClick={() => { void copy(); }}>{copied ? t("已复制", "Copied") : t("复制全部", "Copy all")}</button></div>

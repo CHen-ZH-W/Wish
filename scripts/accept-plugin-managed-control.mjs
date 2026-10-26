@@ -11,7 +11,7 @@ import { installPluginInspection } from "../dist/boot/plugin-control/inspection.
 import { PluginManagementClassifier } from "../dist/boot/plugin-control/classification.js";
 import { installPluginLifecycle } from "../dist/boot/plugin-control/lifecycle.js";
 import { registerPluginOwner } from "../dist/boot/plugin-control/owner-registry.js";
-import { ManagedPluginStore } from "../dist/boot/plugin-control/managed-store.js";
+import { ManagedPluginStore, managementFingerprint } from "../dist/boot/plugin-control/managed-store.js";
 import { ManagedProfileSource, managedProfilePlugin } from "../dist/boot/plugin-control/managed-profile.js";
 import { ManagedPluginControl } from "../dist/boot/plugin-control/managed-control.js";
 
@@ -57,6 +57,34 @@ async function fixture(run) {
   try { await writeFile(join(directory, "cordis.yml"), profileText); await run(directory); }
   finally { await rm(directory, { recursive: true, force: true }); }
 }
+test("a preference rejected after saving its intent does not quarantine the unchanged runtime on restart", () => fixture(async directory => {
+  const f = await start(directory), original = f.store.commit.bind(f.store);
+  try {
+    let invalidated = false;
+    f.store.commit = async (revision, next) => {
+      const result = await original(revision, next);
+      if (next.pending && !invalidated) {
+        invalidated = true;
+        f.root.loader.resolve("include").subtree.write();
+      }
+      return result;
+    };
+    await assert.rejects(f.control.change(request(f, "disabled")), { code: "management_configuration_changed" });
+    assert.equal(invalidated, true);
+    assert.equal(f.store.snapshot().pending, null);
+    assert.equal(f.store.snapshot().receipts.at(-1).status, "rejected");
+    assert.equal(f.store.snapshot().receipts.at(-1).code, "management_configuration_changed");
+    assert.equal(f.refs[0].closes, 0);
+    f.refs[0].request();
+  } finally { f.store.commit = original; await f.close(); }
+  const restarted = await start(directory);
+  try {
+    assert.equal(restarted.control.snapshot().status, "ready");
+    assert.equal(restarted.control.snapshot().pending, null);
+    assert.equal(restarted.refs.length, 1);
+    restarted.refs[0].request();
+  } finally { await restarted.close(); }
+}));
 test("real Loader disable/enable cleans and fences old references without rewriting deployment expressions", () => fixture(async directory => {
   const f = await start(directory), events = []; f.control.subscribe(() => events.push(f.control.snapshot().status));
   try {
@@ -171,9 +199,11 @@ test("an undeclared external entry stays noncompliant even when it registers a c
 }));
 test("incomplete cleanup is quarantined after restart; recovery keeps disabled without replay", () => fixture(async directory => {
   const f = await start(directory, { close: async () => { throw Error("cleanup failed"); } });
+  const originalRequest = request(f, "disabled");
   try {
-    await assert.rejects(f.control.change(request(f, "disabled")), { code: "management_recovery_required" });
+    await assert.rejects(f.control.change(originalRequest), { code: "management_recovery_required" });
     assert.equal(f.control.snapshot().status, "recovery-required");
+    assert.equal(f.control.snapshot().pending.failure.code, "stop_cleanup_failed");
     await assert.rejects(f.control.recoverDisabled(f.store.snapshot().revision), { code: "management_restart_required" });
   } finally { await f.close(); }
   const restored = await start(directory);
@@ -184,6 +214,8 @@ test("incomplete cleanup is quarantined after restart; recovery keeps disabled w
     assert.equal(restored.control.snapshot().status, "ready");
     assert.equal(restored.control.snapshot().preferences["include:feature"].preference, "disabled");
     assert.equal(restored.control.snapshot().lastReceipt.code, "management_recovered_disabled");
+    assert.equal(restored.control.snapshot().lastReceipt.fingerprint, managementFingerprint(originalRequest),
+      "diagnostic metadata cannot change the original request identity");
     assert.equal(restored.refs.length, 0);
   } finally { await restored.close(); }
 }));
