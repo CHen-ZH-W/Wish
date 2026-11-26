@@ -1,3 +1,4 @@
+import { LoadingBoundary } from "../../../apps/webui/client/ui/loading-boundary.js";
 import type { Context } from "@deepseek-ai/cordis";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type {} from "../../../apps/webui/client/plugins.js";
@@ -94,12 +95,12 @@ function UserTerminalSidebar({ pool, sessionId, tab, actions }: { pool: UserTerm
         model.observe(sessionId, terminal.id);
       });
     };
-    void start();
+    void start().catch(() => { /* The model exposes startup failure in its snapshot. */ });
     const timer = window.setInterval(() => { if (document.visibilityState === "visible") void model.refresh(sessionId); }, 3_000);
     return () => { active = false; window.clearInterval(timer); model.suspend(); };
   }, [model, pool, requestedId, requestedShellPath, sessionId, tab.id, tab.visible]);
 
-  return <section className="user-terminal-view">
+  return <LoadingBoundary identity={`${sessionId}/${tab.id}`} pending={!selected && !state.error && (state.sessionId !== sessionId || state.pending || requestedId === undefined)}><section className="user-terminal-view">
     <ErrorNotice text={state.error ? readableError(state.error) : null} />
     {selected ? <div className="user-terminal-console" data-active={selected.active || undefined}>
       <Suspense fallback={<div className="user-terminal-screen-loading" role="status">{t("正在加载终端…", "Loading terminal…")}</div>}>
@@ -118,13 +119,13 @@ function UserTerminalSidebar({ pool, sessionId, tab, actions }: { pool: UserTerm
         {state.observedTerminalId === selected.id && state.streamPhase === "connected" && !state.writable ? <div className="user-terminal-status">{t("此终端正由另一个页面控制", "This terminal is controlled by another view")}</div> : null}
       </Suspense>
       {!selected.active ? <div className="user-terminal-status">{selected.exitCode === undefined ? t("终端已退出", "Terminal exited") : t(`终端已退出，状态码 ${selected.exitCode}`, `Terminal exited with code ${selected.exitCode}`)}</div> : null}
-    </div> : state.pending || requestedId === undefined ? <div className="user-terminal-screen-loading" role="status"><span className="user-terminal-empty-icon"><Icon name="terminal" /></span>{t("正在启动 Bash…", "Starting Bash…")}</div> : <div className="user-terminal-empty">
+    </div> : state.pending || requestedId === undefined && !state.error ? <div className="user-terminal-screen-loading" role="status"><span className="user-terminal-empty-icon"><Icon name="terminal" /></span>{t("正在启动 Bash…", "Starting Bash…")}</div> : <div className="user-terminal-empty">
       <span className="user-terminal-empty-icon"><Icon name="terminal" /></span>
       <p>{t("这个终端已不可用", "This terminal is no longer available")}</p>
       <small>{t("宿主终端 · 当前系统用户权限", "Host terminal · current system user")}</small>
       <button className="primary" onClick={() => actions.openTab("terminal", { replace: true })}><Icon name="plus" />{t("新建终端", "New terminal")}</button>
     </div>}
-  </section>;
+  </section></LoadingBoundary>;
 }
 
 export const UserTerminalClientUi = {

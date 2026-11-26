@@ -3,6 +3,8 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
+  lstat,
   rename,
   rm,
 } from "node:fs/promises";
@@ -104,6 +106,29 @@ export class FileBlobStorageBackend implements BlobStorageBackend {
       }
       return true;
     });
+  }
+
+  list(namespace: string): Promise<readonly BlobReference[]> {
+    this.assertOpen();
+    namespace = requireIdentity(namespace, "Blob namespace");
+    return this.track((async () => {
+      const directory = fileBlobNamespaceDirectory(this.rootDirectory, namespace);
+      let entries;
+      try { entries = await readdir(directory, { withFileTypes: true }); }
+      catch (error) { if (isNodeError(error, "ENOENT")) return []; throw error; }
+      const references: BlobReference[] = [];
+      for (const entry of entries) {
+        const match = /^sha256-([a-f0-9]{64})\.blob$/u.exec(entry.name);
+        if (!entry.isFile() || !match) continue;
+        const sha256 = match[1]!;
+        try {
+          const info = await lstat(fileBlobPath(this.rootDirectory, namespace, sha256));
+          if (!info.isFile()) continue;
+          references.push(freezeReference({ namespace, locator: `${LOCATOR_PREFIX}${sha256}`, sha256, size: info.size }));
+        } catch (error) { if (!isNodeError(error, "ENOENT")) throw error; }
+      }
+      return Object.freeze(references);
+    })());
   }
 
   async deleteNamespace(namespace: string): Promise<void> {

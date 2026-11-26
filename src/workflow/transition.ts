@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { WorkflowAttempt, WorkflowRun, WorkflowStep } from "./types.js";
 export function fingerprint(text: string): string { return createHash("sha256").update(text).digest("hex"); }
 export function activeAttempt(attempt: WorkflowAttempt): boolean { return ["prepared", "dispatched", "running"].includes(attempt.status); }
+export function hasUnconfirmedStops(run: WorkflowRun): boolean { return run.steps.some(step => step.status === "cancelled" && step.attempts.some(attempt => attempt.status === "cancelled" && !attempt.stoppedAt)); }
 export function deriveRun(run: WorkflowRun): WorkflowRun {
   if (run.status === "cancelled") return run;
   const candidates = run.steps.map(step => step.status === "blocked" && !step.attempts.length ? { ...step, status: "pending" as const } : step);
@@ -13,6 +14,7 @@ export function deriveRun(run: WorkflowRun): WorkflowRun {
   }
   const steps = candidates.map((step) => step.status === "pending" && blocked.has(step.task.id) ? { ...step, status: "blocked" as const } : step);
   const status = steps.every((step) => step.status === "completed") ? "completed"
+    : steps.every(step => step.status === "completed" || step.status === "cancelled") ? "cancelled"
     : steps.some((step) => step.status === "running") ? "running"
     : steps.some((step) => step.status === "interrupted") ? "interrupted"
     : steps.some((step) => step.status === "failed" || step.status === "blocked") ? "blocked" : "running";

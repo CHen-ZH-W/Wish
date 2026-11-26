@@ -39,6 +39,63 @@ async function createFixture(options = {}) {
 
 defineStorageJournalConformance("File Journal", createFixture);
 
+test("compaction keeps surviving cursors, partial-batch replay and the empty high-water across reopen", async () => {
+  const f = await createFixture(), encode = text => new TextEncoder().encode(text);
+  try {
+    const batch = { idempotencyKey: "mixed", entries: [encode("deleted"), encode("retained")] };
+    const original = await f.journal.append(batch, { kind: "any" });
+    await f.journal.append({ idempotencyKey: "deleted-tail", entries: [encode("deleted")] }, { kind: "any" });
+    assert.equal((await f.journal.compact(entry => new TextDecoder().decode(entry.value) === "retained")).removed, 2);
+    await f.journal.close();
+    let journal = f.backend.journal.open({ namespace: f.namespace });
+    const entries = [];
+    for await (const entry of journal.read({ afterCursor: 1 })) entries.push(entry);
+    assert.deepEqual(entries.map(entry => [entry.cursor, entry.batchIndex, entry.revision]), [[2, 1, original.revision]]);
+    assert.equal((await journal.append(batch, { kind: "any" })).replayed, true);
+    assert.equal((await journal.append({ idempotencyKey: "next", entries: [encode("four")] }, { kind: "any" })).firstCursor, 4);
+    await journal.compact(() => false);
+    await journal.close();
+    journal = f.backend.journal.open({ namespace: f.namespace });
+    assert.equal((await journal.append({ idempotencyKey: "after-empty", entries: [encode("five")] }, { kind: "any" })).firstCursor, 5);
+    const bytes = await readFile(fileJournalStoragePath(f.backend.journal, f.namespace), "utf8");
+    assert.equal(bytes.includes(Buffer.from("retained").toString("base64")), false);
+  } finally { await f.close(); }
+});
+
+test("compaction is atomic on predicate failure and serialized with concurrent appends", async () => {
+  const f = await createFixture();
+  try {
+    const batch = id => ({ idempotencyKey: id, entries: [new TextEncoder().encode(id)] });
+    await f.journal.append(batch("old"), { kind: "any" });
+    const path = fileJournalStoragePath(f.backend.journal, f.namespace), before = await readFile(path);
+    await assert.rejects(f.journal.compact(() => { throw new Error("predicate failed"); }), /predicate failed/);
+    assert.deepEqual(await readFile(path), before);
+    const signal = new AbortController();
+    await assert.rejects(f.journal.compact(() => { signal.abort(); return false; }, signal.signal), /abort/i);
+    assert.deepEqual(await readFile(path), before);
+    await Promise.all([
+      f.journal.compact(entry => entry.idempotencyKey !== "old"),
+      f.journal.append(batch("new"), { kind: "any" }),
+    ]);
+    const entries = [];
+    for await (const entry of f.journal.read()) entries.push(entry);
+    assert.deepEqual(entries.map(entry => [entry.cursor, entry.idempotencyKey]), [[2, "new"]]);
+  } finally { await f.close(); }
+});
+
+test("torn-tail recovery never discards a damaged compaction checkpoint", async () => {
+  const f = await createFixture({ recovery: "truncate" });
+  try {
+    await f.journal.append({ idempotencyKey: "mixed", entries: [new Uint8Array([1]), new Uint8Array([2])] }, { kind: "any" });
+    await f.journal.compact(entry => entry.cursor === 2);
+    const path = fileJournalStoragePath(f.backend.journal, f.namespace);
+    const damaged = (await readFile(path)).subarray(0, -12);
+    await writeFile(path, damaged);
+    await assert.rejects(async () => { for await (const entry of f.journal.read()) void entry; }, /checkpoint has a torn tail/);
+    assert.deepEqual(await readFile(path), damaged);
+  } finally { await f.close(); }
+});
+
 test("File Journal reopens a namespace after its prior handle closes", async () => {
   const fixture = await createFixture();
   try {

@@ -1,5 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
-import type {} from "../../../apps/webui/client/plugins.js";
+import { bindPageReadiness } from "../../../apps/webui/client/plugins.js";
 import { PermissionProfileClientModel } from "./profile-model.js";
 import { NewSessionPermissionProfileClientModel } from "./new-session-profile-model.js";
 import {
@@ -12,7 +12,9 @@ export const PermissionsClientUi = {
   inject: ["wishSettings", "wishConnection", "wishSession", "wishNewSession", "wishUiSlots"],
   apply(ctx: Context): void {
     const current = new PermissionProfileClientModel(ctx.wishConnection, ctx.wishSession);
+    ctx.effect(() => bindPageReadiness(ctx, "permission-profile", ["conversation", "archives"], current.readiness));
     const next = new NewSessionPermissionProfileClientModel(ctx.wishConnection, ctx.wishSettings);
+    ctx.effect(() => bindPageReadiness(ctx, "new-permission-profile", ["new-session"], next.readiness, false));
     ctx.effect(() => () => current.close(), "Permissions Session profile client model");
     ctx.effect(() => () => next.close(), "Permissions pre-Session profile client model");
     ctx.effect(() => ctx.wishNewSession.registerFirstMessageSetup("permission-profile", () => {

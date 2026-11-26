@@ -30,7 +30,7 @@ export class DefaultSandboxPolicyBackend implements SandboxPolicy {
       filesystemPolicyVersion: filesystem.policy.version,
       shellPolicyVersion: shell.policy.version,
       shellBackend: shell.policy.backend,
-      filesystem: "workspace-path-scoped" as const,
+      filesystem: "profile-path-scoped" as const,
       network: shell.policy.network === "per-call"
         ? "all-or-none" as const
         : "none" as const,
@@ -115,7 +115,7 @@ export class DefaultSandboxPolicyBackend implements SandboxPolicy {
               context: input.context,
               ...(signal === undefined ? {} : { signal }),
             });
-            const target = resolved.relativePath || ".";
+            const target = resolved.path;
             (requirement.capability === "filesystem.read"
               ? readPaths
               : writePaths).push(target);

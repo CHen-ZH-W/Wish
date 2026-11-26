@@ -71,15 +71,25 @@ export class TaskGraphScheduler {
       ordered.push(step);
     };
     run.steps.forEach(visit);
-    for (const step of ordered) for (const attempt of step.attempts) {
-      const graph = (await this.tasks.get(run.graph!.sessionId, run.graph!.version))!;
-      const task = graph.tasks.find(candidate => candidate.id === step.task.id)!;
-      if (step.attempts.findIndex(candidate => candidate.id === task.attemptId) > attempt.ordinal - 1) continue;
-      const status = activeAttempt(attempt) ? "running" : attempt.status === "interrupted" ? "blocked" : attempt.status;
-      if (task.status === status && task.attemptId === attempt.id) continue;
-      if (task.attemptId !== attempt.id && !["completed", "cancelled"].includes(task.status)) await this.tasks.transition(run.graph!, task.id, "running", attempt.id);
-      else if (["blocked", "failed"].includes(task.status) && ["completed", "failed"].includes(status)) await this.tasks.transition(run.graph!, task.id, "running", attempt.id);
-      await this.tasks.transition(run.graph!, task.id, status as "running" | "completed" | "failed" | "blocked" | "cancelled", attempt.id, attempt.result);
+    for (const step of ordered) {
+      if (!step.attempts.length) {
+        const graph = await this.tasks.get(run.graph!.sessionId, run.graph!.version), task = graph?.tasks.find(item => item.id === step.task.id);
+        if (task && task.status !== step.status && ["pending", "blocked", "cancelled"].includes(step.status)) await this.tasks.projectPending(run.graph!, step.task.id, step.status as "pending" | "blocked" | "cancelled", `workflow:${run.id}:${run.revision}`, run.failureDigest);
+      }
+      for (const attempt of step.attempts) {
+        const graph = (await this.tasks.get(run.graph!.sessionId, run.graph!.version))!;
+        const task = graph.tasks.find(candidate => candidate.id === step.task.id)!;
+        if (step.attempts.findIndex(candidate => candidate.id === task.attemptId) > attempt.ordinal - 1) continue;
+        const status = activeAttempt(attempt) ? "running" : attempt.status === "interrupted" ? "blocked" : attempt.status;
+        if (task.status === "cancelled" || task.status === status && task.attemptId === attempt.id) continue;
+        if (task.attemptId !== attempt.id && task.status !== "completed") await this.tasks.transition(run.graph!, task.id, "running", attempt.id);
+        else if (["blocked", "failed"].includes(task.status) && ["completed", "failed"].includes(status)) await this.tasks.transition(run.graph!, task.id, "running", attempt.id);
+        await this.tasks.transition(run.graph!, task.id, status as "running" | "completed" | "failed" | "blocked" | "cancelled", attempt.id, attempt.result);
+      }
+      if (step.status === "cancelled" && step.attempts.length) {
+        const graph = (await this.tasks.get(run.graph!.sessionId, run.graph!.version))!, task = graph.tasks.find(item => item.id === step.task.id)!;
+        if (task.status !== "cancelled" && task.status !== "completed") await this.tasks.transition(run.graph!, task.id, "cancelled", step.attempts.at(-1)!.id, run.failureDigest);
+      }
     }
   }
 }

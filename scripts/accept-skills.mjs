@@ -32,17 +32,17 @@ test("Skill discovery is deterministic, metadata-only, bounded and pinned during
   const { cwd, userRoot, workspaceRoot, put } = await fixture(t);
   await put(userRoot, "inspect", markdown("inspect", "", "user body"));
   await put(workspaceRoot, "inspect", markdown("inspect", "", "workspace body"));
-  const resource = await put(workspaceRoot, "tests");
+  const resource = await put(userRoot, "tests");
   await mkdir(join(resource, "references"));
   await writeFile(join(resource, "references", "guide.md"), "use focused tests");
-  await put(workspaceRoot, "manual", markdown("manual", "disable-model-invocation: true\n"));
+  await put(userRoot, "manual", markdown("manual", "disable-model-invocation: true\n"));
   const skills = new LocalSkills({ userRoot });
   const catalog = await skills.list({ cwd });
   assert.deepEqual(catalog.skills.map(s => s.name), ["inspect", "manual", "tests"]);
   assert.equal(catalog.skills[0].source, "user");
   assert.equal(catalog.skills[0].content, undefined);
   assert.equal(catalog.skills[1].modelInvocable, false);
-  assert.match(catalog.issues[0].message, /Duplicate/);
+  assert.equal(catalog.issues.length, 0, "Workspace packages are not a Wish Skill source");
   const entry = catalog.skills[2];
   assert.equal((await skills.read({ cwd, name: entry.name, expectedDigest: entry.digest, path: "references/guide.md" })).content, "use focused tests");
   await writeFile(join(resource, "SKILL.md"), markdown("tests", "", "changed"));
@@ -58,14 +58,14 @@ test("Skill roots, packages and resources reject symlinks; abort and file limits
   await writeFile(join(cwd, "secret"), "secret outside package");
   await mkdir(join(directory, "references"));
   await symlink(join(cwd, "secret"), join(directory, "references", "leak.md"));
-  const skills = new LocalSkills();
+  const skills = new LocalSkills({ userRoot: workspaceRoot });
   const entry = (await skills.list({ cwd })).skills[0];
   await assert.rejects(skills.read({ cwd, name: "inspect", expectedDigest: entry.digest, path: "references/leak.md" }), /regular/);
   await symlink(directory, join(workspaceRoot, "alias"));
   assert.equal((await skills.list({ cwd })).skills.length, 1);
-  assert.equal((await new LocalSkills({ maxFileBytes: 10 }).list({ cwd })).skills.length, 0);
+  assert.equal((await new LocalSkills({ userRoot: workspaceRoot, maxFileBytes: 10 }).list({ cwd })).skills.length, 0);
   await assert.rejects(skills.list({ cwd, signal: AbortSignal.abort(new Error("cancelled")) }), /cancelled/);
-  assert.deepEqual((await skills.list({ cwd: join(cwd, "empty") })).skills, []);
+  assert.deepEqual((await skills.list({ cwd: join(cwd, "empty") })).skills.map(item => item.name), ["inspect"], "Wish Skills are independent of cwd");
 });
 
 test("Skill pages preserve Unicode, pin resources and never grant model invocation", async t => {
@@ -75,7 +75,7 @@ test("Skill pages preserve Unicode, pin resources and never grant model invocati
   const resourcePath = join(directory, "references", "unicode.md");
   const original = "中文😀\n".repeat(20);
   await writeFile(resourcePath, original);
-  const source = new LocalSkills();
+  const source = new LocalSkills({ userRoot: workspaceRoot });
   const skill = (await source.list({ cwd })).skills[0];
   const request = { cwd, name: skill.name, expectedDigest: skill.digest, expectedPackageId: skill.packageId, path: "references/unicode.md" };
   await assert.rejects(source.read({ ...request, invocation: "model" }), /Host/);
@@ -97,13 +97,13 @@ test("Skill pages preserve Unicode, pin resources and never grant model invocati
   for (const extra of [{ offset: -1 }, { limit: 0 }, { limit: 32_001 }, { expectedDigest: "bogus" }]) await assert.rejects(source.read({ ...request, ...extra }));
 });
 
-test("Discovery uses only .agents/skills and does not execute package scripts", async t => {
+test("Discovery uses the configured Wish library and does not execute package scripts", async t => {
   const { cwd, workspaceRoot, put } = await fixture(t);
   await put(join(cwd, ".wish", "skills"), "legacy");
   const directory = await put(workspaceRoot, "inspect");
   await mkdir(join(directory, "scripts"));
   await writeFile(join(directory, "scripts", "check.sh"), "exit 73\n");
-  const source = new LocalSkills();
+  const source = new LocalSkills({ userRoot: workspaceRoot });
   const catalog = await source.list({ cwd });
   assert.deepEqual(catalog.skills.map(skill => skill.name), ["inspect"]);
   assert.equal((await source.read({ cwd, name: "inspect", expectedDigest: catalog.skills[0].digest, path: "scripts/check.sh" })).content, "exit 73\n");
@@ -112,9 +112,10 @@ test("Discovery uses only .agents/skills and does not execute package scripts", 
 test("Pinned package identity detects a source replacement even with identical manifest content", async t => {
   const { cwd, userRoot, workspaceRoot, put } = await fixture(t);
   await put(workspaceRoot, "inspect");
-  const source = new LocalSkills({ userRoot });
-  const entry = (await source.list({ cwd })).skills[0];
+  const original = new LocalSkills({ userRoot: workspaceRoot });
+  const entry = (await original.list({ cwd })).skills[0];
   await put(userRoot, "inspect");
+  const source = new LocalSkills({ userRoot });
   const replacement = (await source.list({ cwd })).skills[0];
   assert.equal(replacement.digest, entry.digest);
   assert.notEqual(replacement.packageId, entry.packageId);
@@ -129,7 +130,7 @@ test("Skill resources reject hard-linked external files and bound root enumerati
   const secret = join(cwd, "private.txt");
   await writeFile(secret, "private outside package");
   await link(secret, join(directory, "references", "linked.txt"));
-  const skills = new LocalSkills();
+  const skills = new LocalSkills({ userRoot: workspaceRoot });
   const entry = (await skills.list({ cwd })).skills[0];
   await assert.rejects(skills.read({ cwd, name: entry.name, expectedDigest: entry.digest, expectedPackageId: entry.packageId, path: "references/linked.txt" }), /hard-linked/);
   for (let start = 0; start < 1000; start += 50) await Promise.all(Array.from({ length: 50 }, (_, i) => writeFile(join(workspaceRoot, `entry-${start + i}`), "")));

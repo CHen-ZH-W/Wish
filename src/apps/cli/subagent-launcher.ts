@@ -11,8 +11,9 @@ import { resolveConfiguredModel } from "../../models/config.js";
 import { composeAgentScope, eligibleCapabilities } from "../../composition/agent-scope.js";
 import type { AgentScopePreset } from "../../composition/agent-preset.js";
 import { resourceDigest as digestResource } from "../../subagents/resources.js";
-import { MEMORY_SNAPSHOT_RESOURCE } from "../../memory/child-resources.js";
+import { MEMORY_LIBRARY_RESOURCE } from "../../memory/child-resources.js";
 import { TOOL_CAPABILITY_KINDS } from "../../permissions/index.js";
+import { SystemPluginPolicy } from "../../boot/plugin-control/system-policy.js";
 import { canDelegatePermissionProfile } from "../../permissions/delegation.js";
 import type { SubagentResource } from "../../subagents/resources.js";
 import type {
@@ -28,6 +29,8 @@ export interface WishCliSubagentLauncherOptions {
   readonly cliEntry?: string;
   readonly executable?: string;
   readonly modelsConfigurationPath?: string;
+  readonly pluginPolicyDirectory?: string;
+  readonly configurationFile?: string;
   readonly exchange?: FileSubagentExchange;
   readonly prepareResources?: (request: SpawnSubagentRequest, identity: SubagentLaunchIdentity, scopePreset?: AgentScopePreset) => Promise<readonly SubagentResource[]>;
   /** Host-only resolver; credential values are never part of a spawn request. */
@@ -42,6 +45,8 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
   private readonly modelsConfigurationPath: string | undefined;
   private readonly prepareResources: WishCliSubagentLauncherOptions["prepareResources"];
   private readonly resolveCredential: WishCliSubagentLauncherOptions["resolveCredential"];
+  private readonly pluginPolicy: SystemPluginPolicy;
+  private readonly configurationFile: string | undefined;
 
   constructor(options: WishCliSubagentLauncherOptions) {
     this.exchange = options.exchange ?? new FileSubagentExchange(options.dataDirectory);
@@ -52,6 +57,8 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
     this.modelsConfigurationPath = options.modelsConfigurationPath;
     this.prepareResources = options.prepareResources;
     this.resolveCredential = options.resolveCredential;
+    this.pluginPolicy = new SystemPluginPolicy(options.pluginPolicyDirectory ?? join(options.dataDirectory, "management"));
+    this.configurationFile = options.configurationFile;
   }
 
   async resolve(
@@ -59,6 +66,7 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
     identity: SubagentLaunchIdentity,
     scopePreset?: AgentScopePreset,
   ): Promise<SubagentLaunch> {
+    await this.pluginPolicy.assertEnabled(["include:cli"]);
     const childDataDirectory = this.exchange.childDataDirectory(identity.id);
     const taskFile = await this.exchange.createTask(identity.id, request.task, request.signal);
     let modelsConfigurationPath = this.modelsConfigurationPath;
@@ -91,7 +99,7 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
       }
       const prepared = await this.prepareResources?.(request, identity, scopePreset) ?? [];
       const resources = scopePreset?.memory === "none"
-        ? prepared.filter(resource => resource.type !== MEMORY_SNAPSHOT_RESOURCE)
+        ? prepared.filter(resource => resource.type !== MEMORY_LIBRARY_RESOURCE)
         : prepared;
       if (resources.length) {
         const manifest = await this.exchange.writeInputResources(identity, request, resources, request.signal);
@@ -131,12 +139,16 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
         : ["--models-config", modelsConfigurationPath]),
     ];
     const environment: Record<string, string> = {
+      ...(this.configurationFile === undefined ? {} : { CORDIS_CONFIG: this.configurationFile }),
       WISH_SUBAGENTS_ENABLED: "0",
       WISH_SUBAGENT_TOOLS_ENABLED: "0",
       WISH_WORKFLOW_ENABLED: "0",
       WISH_TASKS_ENABLED: "0",
       WISH_DATA_DIR: childDataDirectory,
       WISH_STORAGE_FILE_ROOT: join(childDataDirectory, "storage"),
+      WISH_PLUGIN_POLICY_DIR: this.pluginPolicy.directory,
+      WISH_MANAGEMENT_DATA_DIR: this.pluginPolicy.directory,
+      WISH_MANAGED_CLI: "0",
       // Empty values deliberately prevent inheriting a grandparent's attachments.
       WISH_CHILD_RESOURCES_FILE: resourceDigest === undefined ? "" : this.exchange.inputResourcesPath(identity.id),
       WISH_CHILD_RESOURCES_DIGEST: resourceDigest ?? "",
@@ -156,12 +168,6 @@ export class WishCliSubagentLauncherBackend implements SubagentLauncher {
     for (const reference of credentialReferences) environment[reference] = "";
     if (request.permissionProfile !== undefined) {
       environment.WISH_PERMISSION_PROFILE = request.permissionProfile;
-      if (request.permissionProfile !== "full-access") {
-        // A full-access parent may use the unconfined Host Shell. A narrower
-        // child needs the native Shell or its profile cannot be enforced.
-        environment.WISH_SHELL_PROVIDER = "linux-native";
-        environment.WISH_SHELL_HOST_ENABLED = "0";
-      }
     }
     if (request.availableTools !== undefined) {
       if (!request.availableTools.length) throw new Error("Cannot launch a child with an empty Tool scope");
@@ -224,6 +230,10 @@ export class WishCliSubagentLauncher extends SubagentLauncherService {
     this.work = new PluginWorkOwner(ctx, { code: "subagent_launcher", codeReload: true });
     this.backend = new WishCliSubagentLauncherBackend({
       dataDirectory: ctx.sessions.dataDirectory,
+      pluginPolicyDirectory: ctx.root.get("systemPluginPolicy")?.directory ??
+        ctx.launch.environment.WISH_PLUGIN_POLICY_DIR ?? ctx.launch.environment.WISH_MANAGEMENT_DATA_DIR ??
+        join(ctx.sessions.dataDirectory, "management"),
+      configurationFile: ctx.launch.configurationFile,
       prepareResources: (request, identity, preset) => this.prepareResources(
         request, identity, preset?.memory === "none" ? ["memory"] : [],
       ),
@@ -279,7 +289,7 @@ export class WishCliSubagentLauncher extends SubagentLauncherService {
       throw new Error(`Agent Scope role ${preset.role} has no Tools within the parent ceiling`);
     }
     const runtimeFeatures = preset?.memory === "none"
-      ? this.runtimeFeatures.filter(feature => feature !== "memory.snapshot")
+      ? this.runtimeFeatures.filter(feature => feature !== "memory.read")
       : this.runtimeFeatures;
     const eligible = eligibleCapabilities(new Set(delegatedCapabilities ?? TOOL_CAPABILITY_KINDS),
       permissionProfile, runtimeFeatures.includes("human.review"));

@@ -11,8 +11,8 @@ import type { Goal, GoalRef, GoalView } from "../types.js";
 export interface Config { readonly blockedAfterConsecutiveRounds?: number }
 export const Config: s<Config> = s.object({ blockedAfterConsecutiveRounds: s.number().step(1).min(1) });
 type UpdateAction = "edit" | "pause" | "resume" | "complete" | "blocked";
-interface CreateInput { readonly objective: string; readonly max_goal_rounds?: number }
-interface UpdateInput { readonly goal_id: string; readonly revision: number; readonly action: UpdateAction; readonly objective?: string; readonly max_goal_rounds?: number; readonly blocked_reason?: string }
+interface CreateInput { readonly objective: string; readonly max_goal_rounds?: number | null }
+interface UpdateInput { readonly goal_id: string; readonly revision: number; readonly action: UpdateAction; readonly objective?: string; readonly max_goal_rounds?: number | null; readonly blocked_reason?: string }
 export interface GoalToolOutput { readonly content: readonly { readonly type: "text"; readonly text: string }[]; readonly goal?: GoalView }
 
 export function createGoalTools(goal: Goal, config: Config = {}): readonly ToolDefinition<string, any, GoalToolOutput, WishToolExecutionContext>[] {
@@ -61,10 +61,10 @@ function definition(name: string, description: string, executionMode: "parallel"
   return { name, description, executionMode, recoveryPolicy, inputSchemaJson, parse, resolveCapabilities, execute };
 }
 const EMPTY_SCHEMA = JSON.stringify({ type: "object", properties: {}, additionalProperties: false });
-const CREATE_SCHEMA = JSON.stringify({ type: "object", properties: { objective: { type: "string", minLength: 1 }, max_goal_rounds: { type: "integer", minimum: 1 } }, required: ["objective"], additionalProperties: false });
-const UPDATE_SCHEMA = JSON.stringify({ type: "object", properties: { goal_id: { type: "string", minLength: 1 }, revision: { type: "integer", minimum: 1 }, action: { enum: ["edit", "pause", "resume", "complete", "blocked"] }, objective: { type: "string", minLength: 1 }, max_goal_rounds: { type: "integer", minimum: 1 }, blocked_reason: { type: "string", minLength: 1 } }, required: ["goal_id", "revision", "action"], additionalProperties: false });
+const CREATE_SCHEMA = JSON.stringify({ type: "object", properties: { objective: { type: "string", minLength: 1 }, max_goal_rounds: { type: ["integer", "null"], minimum: 1 } }, required: ["objective"], additionalProperties: false });
+const UPDATE_SCHEMA = JSON.stringify({ type: "object", properties: { goal_id: { type: "string", minLength: 1 }, revision: { type: "integer", minimum: 1 }, action: { enum: ["edit", "pause", "resume", "complete", "blocked"] }, objective: { type: "string", minLength: 1 }, max_goal_rounds: { type: ["integer", "null"], minimum: 1 }, blocked_reason: { type: "string", minLength: 1 } }, required: ["goal_id", "revision", "action"], additionalProperties: false });
 function parseEmpty(input: Readonly<Record<string, unknown>>): ToolInputParseResult<Record<string, never>> { return Object.keys(input).length === 0 ? { ok: true, input: Object.freeze({}) } : invalid("get_goal accepts no fields"); }
-function parseCreate(input: Readonly<Record<string, unknown>>): ToolInputParseResult<CreateInput> { if (unknown(input, ["objective", "max_goal_rounds"])) return invalid("Unknown create_goal field"); if (!textValue(input.objective)) return invalid("objective is required"); if (input.max_goal_rounds !== undefined && !positive(input.max_goal_rounds)) return invalid("max_goal_rounds must be positive"); return { ok: true, input: Object.freeze({ objective: input.objective, ...(input.max_goal_rounds === undefined ? {} : { max_goal_rounds: input.max_goal_rounds as number }) }) }; }
+function parseCreate(input: Readonly<Record<string, unknown>>): ToolInputParseResult<CreateInput> { if (unknown(input, ["objective", "max_goal_rounds"])) return invalid("Unknown create_goal field"); if (!textValue(input.objective)) return invalid("objective is required"); if (input.max_goal_rounds !== undefined && input.max_goal_rounds !== null && !positive(input.max_goal_rounds)) return invalid("max_goal_rounds must be positive"); return { ok: true, input: Object.freeze({ objective: input.objective, ...(input.max_goal_rounds === undefined ? {} : { max_goal_rounds: input.max_goal_rounds as number | null }) }) }; }
 function parseUpdate(input: Readonly<Record<string, unknown>>): ToolInputParseResult<UpdateInput> {
   if (unknown(input, ["goal_id", "revision", "action", "objective", "max_goal_rounds", "blocked_reason"])) return invalid("Unknown update_goal field");
   if (!textValue(input.goal_id) || !positive(input.revision) || !["edit", "pause", "resume", "complete", "blocked"].includes(input.action as string)) return invalid("goal_id, positive revision, and valid action are required");
@@ -74,9 +74,9 @@ function parseUpdate(input: Readonly<Record<string, unknown>>): ToolInputParseRe
   if (action === "blocked" && !textValue(input.blocked_reason)) return invalid("blocked_reason is required with blocked");
   if (action !== "blocked" && hasBlock) return invalid("blocked_reason is valid only with blocked");
   if (input.objective !== undefined && !textValue(input.objective)) return invalid("objective must not be empty");
-  if (input.max_goal_rounds !== undefined && !positive(input.max_goal_rounds)) return invalid("max_goal_rounds must be positive");
+  if (input.max_goal_rounds !== undefined && input.max_goal_rounds !== null && !positive(input.max_goal_rounds)) return invalid("max_goal_rounds must be positive");
   return { ok: true, input: Object.freeze({ goal_id: input.goal_id, revision: input.revision as number, action,
-    ...(input.objective === undefined ? {} : { objective: input.objective as string }), ...(input.max_goal_rounds === undefined ? {} : { max_goal_rounds: input.max_goal_rounds as number }),
+    ...(input.objective === undefined ? {} : { objective: input.objective as string }), ...(input.max_goal_rounds === undefined ? {} : { max_goal_rounds: input.max_goal_rounds as number | null }),
     ...(input.blocked_reason === undefined ? {} : { blocked_reason: input.blocked_reason as string }) }) };
 }
 function requireDirectHuman(context: WishToolExecutionContext) { const turn = context.userTurn; if (!turn || turn.parentRunId !== undefined) throw new ToolExecutionError("permission_denied", "Goal mutation requires direct top-level human authority"); const direct = turn.provenance.origin === "run_input" ? turn.inputSource === "user" : turn.provenance.source === "wish-cli" || turn.provenance.source === "wish-webui"; if (!direct) throw new ToolExecutionError("permission_denied", "Goal mutation requires direct top-level human authority"); }

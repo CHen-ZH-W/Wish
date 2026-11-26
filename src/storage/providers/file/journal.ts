@@ -3,6 +3,8 @@ import {
   mkdir,
   open,
   readFile,
+  rename,
+  rm,
   stat,
   truncate,
 } from "node:fs/promises";
@@ -47,9 +49,23 @@ interface StoredJournalTransaction extends StoredJournalTransactionCore {
 }
 
 interface LoadedJournal {
-  readonly transactions: readonly StoredJournalTransaction[];
+  readonly transactions: readonly RetainedTransaction[];
   readonly revision: string;
   readonly lastCursor: number;
+}
+
+// A checkpoint can omit entries without renumbering the surviving transactions.
+// Its checksum covers the complete retained image and the original high-water.
+interface RetainedTransaction extends Omit<StoredJournalTransactionCore, "entriesBase64"> {
+  readonly entriesBase64: readonly (string | null)[];
+}
+interface JournalCheckpoint {
+  readonly schemaVersion: 1;
+  readonly type: "wish_storage_journal_checkpoint";
+  readonly namespace: string;
+  readonly revision: string;
+  readonly lastCursor: number;
+  readonly transactions: readonly RetainedTransaction[];
 }
 
 export type FileJournalTornTailRecovery = "fail" | "truncate";
@@ -229,7 +245,7 @@ class FileJournal implements Journal {
         for (let index = 0; index < transaction.entriesBase64.length; index += 1) {
           throwIfAborted(options.signal);
           const cursor = transaction.firstCursor + index;
-          if (cursor <= afterCursor) continue;
+          if (cursor <= afterCursor || transaction.entriesBase64[index] === null) continue;
           yield Object.freeze({
             cursor,
             revision: transaction.revision,
@@ -245,6 +261,47 @@ class FileJournal implements Journal {
       this.active.delete(activity);
       finish();
     }
+  }
+
+  compact(keep: (entry: JournalEntry) => boolean, signal?: AbortSignal): Promise<{ readonly removed: number }> {
+    return this.serial(async () => {
+      const loaded = await this.load(signal);
+      let removed = 0;
+      const transactions = loaded.transactions.flatMap(transaction => {
+        const entriesBase64 = transaction.entriesBase64.map((value, batchIndex) => {
+          throwIfAborted(signal);
+          if (value === null) return null;
+          const retained = keep(Object.freeze({ cursor: transaction.firstCursor + batchIndex,
+            revision: transaction.revision, idempotencyKey: transaction.idempotencyKey,
+            batchIndex, value: Uint8Array.from(decodeBase64(value)) }));
+          if (typeof retained !== "boolean") throw new TypeError("Journal compact predicate must return a boolean");
+          if (!retained) removed++;
+          return retained ? value : null;
+        });
+        if (entriesBase64.every(value => value === null)) return [];
+        return [{ schemaVersion: 1 as const, type: "wish_storage_journal_transaction" as const,
+          namespace: transaction.namespace, previousRevision: transaction.previousRevision,
+          revision: transaction.revision, idempotencyKey: transaction.idempotencyKey,
+          firstCursor: transaction.firstCursor, entriesBase64, batchSha256: transaction.batchSha256 }];
+      });
+      if (!removed) return { removed: 0 };
+      const checkpoint: JournalCheckpoint = { schemaVersion: 1, type: "wish_storage_journal_checkpoint",
+        namespace: this.options.namespace, revision: loaded.revision, lastCursor: loaded.lastCursor, transactions };
+      const directory = dirname(this.path), temporary = `${this.path}.${randomUUID()}.tmp`;
+      try {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        const handle = await open(temporary, "wx", 0o600);
+        try {
+          await handle.writeFile(stableJson({ ...checkpoint, checkpointSha256: digestText(stableJson(checkpoint)) }) + "\n");
+          await handle.sync();
+        } finally { await handle.close(); }
+        throwIfAborted(signal);
+        await rename(temporary, this.path);
+        await syncDirectory(directory);
+      } catch (error) { throw mapFileFailure(error, this.options); }
+      finally { await rm(temporary, { force: true }); }
+      return { removed };
+    });
   }
 
   flush(): Promise<void> {
@@ -298,6 +355,9 @@ class FileJournal implements Journal {
     if (bytes.length > 0 && bytes[bytes.length - 1] !== 0x0a) {
       const lastNewline = bytes.lastIndexOf(0x0a);
       completeLength = lastNewline < 0 ? 0 : lastNewline + 1;
+      if (completeLength === 0 && /"type"\s*:\s*"wish_storage_journal_checkpoint"/u.test(bytes.toString("utf8"))) {
+        throw new StorageCorruptionError("File Journal checkpoint has a torn tail and cannot be discarded", this.context());
+      }
       if (this.options.tornTailRecovery === "fail") {
         throw new StorageCorruptionError(
           "File Journal contains a torn tail",
@@ -327,11 +387,11 @@ class FileJournal implements Journal {
     const lines = text.length === 0
       ? []
       : text.slice(0, -1).split("\n");
-    const transactions: StoredJournalTransaction[] = [];
+    const transactions: RetainedTransaction[] = [];
     let revision = EMPTY_REVISION;
     let lastCursor = 0;
     const idempotency = new Set<string>();
-    for (const line of lines) {
+    for (const [lineIndex, line] of lines.entries()) {
       throwIfAborted(signal);
       let parsed: unknown;
       try {
@@ -342,6 +402,14 @@ class FileJournal implements Journal {
           this.context(),
           { cause: error },
         );
+      }
+      if (lineIndex === 0 && (parsed as { type?: string })?.type === "wish_storage_journal_checkpoint") {
+        const checkpoint = validateCheckpoint(parsed, this.options);
+        transactions.push(...checkpoint.transactions);
+        revision = checkpoint.revision;
+        lastCursor = checkpoint.lastCursor;
+        for (const item of transactions) idempotency.add(item.idempotencyKey);
+        continue;
       }
       const transaction = validateTransaction(parsed, this.options);
       if (
@@ -575,8 +643,47 @@ function validateTransaction(
   return Object.freeze({ ...core, transactionSha256 });
 }
 
+function validateCheckpoint(value: unknown, options: FileJournalOptions): JournalCheckpoint {
+  try {
+    const stored = value as JournalCheckpoint & { checkpointSha256: string };
+    if (stored.schemaVersion !== 1 || stored.type !== "wish_storage_journal_checkpoint" ||
+        stored.namespace !== options.namespace || !Number.isSafeInteger(stored.lastCursor) || stored.lastCursor < 0 ||
+        !Array.isArray(stored.transactions)) throw new TypeError("Invalid checkpoint header");
+    const { checkpointSha256, ...core } = stored;
+    if (requireSha256(checkpointSha256, "Checkpoint checksum") !== digestText(stableJson(core))) throw new TypeError("Invalid checkpoint checksum");
+    requireRevision(stored.revision, "Checkpoint revision");
+    const ids = new Set<string>();
+    let lastCursor = 0;
+    for (const transaction of stored.transactions) {
+      if (!transaction || transaction.schemaVersion !== 1 || transaction.type !== "wish_storage_journal_transaction" ||
+          transaction.namespace !== options.namespace || !Number.isSafeInteger(transaction.firstCursor) ||
+          transaction.firstCursor <= lastCursor || !Array.isArray(transaction.entriesBase64) || !transaction.entriesBase64.length ||
+          transaction.entriesBase64.every((entry: unknown) => entry === null)) throw new TypeError("Invalid checkpoint transaction");
+      const key = requireIdentity(transaction.idempotencyKey, "Checkpoint idempotency key");
+      if (ids.has(key)) throw new TypeError("Duplicate checkpoint idempotency key");
+      ids.add(key);
+      requireRevision(transaction.previousRevision, "Checkpoint previous revision");
+      requireRevision(transaction.revision, "Checkpoint transaction revision");
+      requireSha256(transaction.batchSha256, "Checkpoint batch checksum");
+      for (const entry of transaction.entriesBase64) {
+        if (entry !== null) { if (typeof entry !== "string") throw new TypeError("Invalid checkpoint payload"); decodeBase64(entry); }
+      }
+      if (!transaction.entriesBase64.includes(null) && digestBatch((transaction.entriesBase64 as string[]).map(decodeBase64)) !== transaction.batchSha256) {
+        throw new TypeError("Invalid checkpoint batch checksum");
+      }
+      lastCursor = transaction.firstCursor + transaction.entriesBase64.length - 1;
+      if (!Number.isSafeInteger(lastCursor) || lastCursor > stored.lastCursor) throw new TypeError("Invalid checkpoint cursor");
+    }
+    return core;
+  } catch (cause) {
+    throw new StorageCorruptionError("File Journal checkpoint is invalid", {
+      backendId: options.backendId, facet: "journal", namespace: options.namespace,
+    }, { cause });
+  }
+}
+
 function commitOf(
-  transaction: StoredJournalTransaction,
+  transaction: RetainedTransaction,
   replayed: boolean,
 ): JournalCommit {
   return Object.freeze({

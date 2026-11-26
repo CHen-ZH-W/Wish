@@ -27,7 +27,7 @@ Tool Result Archive 位于 `src/tools/results/`，Session File Provider 位于
 `src/sessions/providers/file/`。目录所有权不会改变 Cordis 的 Definition/Provider/Consumer
 组合关系。
 
-## Storage Hub
+## Storage Hub 注册与租约
 
 `StorageHub` 自身不读写数据。它负责注册唯一 Backend ID、验证 Provider 声明的 facet 和
 capabilities、按 ID/facet 解析以及在 Provider fiber 卸载时退休 Backend。退休顺序固定为：
@@ -79,7 +79,7 @@ Provider 必须复制输入和输出字节，关闭后所有操作返回 `storag
 `storage_conflict`；持久化格式损坏使用 `storage_corruption`；底层 IO 失败使用
 `storage_unavailable`。事件不能早于成功的 durable commit。
 
-## File Backend
+## 文件后端
 
 `FileStorageBackend` 的根目录在 Provider 创建时显式解析。磁盘布局仅使用 namespace/key 的
 SHA-256：外部 Session ID、Workspace ID 或用户 key 不会直接进入路径。逻辑身份保存在
@@ -98,7 +98,7 @@ envelope 中，并在每次读取时和哈希路径交叉验证。
 默认 Cordis 组合注册 Backend ID `file`。路径优先取 `WISH_STORAGE_FILE_ROOT`，否则在设置
 `WISH_DATA_DIR` 时使用其 `storage` 子目录，最终回退到 `<home>/.wish/storage`。
 
-## Domain Form
+## 数据域定义
 
 `DomainSpec<Request, Value>` 拥有 domain ID、schema version、global/keyed 形态、Backend
 要求、codec、验证和迁移函数。`resolve(request)` 在 IO 之前显式确定 keyed identity 和
@@ -110,7 +110,7 @@ Domain payload 使用独立 envelope 记录 domain ID 与 schema version。读�
 durable commit、更新内存缓存、最后发布 commit event。事件观察失败不会把已经成功的提交
 伪装成写入失败。
 
-## Domain consumers
+## 数据域 Consumer
 
 `DomainModelCatalogStore` 把现有 `ModelCatalogStore` Port 映射到 global
 `models/catalog` Domain，保持业务 schemaVersion 为 1。`ModelCatalog` 无需知道 Hub、KV、
@@ -123,7 +123,7 @@ Catalog 数据仍在 Domain/Store 中，不放入 Cordis Context。
 这些实现位于 `src/models/persistence/`。Model Catalog 是第一个 KV Domain；其他业务消费者
 也必须在自己的模块中持有业务 schema、迁移和 Port adapter。
 
-## Blob
+## Blob 存储
 
 Blob 保存不可变 `Uint8Array`，`put/get/stat` 使用包含 namespace、opaque locator、SHA-256
 和 size 的稳定引用。File Blob 的 locator 使用 `sha256-v1:` 协议而不是文件路径，逻辑
@@ -135,16 +135,24 @@ Tool Result Archive 是 Blob + KV 的业务消费者，其协议、兼容读取�
 Context/AgentLoop/RunGeneration 负责在活动 Run 排空后释放，不会把裸 facet 留在退休后的新
 generation 中。
 
-## Journal
+## Journal 日志
 
 Journal 按 namespace 打开，提供原子 batch append、单调 cursor、revision CAS、batch
-idempotency key、流式 read、显式 flush 和 close。File Journal 的一个 JSONL 行是一整个事务，
+idempotency key、流式 read、显式 flush 和 close。File Journal 的普通 JSONL 行是一整个事务，
 包含前序 revision、cursor 起点、全部 payload 和校验和；提交返回前 fsync 文件。完整但损坏的
 行始终返回 `storage_corruption`。无换行的 torn tail 默认 fail closed，也可由 Provider
 显式配置为 `truncate`；修复会截断到最后一个完整事务、同步文件和目录并发布 warning。
 
 同一进程中仍活跃的 namespace handle 会复用，以维持单 writer 串行化；handle `close()`
 后不会被下一代 Cordis Provider 复用，后续 `open()` 会建立新 handle。
+
+File Journal 支持可选 `compact(keep)`：业务所有者确认数据可回收并阻止对应身份继续写入后，
+通过筛选保留条目进行物理压缩。压缩与 append 串行，使用临时文件、fsync 和原子 rename，
+读取只会看到完整的旧映像或新映像。保留条目的 cursor、batchIndex、revision 和批次幂等性不变；
+整个批次删除后释放其幂等键。即使删空，也保留 cursor 高水位，后续追加不复用旧游标。
+压缩后的文件以带校验和的 checkpoint 行开头，可保留一个混合批次中的部分条目。
+损坏的 checkpoint 不会被 torn-tail 自动截断当作普通未提交追加丢弃。
+现有事务格式仍可直接读取；已经压缩的文件需要支持 checkpoint 的版本读取，不能交给旧版解析器。
 
 Journal Backend 不认识 Runtime lifecycle、Trace、Usage 或 Audit 的业务状态。当前
 `src/core/runtime/durability/` consumer 自己维护

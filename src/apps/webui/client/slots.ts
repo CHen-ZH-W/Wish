@@ -5,6 +5,8 @@ import type { LedgerBlock } from "./projection/ledger.js";
 export interface UiPanel {
   readonly id: string; readonly label: string; readonly labelEn?: string; readonly area: "workspace" | "settings";
   readonly View: ComponentType; readonly Icon?: ComponentType;
+  /** Retain visited main/sidebar UI while registered; hidden Effects pause. Aliases share identical renderers. */
+  readonly preserveState?: boolean;
   /** Global rail entry instead of the area-local panel list. */
   readonly navigation?: "rail" | "hidden";
   /** Named local groups appear only while one of their members is open. */
@@ -17,6 +19,19 @@ export interface UiPanel {
   readonly defaultForArea?: () => boolean;
 }
 export interface UiNavigation { readonly id: string; readonly View: ComponentType; readonly forPanel?: string }
+export interface UiLoadingState {
+  readonly id: string;
+  readonly panels: readonly string[];
+  /** Resource identity remains stable during background reads. */
+  readonly key: string;
+  readonly pending: boolean;
+}
+export interface UiLoadingRegistration {
+  readonly id: string;
+  readonly panels: readonly string[];
+  readonly sources: readonly { subscribe(listener: () => void): () => void }[];
+  readonly getState: () => { readonly key: string; readonly pending: boolean };
+}
 export interface UiLedgerNavigationRequest { readonly sessionId: string; readonly turnId: string; readonly requiredTurns: number }
 export interface UiComposerItem { readonly id: string; readonly View: ComponentType<{ sessionId: string; busy: boolean }> }
 export interface UiNewSessionComposerItem { readonly id: string; readonly View: ComponentType<{ disabled: boolean }> }
@@ -74,17 +89,39 @@ export interface UiSessionSidebarItem {
 }
 export interface UiLedgerContribution {
   readonly id: string;
+  /** Context is shown above the conversation; message blocks stay in their source turn. */
+  readonly placement?: "context" | "message";
   readonly source: { getSnapshot(): readonly LedgerBlock[]; subscribe(listener: () => void): () => void };
   readonly View: ComponentType<{ block: LedgerBlock }>;
 }
 export interface UiToolView { readonly toolName: string; readonly View: ComponentType<{ block: LedgerBlock }>; readonly category?: { readonly id: string; readonly label: string; readonly labelEn?: string } }
 export interface UiToolAvailability { readonly toolName: string; readonly state: "available" | "unavailable" | "unknown" }
-export interface UiSlotSnapshot { readonly panels: readonly UiPanel[]; readonly navigation: readonly UiNavigation[]; readonly interactions: readonly UiNavigation[]; readonly composerItems: readonly UiComposerItem[]; readonly newSessionComposerItems: readonly UiNewSessionComposerItem[]; readonly sessionStatusItems: readonly UiSessionStatusItem[]; readonly conversationCards: readonly UiConversationCard[]; readonly sessionSidebarItems: readonly UiSessionSidebarItem[]; readonly ledgerContributions: readonly UiLedgerContribution[]; readonly toolViews: readonly UiToolView[]; readonly toolAvailability: readonly UiToolAvailability[]; readonly notices: readonly UiNavigation[] }
+export interface UiSlotSnapshot { readonly loading: readonly UiLoadingState[]; readonly panels: readonly UiPanel[]; readonly navigation: readonly UiNavigation[]; readonly interactions: readonly UiNavigation[]; readonly composerItems: readonly UiComposerItem[]; readonly newSessionComposerItems: readonly UiNewSessionComposerItem[]; readonly sessionStatusItems: readonly UiSessionStatusItem[]; readonly conversationCards: readonly UiConversationCard[]; readonly sessionSidebarItems: readonly UiSessionSidebarItem[]; readonly ledgerContributions: readonly UiLedgerContribution[]; readonly toolViews: readonly UiToolView[]; readonly toolAvailability: readonly UiToolAvailability[]; readonly notices: readonly UiNavigation[] }
 
 /** Presentation registrations only. Removing an owner removes its seats, not business history. */
 export class UiSlots extends SnapshotStore<UiSlotSnapshot> {
-  constructor() { super(Object.freeze({ panels: Object.freeze([]), navigation: Object.freeze([]), interactions: Object.freeze([]), composerItems: Object.freeze([]), newSessionComposerItems: Object.freeze([]), sessionStatusItems: Object.freeze([]), conversationCards: Object.freeze([]), sessionSidebarItems: Object.freeze([]), ledgerContributions: Object.freeze([]), toolViews: Object.freeze([]), toolAvailability: Object.freeze([]), notices: Object.freeze([]) })); }
+  /** Registration changes must release removed UI owners even inside a hidden page. */
+  readonly liveWhileHidden = true;
+  constructor() { super(Object.freeze({ loading: Object.freeze([]), panels: Object.freeze([]), navigation: Object.freeze([]), interactions: Object.freeze([]), composerItems: Object.freeze([]), newSessionComposerItems: Object.freeze([]), sessionStatusItems: Object.freeze([]), conversationCards: Object.freeze([]), sessionSidebarItems: Object.freeze([]), ledgerContributions: Object.freeze([]), toolViews: Object.freeze([]), toolAvailability: Object.freeze([]), notices: Object.freeze([]) })); }
   private pending: UiSlotSnapshot | undefined;
+  private readonly loadingEntries = new Map<string, UiLoadingState>();
+  /** Owners publish readiness without exposing their data or transport to the shell. */
+  loading(registration: UiLoadingRegistration): () => void {
+    if (this.loadingEntries.has(registration.id)) throw new Error(`Duplicate UI loading source: ${registration.id}`);
+    const update = () => {
+      const state = registration.getState(), previous = this.loadingEntries.get(registration.id);
+      if (previous && previous.key === state.key && previous.pending === state.pending) return;
+      this.loadingEntries.set(registration.id, Object.freeze({ id: registration.id, panels: registration.panels, ...state }));
+      this.publish({ ...this.current(), loading: Object.freeze([...this.loadingEntries.values()]) });
+    };
+    update();
+    const removers = registration.sources.map(source => source.subscribe(update));
+    return () => {
+      for (const remove of removers) remove();
+      this.loadingEntries.delete(registration.id);
+      this.publish({ ...this.current(), loading: Object.freeze([...this.loadingEntries.values()]) });
+    };
+  }
   private current(): UiSlotSnapshot { return this.pending ?? this.getSnapshot(); }
   protected override publish(value: UiSlotSnapshot): void { if (this.pending) this.pending = Object.freeze(value); else super.publish(value); }
   /** The caller serializes replacements. Readers never see an intermediate empty seat. */
@@ -118,6 +155,9 @@ export class UiSlots extends SnapshotStore<UiSlotSnapshot> {
   private ledgerNavigationListeners = new Set<(request: UiLedgerNavigationRequest) => void>();
   openLedgerTurn = (request: UiLedgerNavigationRequest): void => { for (const listener of this.ledgerNavigationListeners) listener(request); };
   onOpenLedgerTurn(listener: (request: UiLedgerNavigationRequest) => void): () => void { this.ledgerNavigationListeners.add(listener); return () => { this.ledgerNavigationListeners.delete(listener); }; }
+  private resourceListeners = new Set<(request: { sessionId: string; resource: UiSessionSidebarResource }) => void>();
+  openSessionResource = (request: { sessionId: string; resource: UiSessionSidebarResource }): void => { for (const listener of this.resourceListeners) listener(request); };
+  onOpenSessionResource(listener: (request: { sessionId: string; resource: UiSessionSidebarResource }) => void): () => void { this.resourceListeners.add(listener); return () => { this.resourceListeners.delete(listener); }; }
   setToolAvailability(toolName: string, state: UiToolAvailability["state"]): void {
     if (this.current().toolAvailability.some(item => item.toolName === toolName && item.state === state)) return;
     this.publish({ ...this.current(), toolAvailability: Object.freeze([...this.current().toolAvailability.filter(item => item.toolName !== toolName), Object.freeze({ toolName, state })]) });

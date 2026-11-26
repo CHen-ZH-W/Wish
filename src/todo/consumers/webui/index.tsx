@@ -70,7 +70,7 @@ export const TodoClientUi = {
         if (selected.selectedId && selected.selectedId === snapshot.sessionId && !selected.working &&
             todo?.sessionId === selected.selectedId && todo.items.length && run.runId === todo.runId && !run.terminal) {
           polling = true;
-          void model.refresh().finally(() => { polling = false; });
+          void model.poll().finally(() => { polling = false; });
         }
       }, 500);
       return () => clearInterval(timer);

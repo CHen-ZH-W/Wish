@@ -13,6 +13,17 @@ declare module "@deepseek-ai/cordis" {
 }
 export interface ClientUiPlugin { readonly name: string; readonly inject?: readonly string[]; apply(ctx: Context): void }
 
+/** Bind an owner's read activity to explicit pages, scoped to the current Host and optionally Session. */
+export function bindPageReadiness(root: Context, id: string, panels: readonly string[], source: {
+  getSnapshot(): boolean; subscribe(listener: () => void): () => void;
+}, session = true, usable?: () => boolean): () => void {
+  const connection = root.wishConnection, sessions = session ? root.wishSession : undefined;
+  return root.wishUiSlots.loading({ id, panels, sources: [source, connection, ...(sessions ? [sessions] : [])], getState: () => {
+    const host = connection.getSnapshot(), selected = sessions?.getSnapshot();
+    return { key: JSON.stringify([host.instanceId, selected?.selectedId]), pending: host.online && (!selected || selected.available) && source.getSnapshot() && !usable?.() };
+  } });
+}
+
 /** Tool availability is independent of specialized renderer presence or per-Step permission. */
 export function bindToolAvailability(root: Context, toolNames: readonly string[], alternativeEntries: readonly string[]): () => void {
   const management = root.get("wishManagement")!, connection = root.get("wishConnection")!, slots = root.get("wishUiSlots")!;

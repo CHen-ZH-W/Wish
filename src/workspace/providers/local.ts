@@ -1,8 +1,10 @@
 import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, open, realpath, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 
 import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
@@ -21,6 +23,7 @@ import type {
   ResolveWorkspaceRequest,
   WorkspaceInstruction,
   WorkspaceRepository,
+  WorkspaceRepositoryStatus,
   WorkspaceSnapshot,
 } from "../types.js";
 
@@ -33,6 +36,7 @@ export const DEFAULT_WORKSPACE_MAX_INSTRUCTION_BYTES = 128 * 1024;
 export const DEFAULT_WORKSPACE_MAX_INSTRUCTION_FILE_BYTES = 64 * 1024;
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
+const probeGit = promisify(execFile);
 
 /** Loader-owned Local Workspace discovery settings. */
 export interface Config {
@@ -87,9 +91,8 @@ export class LocalWorkspace extends WorkspaceService {
     throwIfAborted(request.signal);
     const requestedRoot = resolve(this.baseDirectory, inputRoot);
     const root = await canonicalDirectory(requestedRoot, request.signal);
-    const repository = await discoverRepository(
+    const { repository, status: repositoryStatus } = await discoverRepository(
       root,
-      requestedRoot,
       this.config.repositoryMarkers,
       request.signal,
     );
@@ -107,6 +110,7 @@ export class LocalWorkspace extends WorkspaceService {
       fingerprint,
       instructions,
       repository: repository ?? null,
+      repositoryStatus,
     }));
     throwIfAborted(request.signal);
     return snapshotWorkspace({
@@ -115,6 +119,7 @@ export class LocalWorkspace extends WorkspaceService {
       fingerprint,
       revision,
       instructions,
+      repositoryStatus,
       ...(repository === undefined ? {} : { repository }),
     });
   }
@@ -154,10 +159,10 @@ async function canonicalDirectory(
 
 async function discoverRepository(
   root: string,
-  requestedRoot: string,
   markers: readonly string[],
   signal: AbortSignal | undefined,
-): Promise<WorkspaceRepository | undefined> {
+): Promise<{ readonly repository?: WorkspaceRepository; readonly status: WorkspaceRepositoryStatus }> {
+  if (!markers.length) return { status: "unavailable" };
   let current = root;
   for (;;) {
     for (const marker of markers) {
@@ -166,23 +171,49 @@ async function discoverRepository(
       try {
         await stat(path);
         throwIfAborted(signal);
-        return Object.freeze({
-          kind: "git" as const,
-          root: current,
-          identity: identity("git-repository", current),
-        });
       } catch (error: unknown) {
         throwIfAborted(signal);
         if (!isMissingPathError(error)) {
-          throw new WorkspaceRootUnavailableError(requestedRoot, {
-            cause: error,
-          });
+          return { status: "unavailable" };
         }
+        continue;
       }
+      // A marker is a candidate, never proof. Probe from the selected workspace
+      // so an invalid inner .git cannot silently attach it to an outer repository.
+      const status = await verifyGitRepository(root, current, signal);
+      return status === "verified" ? { status, repository: Object.freeze({
+        kind: "git" as const, root: current, identity: identity("git-repository", current),
+      }) } : { status };
     }
     const parent = dirname(current);
-    if (parent === current) return undefined;
+    if (parent === current) return { status: "not-found" };
     current = parent;
+  }
+}
+
+async function verifyGitRepository(
+  workspaceRoot: string,
+  candidateRoot: string,
+  signal: AbortSignal | undefined,
+): Promise<WorkspaceRepositoryStatus> {
+  // Host Git overrides must not redirect discovery to a different work tree or
+  // inject command configuration. This command reads metadata only, without a shell.
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+  try {
+    const { stdout } = await probeGit("git", ["-C", workspaceRoot, "rev-parse", "--show-toplevel"], {
+      env: { ...environment, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+      encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    throwIfAborted(signal);
+    const verifiedRoot = await realpath(stdout.replace(/\r?\n$/u, ""));
+    throwIfAborted(signal);
+    return verifiedRoot === candidateRoot && isInside(verifiedRoot, workspaceRoot) ? "verified" : "unavailable";
+  } catch (error) {
+    throwIfAborted(signal);
+    const failure = error as { code?: unknown; stderr?: unknown };
+    return failure.code === 128 && typeof failure.stderr === "string" && /^fatal: not a git repository(?:[ (:]|$)/mu.test(failure.stderr)
+      ? "not-found" : "unavailable";
   }
 }
 

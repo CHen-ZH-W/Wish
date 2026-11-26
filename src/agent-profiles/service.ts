@@ -10,6 +10,7 @@ import { AgentProfileError, digest, freezeJson, identifier, record, validateDefi
 import { captureCode, captureComposition, configJson, verifyCode } from "./composition.js";
 import type { AgentProfileDefinition, AgentProfileSnapshot, ProfileRunBinding } from "./types.js";
 import { createProcessOwner, ownerIsDead, validateProcessOwner } from "./process-owner.js";
+import { captureProfileResources, type CaptureProfileResourcesInput } from "./resources.js";
 
 export interface Config { readonly definitionsJson?: string }
 export const Config: s<Config> = s.object({ definitionsJson: s.string() });
@@ -64,10 +65,14 @@ export class AgentProfiles extends Service {
     return this.work.run(async () => { await this.ready; const snapshot = validateSnapshot(value); await verifyCode(snapshot.code); return this.snapshots.create(snapshot.digest, snapshot); });
   }
 
-  async capture(selection: string, host: WishHostConfiguration): Promise<AgentProfileSnapshot> {
+  async capture(selection: string, host: WishHostConfiguration, options?: { readonly resources: CaptureProfileResourcesInput }): Promise<AgentProfileSnapshot> {
     return this.work.run(async () => {
       await this.ready;
-      if (/^[a-f0-9]{64}$/u.test(selection)) return this.get(selection);
+      if (/^[a-f0-9]{64}$/u.test(selection)) {
+        const snapshot = await this.get(selection);
+        if (options && (!snapshot.resources || snapshot.resources.digest !== (await captureProfileResources(options.resources)).digest)) throw new AgentProfileError("profile_resources_selection_mismatch");
+        return snapshot;
+      }
       if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}@[1-9][0-9]*$/u.test(selection)) throw new AgentProfileError("profile_explicit_version_required", "Select id@version or an immutable snapshot digest");
       const definition = await this.definitions.get(selection);
       if (!definition) throw new AgentProfileError("profile_definition_missing");
@@ -93,6 +98,7 @@ export class AgentProfiles extends Service {
         reservedOutputTokens: definition.reservedOutputTokens ?? host.reservedOutputTokens,
         maxParallelCalls: definition.maxParallelCalls ?? this.ctx.get("agentLoop")?.maxParallelCalls ?? 4,
         code, plugins: composition.plugins, deployment: composition.deployment,
+        ...(options ? { resources: await captureProfileResources(options.resources) } : {}),
       }) as Record<string, unknown>;
       const snapshot = validateSnapshot({ ...body, digest: digest(body) });
       if (spec.contextWindowTokens !== undefined && snapshot.reservedOutputTokens >= spec.contextWindowTokens) throw new AgentProfileError("profile_invalid_context_budget");

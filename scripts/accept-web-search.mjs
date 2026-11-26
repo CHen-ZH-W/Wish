@@ -11,10 +11,7 @@ import {
   createWebSearchTool,
   renderWebSearchToolResult,
 } from "../dist/web/tools.js";
-import {
-  SearxngSearchBackend,
-  mapSearxngSearchResponse,
-} from "../dist/web/providers/searxng-search.js";
+import { DeepseekSearchBackend } from "../dist/web/providers/deepseek-search.js";
 
 const workspace = Object.freeze({
   requestedRoot: process.cwd(),
@@ -94,14 +91,11 @@ function jsonResponse(payload, init = {}) {
   });
 }
 
-test("SearXNG Search queries a search engine after Provider-scoped approval", async () => {
+test("DeepSeek Search queries a search engine after Provider-scoped approval", async () => {
   const order = [];
   let request;
-  const backend = new SearxngSearchBackend({
-    baseUrl: "https://search.example/searxng",
-    language: "zh-CN",
-    categories: "general,it",
-    safeSearch: 2,
+  const backend = new DeepseekSearchBackend({
+    credential: () => "search-test-key",
     maxResults: 4,
     fetch: async (url, init) => {
       order.push("fetch");
@@ -111,8 +105,8 @@ test("SearXNG Search queries a search engine after Provider-scoped approval", as
           {
             url: "https://example.com/a",
             title: "Result A",
-            content: "Excerpt A",
-            publishedDate: "2026-09-10T00:00:00Z",
+            summary: "Excerpt A",
+            date: "2026-09-10T00:00:00Z",
           },
           { url: "https://example.com/b", title: "Result B" },
           { url: "https://example.com/a", title: "Duplicate" },
@@ -129,7 +123,7 @@ test("SearXNG Search queries a search engine after Provider-scoped approval", as
         assert.deepEqual(input.capabilities, {
           requirements: [{
             capability: "web.search",
-            providers: ["searxng"],
+            providers: ["deepseek"],
           }],
           effects: { openWorld: true },
         });
@@ -139,14 +133,9 @@ test("SearXNG Search queries a search engine after Provider-scoped approval", as
 
   assert.equal(result.ok, true);
   assert.deepEqual(order, ["authorize", "fetch"]);
-  assert.equal(request.url.origin, "https://search.example");
-  assert.equal(request.url.pathname, "/searxng/search");
-  assert.equal(request.url.searchParams.get("q"), "Wish agent architecture");
-  assert.equal(request.url.searchParams.get("format"), "json");
-  assert.equal(request.url.searchParams.get("language"), "zh-CN");
-  assert.equal(request.url.searchParams.get("categories"), "general,it");
-  assert.equal(request.url.searchParams.get("safesearch"), "2");
-  assert.equal(request.init.method, "GET");
+  assert.equal(request.url.href, "https://api.deepseek.com/v1/tools/search");
+  assert.deepEqual(JSON.parse(request.init.body), { query: "Wish agent architecture", count: 1, need_content: false });
+  assert.equal(request.init.method, "POST");
   assert.equal(request.init.redirect, "error");
   assert.equal(request.init.headers["accept-encoding"], "identity");
   assert.deepEqual(result.output.sources, [{
@@ -164,21 +153,15 @@ test("SearXNG Search queries a search engine after Provider-scoped approval", as
   assert.match(rendered, /\[1\] Result A/u);
 });
 
-test("SearXNG Search rejects unavailable scope before approval", async () => {
+test("DeepSeek Search rejects unavailable scope before approval", async () => {
   assert.throws(
-    () => new SearxngSearchBackend({ baseUrl: "file:///tmp/search" }),
-    /must use HTTP or HTTPS/u,
-  );
-  assert.throws(
-    () => new SearxngSearchBackend({
-      baseUrl: "https://user:secret@search.example/",
-    }),
-    /must not contain credentials/u,
+    () => new DeepseekSearchBackend({ credential: () => "test-key", maxResults: 51 }),
+    /limits are invalid/u,
   );
   let approvals = 0;
   let requests = 0;
-  const backend = new SearxngSearchBackend({
-    baseUrl: "https://search.example/",
+  const backend = new DeepseekSearchBackend({
+    credential: () => "search-test-key",
     maxResults: 3,
     fetch: async () => {
       requests += 1;
@@ -196,36 +179,29 @@ test("SearXNG Search rejects unavailable scope before approval", async () => {
   assert.equal(requests, 0);
 });
 
-test("SearXNG Search accepts only structured public result URLs", () => {
-  const spec = Object.freeze({
-    schemaVersion: 1,
-    providerId: "searxng",
-    policyVersion: "policy-1",
-    query: "test",
-    maxResults: 5,
-  });
-  assert.throws(
-    () => mapSearxngSearchResponse({ answer: "invented" }, spec),
-    /results must be an array/u,
-  );
-  const result = mapSearxngSearchResponse({
-    results: [
+test("DeepSeek Search accepts only structured HTTP result URLs without credentials", async () => {
+  const backend = new DeepseekSearchBackend({
+    credential: () => "search-test-key",
+    fetch: async () => jsonResponse({ results: [
       { url: "javascript:alert(1)", title: "unsafe" },
-      { url: "https://valid.example/path", content: "safe result" },
-      { url: "https://valid.example/path", content: "duplicate" },
-    ],
-  }, spec);
-  assert.deepEqual(result.sources, [{
+      { url: "https://user:secret@valid.example/path" },
+      { url: "https://valid.example/path", summary: "safe result" },
+      { url: "https://valid.example/path", summary: "duplicate" },
+    ] }),
+  });
+  const result = await executeSearch(backend, { query: "test" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.output.sources, [{
     url: "https://valid.example/path",
     snippet: "safe result",
   }]);
 });
 
-test("SearXNG Search surfaces HTTP, content, JSON, size, and redirect failures", async () => {
+test("DeepSeek Search surfaces HTTP, content, JSON, size, and redirect failures", async () => {
   const cases = [
     {
       fetch: async () => new Response("rate limited", { status: 429 }),
-      pattern: /HTTP 429.*rate limited/u,
+      pattern: /HTTP 429/u,
       retryable: true,
     },
     {
@@ -233,7 +209,7 @@ test("SearXNG Search surfaces HTTP, content, JSON, size, and redirect failures",
         status: 200,
         headers: { "content-type": "text/plain" },
       }),
-      pattern: /not supported/u,
+      pattern: /Expected JSON/u,
     },
     {
       fetch: async () => new Response("not json", {
@@ -252,12 +228,12 @@ test("SearXNG Search surfaces HTTP, content, JSON, size, and redirect failures",
         assert.equal(init.redirect, "error");
         throw new TypeError("redirect mode is error");
       },
-      pattern: /request failed.*redirect mode is error/u,
+      pattern: /request failed/u,
     },
   ];
   for (const item of cases) {
-    const backend = new SearxngSearchBackend({
-      baseUrl: "https://search.example/",
+    const backend = new DeepseekSearchBackend({
+      credential: () => "search-test-key",
       ...item.options,
       fetch: item.fetch,
     });
@@ -271,11 +247,11 @@ test("SearXNG Search surfaces HTTP, content, JSON, size, and redirect failures",
   }
 });
 
-test("SearXNG Search observes caller cancellation", async () => {
+test("DeepSeek Search observes caller cancellation", async () => {
   const controller = new AbortController();
   controller.abort(new Error("stop search"));
-  const backend = new SearxngSearchBackend({
-    baseUrl: "https://search.example/",
+  const backend = new DeepseekSearchBackend({
+    credential: () => "search-test-key",
     fetch: async () => { throw new Error("must not run"); },
   });
   await assert.rejects(
@@ -310,9 +286,9 @@ test("the built-in profile controls Search Provider and Tool independently", asy
       homeDirectory: directory,
       environment: {
         WISH_DATA_DIR: join(directory, "provider-only"),
-        WISH_WEB_SEARCH_PROVIDER: "searxng",
+        WISH_WEB_SEARCH_PROVIDER: "deepseek",
         WISH_WEB_SEARCH_TOOLS_ENABLED: "0",
-        WISH_SEARXNG_BASE_URL: "https://search.example/",
+        WISH_DEEPSEEK_SEARCH_API_KEY: "search-test-key",
       },
     });
     assert.equal(await providerOnly.completion, 0);
@@ -329,8 +305,8 @@ test("the built-in profile controls Search Provider and Tool independently", asy
       homeDirectory: directory,
       environment: {
         WISH_DATA_DIR: join(directory, "enabled"),
-        WISH_WEB_SEARCH_PROVIDER: "searxng",
-        WISH_SEARXNG_BASE_URL: "https://search.example/",
+        WISH_WEB_SEARCH_PROVIDER: "deepseek",
+        WISH_DEEPSEEK_SEARCH_API_KEY: "search-test-key",
       },
     });
     assert.equal(await enabled.completion, 0);

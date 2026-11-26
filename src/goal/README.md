@@ -6,8 +6,9 @@ Goal 拥有一个 Session-scoped 的持久长目标。持久阶段为 `active`�
 
 ## 持久状态与激活
 
-目标正文、阶段、阻塞原因、已开始轮次、轮次上限及版本写入 Storage KV Domain。
-默认轮次上限为 8，可在创建时覆盖。`activation` 不持久化：它只表示当前进程是否允许该目标
+目标正文、阶段、阻塞原因、已开始轮次、显式配置的可选轮次上限及版本写入 Storage KV Domain。
+默认没有轮次上限；不按固定轮数停止目标。兼容明确配置的 `maxGoalRounds`，编辑时传 `null` 可移除。
+`activation` 不持久化：它只表示当前进程是否允许该目标
 自动续轮，Provider 重启后始终为 `disarmed`。因此恢复出的 `active` Goal 不会在没有明确
 重新激活的情况下自行继续。
 
@@ -21,8 +22,8 @@ Goal 拥有一个 Session-scoped 的持久长目标。持久阶段为 `active`�
 hold 时，它返回一个带可信 provenance 的、可抢占的 goal-round follow-up，并用 completion
 hold 保持同一 Run。
 
-轮次在对应 UserTurn 真正打开时才由 `admitRound()` 提交。达到 `maxGoalRounds` 会把 Goal
-转为 `blocked`；等待其他异步工作时不会并行制造续轮。CLI/WebUI 提交的可信人工 follow-up
+轮次在对应 UserTurn 真正打开时才由 `admitRound()` 提交。只有显式配置 `maxGoalRounds` 时，达到该值才把 Goal
+转为 `blocked`；默认持续推进到完成、人工停止或实际阻塞。等待其他异步工作时不会并行制造续轮。CLI/WebUI 提交的可信人工 follow-up
 可以抢占尚未开始的自动 goal-round follow-up。GoalRoundDriver 卸载或 Run 结束时会释放 hold
 并 disarm；取消正在执行的 goal round 会暂停 Goal。
 

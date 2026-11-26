@@ -7,6 +7,7 @@ import s from "@deepseek-ai/schemastery";
 import { PluginWorkOwner } from "../../../boot/plugin-control/work-owner.js";
 
 import { FilesystemError } from "../../errors.js";
+import { isProtectedFilesystemPath } from "../../path-policy.js";
 import type { Filesystem } from "../../types.js";
 import { FilesystemSearchError } from "../errors.js";
 import { FilesystemSearchService } from "../service.js";
@@ -184,6 +185,7 @@ export class LocalFilesystemSearchBackend implements FilesystemSearch {
         throwIfAborted(request.signal);
         if (entry.isSymbolicLink()) continue;
         const path = join(directory, entry.name);
+        if (isProtectedFilesystemPath(path, this.filesystem.policy)) continue;
         if (entry.isDirectory()) {
           if (isProtectedDirectory(entry.name, this.filesystem)) continue;
           childDirectories.push(path);

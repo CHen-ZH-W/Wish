@@ -29,6 +29,14 @@ test("the pinned dependency patch survives clean install, repetition and partial
     }
     applyCordisHmrPatch(directory);
     for (const [name, current] of patched) assert.equal(await readFile(join(directory, name), "utf8"), current);
+    for (const [name, current] of patched) {
+      for (const changes of Object.values(metadata[name].previousVersions ?? {})) {
+        const previous = [...changes].reverse().reduce((value, change) => value.replace(change.to, change.from), current);
+        await writeFile(join(directory, name), previous);
+        applyCordisHmrPatch(directory);
+        assert.equal(await readFile(join(directory, name), "utf8"), current);
+      }
+    }
     await writeFile(join(directory, "src/index.ts"), originals.get("src/index.ts"));
     applyCordisHmrPatch(directory);
     assert.equal(await readFile(join(directory, "src/index.ts"), "utf8"), patched.get("src/index.ts"));

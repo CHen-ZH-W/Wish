@@ -6,7 +6,7 @@ import type { PermissionProfile, PermissionSnapshot } from
   "../permissions/types.js";
 import type { WorkspaceSnapshot } from "../workspace/types.js";
 
-export type ShellBackendKind = "unavailable" | "linux-native" | "host";
+export type ShellBackendKind = "unavailable" | "linux-native";
 
 export interface ShellResourceLimits {
   readonly maxProcesses: number;
@@ -23,7 +23,7 @@ export interface ShellPolicy {
   readonly backend: ShellBackendKind;
   readonly filesystem: "none" | "path-scoped";
   readonly network: "none" | "per-call";
-  /** Native profiles use a clean environment; full-access inherits the Host environment. */
+  /** Environment isolation declared by the Provider; Native profiles use a clean environment. */
   readonly environment: "clean" | "inherit" | "profile-scoped";
   /** Profiles that may automatically dispatch process calls on this backend. */
   readonly automaticPermissionProfiles: readonly PermissionProfile[];

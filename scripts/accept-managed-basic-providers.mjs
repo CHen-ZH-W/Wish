@@ -4,7 +4,6 @@ import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import LocalFilesystem, { LocalFilesystemBackend } from "../dist/filesystem/providers/local.js";
 import LocalSearch from "../dist/filesystem/search/providers/local.js";
-import HostShell from "../dist/shell/providers/host.js";
 import NativeShell from "../dist/shell/providers/linux-native.js";
 import BlobArtifacts from "../dist/tools/results/artifacts/providers/blob.js";
 import { installPluginInspection } from "../dist/boot/plugin-control/inspection.js";
@@ -13,7 +12,6 @@ import { installPluginLifecycle } from "../dist/boot/plugin-control/lifecycle.js
 for (const [name, plugin, service, methods, operation] of [
   ["filesystem", LocalFilesystem, "filesystem", ["preflight", "resolve", "stat", "readFile", "writeFile"], "writeFile"],
   ["search", LocalSearch, "filesystemSearch", ["search"], "search"],
-  ["host-shell", HostShell, "shell", ["preflight", "resolve", "run"], "run"],
   ["native-shell", NativeShell, "shell", ["preflight", "resolve", "run"], "run"],
 ]) test(`${name} drains its accepted backend operation and fences every old entrypoint`, async () => {
   const root = new Context(), started = Promise.withResolvers(), finish = Promise.withResolvers();
@@ -50,7 +48,10 @@ test("output artifacts finish an admitted Blob write before releasing their Stor
   try {
     root.provide("storageBackend", { acquire() { return {
       id: "file", get released() { return released; }, release() { released = true; },
-      resolve() { return { async put({ namespace, value }) {
+      resolve(_id, kind) {
+        if (kind === "kv") return { async get() { return undefined; }, async put() {} };
+        assert.equal(kind, "blob");
+        return { async put({ namespace, value }) {
         entered.resolve(); await finish.promise; assert.equal(released, false);
         return { namespace, locator: "record", sha256: "a".repeat(64), size: value.length };
       } }; },

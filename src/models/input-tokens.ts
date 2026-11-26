@@ -91,6 +91,7 @@ function snapshotRequest(request: ModelRequest): ModelRequest {
   }
   return Object.freeze({
     model: freezeModelRef(request.model),
+    ...(request.responseSchema === undefined ? {} : { responseSchema: { name: request.responseSchema.name, schema: snapshotPlainRecord(request.responseSchema.schema) } }),
     instructions: Object.freeze(request.instructions.map((instruction) =>
       snapshotInstruction(instruction)
     )),

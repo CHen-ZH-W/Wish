@@ -1,7 +1,7 @@
 {
   "src/index.ts": {
     "before": "5d9ea00ede52a1b03abbf10a0df75d886403debe25a2a0495c6814dc6842220b",
-    "after": "e6da9f74f86cdf48c3b36c91608f10867a41329372fd18214f63e63e934bb9d6",
+    "after": "fb155c31a0fa106c1216621eeef661d083e85f308f67db240fda82bcb797c06f",
     "previous": "70eacbbb895bc3f452495be7270de9e8020768a990b73f64566cbb1896f631bf",
     "upgrade": [
       {
@@ -31,12 +31,24 @@
       {
         "from": "\n    this.ctx.emit('hmr/reload', reloads)",
         "to": "\n    if (restored) return\n    this.ctx.emit('hmr/reload', reloads)"
+      },
+      {
+        "from": "    await ready.promise\n  }\n\n  private refreshConfig",
+        "to": "    await ready.promise\n    // Modules can be imported after startup. Seed their on-disk baseline from\n    // the completed watch scan too, so identical compiler output stays idle.\n    for (const [directory, names] of Object.entries(this.watcher.getWatched())) {\n      for (const name of names) {\n        const filename = resolve(watchBaseDir, directory, name), url = pathToFileURL(filename).href\n        if (this.contents.has(url)) continue\n        try { this.contents.set(url, createHash('sha256').update(readFileSync(filename)).digest('hex')) } catch {}\n      }\n    }\n  }\n\n  private refreshConfig"
       }
-    ]
+    ],
+    "previousVersions": {
+      "e6da9f74f86cdf48c3b36c91608f10867a41329372fd18214f63e63e934bb9d6": [
+        {
+          "from": "    await ready.promise\n  }\n\n  private refreshConfig",
+          "to": "    await ready.promise\n    // Modules can be imported after startup. Seed their on-disk baseline from\n    // the completed watch scan too, so identical compiler output stays idle.\n    for (const [directory, names] of Object.entries(this.watcher.getWatched())) {\n      for (const name of names) {\n        const filename = resolve(watchBaseDir, directory, name), url = pathToFileURL(filename).href\n        if (this.contents.has(url)) continue\n        try { this.contents.set(url, createHash('sha256').update(readFileSync(filename)).digest('hex')) } catch {}\n      }\n    }\n  }\n\n  private refreshConfig"
+        }
+      ]
+    }
   },
   "lib/index.js": {
     "before": "7ec3296a902154a2b9906dceb4d81b996ff4c8373709e116ea8dac69058ee2b1",
-    "after": "ea56c04c29d10cdaae8429ebbd5e94d40e58198eae2464c2a6cf7127f7909a8f",
+    "after": "366fb53a614082dc4956f552593b8b9ccc8a8220f26b01b57acd3dbc93033092",
     "previous": "02f301be12e6b1c6936fdb6e59377fef6f968e95f9d8f44afa8177d062e1c322",
     "upgrade": [
       {
@@ -62,8 +74,20 @@
       {
         "from": "\n    this.ctx.emit(\"hmr/reload\", reloads);",
         "to": "\n    if (restored) return;\n    this.ctx.emit(\"hmr/reload\", reloads);"
+      },
+      {
+        "from": "    await ready.promise;\n  }\n  refreshConfig",
+        "to": "    await ready.promise;\n    // Modules can be imported after startup. Seed their on-disk baseline from\n    // the completed watch scan too, so identical compiler output stays idle.\n    for (const [directory, names] of Object.entries(this.watcher.getWatched())) {\n      for (const name of names) {\n        const filename = resolve(watchBaseDir, directory, name), url = pathToFileURL(filename).href;\n        if (this.contents.has(url)) continue;\n        try { this.contents.set(url, createHash(\"sha256\").update(readFileSync(filename)).digest(\"hex\")); } catch {}\n      }\n    }\n  }\n  refreshConfig"
       }
-    ]
+    ],
+    "previousVersions": {
+      "ea56c04c29d10cdaae8429ebbd5e94d40e58198eae2464c2a6cf7127f7909a8f": [
+        {
+          "from": "    await ready.promise;\n  }\n  refreshConfig",
+          "to": "    await ready.promise;\n    // Modules can be imported after startup. Seed their on-disk baseline from\n    // the completed watch scan too, so identical compiler output stays idle.\n    for (const [directory, names] of Object.entries(this.watcher.getWatched())) {\n      for (const name of names) {\n        const filename = resolve(watchBaseDir, directory, name), url = pathToFileURL(filename).href;\n        if (this.contents.has(url)) continue;\n        try { this.contents.set(url, createHash(\"sha256\").update(readFileSync(filename)).digest(\"hex\")); } catch {}\n      }\n    }\n  }\n  refreshConfig"
+        }
+      ]
+    }
   },
   "lib/types/index.d.ts": {
     "before": "7a7d64c5630d7fab2a8675166c317c10ed67ca50d83556781d46dd07f85684eb",

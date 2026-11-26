@@ -19,7 +19,6 @@ import { ToolRegistry } from "../dist/core/tools/registry.js";
 import { LocalFilesystemBackend } from
   "../dist/filesystem/providers/local.js";
 import LocalFilesystem from "../dist/filesystem/providers/local.js";
-import { HostShellBackend } from "../dist/shell/providers/host.js";
 import LinuxNativeShell, {
   LinuxNativeShellBackend,
 } from "../dist/shell/providers/linux-native.js";
@@ -84,7 +83,7 @@ test("Linux Native Shell policy is deterministic, immutable, and path-scoped", (
   assert.equal(first.policy.backend, "linux-native");
   assert.equal(first.policy.filesystem, "path-scoped");
   assert.equal(first.policy.network, "per-call");
-  assert.equal(first.policy.environment, "profile-scoped");
+  assert.equal(first.policy.environment, "clean");
   assert.deepEqual(first.policy.automaticPermissionProfiles, ["workspace-write", "full-access"]);
   assert.equal(Object.isFrozen(first.policy), true);
   assert.equal(Object.isFrozen(first.policy.resourceLimits), true);
@@ -140,7 +139,7 @@ test("Landlock confines reads, writes, protected files, and symlinks", async () 
   }
 });
 
-test("Native full-access explicitly bypasses workspace isolation", async () => {
+test("Native full-access permits declared outside writes while retaining isolation", async () => {
   const root = await mkdtemp(join(tmpdir(), "wish-shell-full-access-"));
   const outside = await mkdtemp(join(tmpdir(), "wish-shell-full-access-outside-"));
   const { filesystem, shell } = nativeShell();
@@ -148,6 +147,7 @@ test("Native full-access explicitly bypasses workspace isolation", async () => {
   try {
     const result = await executeBash(root, {
       command: `printf unconfined > ${target}`,
+      permissions: { filesystem: { read: [], write: [outside] }, network: false, externalSideEffect: false, destructive: false },
     }, shell, { filesystem, profile: "full-access" });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(await readFile(target, "utf8"), "unconfined");
@@ -281,41 +281,6 @@ test("timeout and abort terminate the native process group", async () => {
   }
 });
 
-test("Host Shell is double-opt-in and remains an explicit escape hatch", async () => {
-  const root = await mkdtemp(join(tmpdir(), "wish-shell-host-"));
-  const filesystem = new LocalFilesystemBackend();
-  try {
-    const disabled = new HostShellBackend(filesystem);
-    const denied = await executeBash(root, { command: "printf denied" }, disabled, {
-      filesystem,
-    });
-    assert.equal(denied.ok, false);
-    assert.match(denied.error.message, /disabled/u);
-
-    const enabled = new HostShellBackend(filesystem, { enabled: true });
-    const notFullAccess = await executeBash(root, {
-      command: "printf must-not-run",
-      permissions: {
-        filesystem: { read: [], write: [] },
-        network: false,
-        externalSideEffect: false,
-        destructive: false,
-      },
-    }, enabled, { filesystem });
-    assert.equal(notFullAccess.ok, false);
-    assert.match(notFullAccess.error.message, /full-access/u);
-
-    const allowed = await executeBash(root, { command: "printf host-ok" }, enabled, {
-      filesystem,
-      profile: "full-access",
-    });
-    assert.equal(allowed.ok, true);
-    assert.equal(allowed.output.content[0].text, "host-ok");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test("Cordis Shell Provider unload and replacement return consumers to pending", async () => {
   const root = new Context();
   const states = Object.freeze({ pending: 0, active: 2 });
@@ -337,4 +302,58 @@ test("Cordis Shell Provider unload and replacement return consumers to pending",
   } finally {
     await root.fiber.dispose();
   }
+});
+
+test("native profiles read outside scopes while preserving sensitive locks, grants, and write boundaries", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-shell-access-"));
+  const root = join(directory, "workspace"), outside = join(directory, "reference"), locked = join(outside, "private.txt");
+  const filesystem = new LocalFilesystemBackend({ protectedPaths: [locked, "/etc/hosts"] });
+  const { shell } = nativeShell(filesystem);
+  const previous = process.env.WISH_ACCESS_SECRET;
+  try {
+    process.env.WISH_ACCESS_SECRET = "fixture-host-secret";
+    await mkdir(root); await mkdir(outside); await mkdir(join(outside, ".ssh"));
+    await writeFile(join(outside, "public.txt"), "public-reference");
+    await writeFile(join(outside, ".env"), "fixture-environment-secret");
+    await writeFile(join(outside, ".ssh/key"), "fixture-key-secret");
+    await writeFile(locked, "fixture-locked-secret");
+    await writeFile(join(root, "undeclared.txt"), "fixture-undeclared-secret");
+    for (const profile of ["read-only", "approval-required", "workspace-write", "full-access"]) {
+      const result = await executeBash(root, {
+        command: `cat '${outside}/public.txt' && ! cat '${outside}/.env' && ! cat '${outside}/.ssh/key' && ! cat '${locked}' && ! cat undeclared.txt && ! cat /etc/hosts && test -z "$WISH_ACCESS_SECRET" && ! printf changed > '${outside}/public.txt'`,
+        permissions: { filesystem: { read: [outside], write: [] }, network: true, externalSideEffect: false, destructive: false },
+      }, shell, { filesystem, profile });
+      assert.equal(result.ok, true, `${profile}: ${JSON.stringify(result)}`);
+      assert.match(result.output.content[0].text, /public-reference/u);
+      assert.doesNotMatch(result.output.content[0].text, /fixture-(?:environment|key|locked|undeclared|host)-secret/u);
+    }
+    const write = await executeBash(root, {
+      command: `printf changed > '${outside}/public.txt'`,
+      permissions: { filesystem: { read: [], write: [outside] }, network: false, externalSideEffect: false, destructive: false },
+    }, shell, { filesystem, profile: "workspace-write" });
+    assert.equal(write.ok, false); assert.match(write.error.message, /outside the Workspace/u);
+    for (const path of [locked, join(outside, ".env")]) {
+      const read = await executeBash(root, { command: `cat '${path}'`,
+        permissions: { filesystem: { read: [path], write: [] }, network: false, externalSideEffect: false, destructive: false },
+      }, shell, { filesystem, profile: "full-access" });
+      assert.equal(read.ok, false); assert.match(read.error.message, /protected/u);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.WISH_ACCESS_SECRET; else process.env.WISH_ACCESS_SECRET = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime file grants cannot reopen a name or canonical path locked by the filesystem policy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wish-runtime-locks-"));
+  // /bin is commonly a symlink; the policy must also lock its canonical target.
+  const filesystem = new LocalFilesystemBackend({ protectedPaths: ["/bin/cat"], protectedFileNames: ["env"] });
+  const { shell } = nativeShell(filesystem);
+  try {
+    const result = await executeBash(root, { command: "! /usr/bin/cat /etc/passwd && ! /usr/bin/env && printf runtime-locked",
+      permissions: { filesystem: { read: [], write: [] }, network: false, externalSideEffect: false, destructive: false },
+    }, shell, { filesystem, profile: "full-access" });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.match(result.output.content[0].text, /runtime-locked/u);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -4,11 +4,12 @@ export interface TaskSpec {
   readonly title: string;
   readonly description?: string;
   readonly dependencies: readonly string[];
-  readonly execution: { readonly role: string; readonly readOnly: boolean; readonly timeoutMs: number };
+  readonly execution: { readonly role: string; readonly readOnly: boolean; readonly timeoutMs?: number };
 }
 export interface Task extends TaskSpec {
   readonly status: TaskStatus;
   readonly attemptId?: string;
+  readonly controlId?: string;
   readonly result?: string;
 }
 export interface TaskGraphRef { readonly sessionId: string; readonly version: number; readonly digest: string }
@@ -36,5 +37,6 @@ export interface Tasks {
   replace(sessionId: string, tasks: readonly TaskSpec[], expectedVersion: number): Promise<TaskGraph>;
   freeze(ref: TaskGraphRef, approvedPlanDigest: string): Promise<TaskGraph>;
   transition(ref: TaskGraphRef, taskId: string, status: TaskStatus, attemptId: string, result?: string): Promise<TaskGraph>;
+  projectPending(ref: TaskGraphRef, taskId: string, status: "pending" | "blocked" | "cancelled", controlId: string, result?: string): Promise<TaskGraph>;
   close(): Promise<void>;
 }

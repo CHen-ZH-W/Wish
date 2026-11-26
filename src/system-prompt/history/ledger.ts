@@ -10,7 +10,7 @@ import type {
 
 export const SYSTEM_PROMPT_HISTORY_NAMESPACE = "system-prompt/history/v1";
 
-/** Append-only history kept outside the canonical Session transcript. */
+/** Immutable request snapshots with owner-directed reclamation, outside the Session transcript. */
 export class JournalSystemPromptHistory implements SystemPromptHistory {
   private closing: Promise<void> | undefined;
 
@@ -24,6 +24,7 @@ export class JournalSystemPromptHistory implements SystemPromptHistory {
       runId: snapshot.runId,
       stepId: snapshot.stepId,
       digest: snapshot.digest,
+      ...(snapshot.runtimeState === undefined ? {} : { stateDigest: snapshot.runtimeState.digest }),
     })).digest("hex");
     await this.journal.append({
       idempotencyKey: `system-prompt:${idempotency}`,
@@ -57,6 +58,22 @@ export class JournalSystemPromptHistory implements SystemPromptHistory {
   close(): Promise<void> {
     return this.closing ??= this.journal.flush().then(() => this.journal.close());
   }
+
+  async purgeSession(sessionId: string): Promise<void> {
+    const owner = identifier(sessionId, "Session id");
+    if (!this.journal.compact) throw new Error("System Prompt history Journal does not support reclamation");
+    await this.journal.compact(entry => decodeSnapshot(entry.value).sessionId !== owner);
+  }
+
+  async sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    const owners = new Set<string>();
+    for await (const entry of this.journal.read()) owners.add(decodeSnapshot(entry.value).sessionId);
+    const removed = new Set<string>();
+    for (const owner of owners) if (await wasDeleted(owner)) removed.add(owner);
+    if (!removed.size) return;
+    if (!this.journal.compact) throw new Error("System Prompt history Journal does not support reclamation");
+    await this.journal.compact(entry => !removed.has(decodeSnapshot(entry.value).sessionId));
+  }
 }
 
 function decodeSnapshot(bytes: Uint8Array): SystemPromptSnapshot {
@@ -68,7 +85,15 @@ function normalizeSnapshot(value: SystemPromptSnapshotInput): SystemPromptSnapsh
   const capturedAt = timestamp(value.capturedAt);
   if (!value.model || typeof value.model !== "object") throw new TypeError("System Prompt snapshot model is invalid");
   const sections = value.sections.map(normalizeSection);
-  const size = sections.reduce((total, section) => total + section.content.length, 0);
+  if (value.runtimeState !== undefined && (!value.runtimeState || !Array.isArray(value.runtimeState.sections))) {
+    throw new TypeError("Runtime state snapshot is invalid");
+  }
+  const stateSections = value.runtimeState?.sections.map(normalizeSection);
+  if (stateSections?.some(section => section.channel !== "dynamic_tail")) throw new TypeError("Runtime state snapshot channel is invalid");
+  const stateDigest = stateSections && createHash("sha256").update(JSON.stringify(stateSections)).digest("hex");
+  if (value.runtimeState && stateDigest !== digest(value.runtimeState.digest)) throw new TypeError("Runtime state snapshot digest does not match its contents");
+  if (value.dynamicTailScope !== undefined && value.dynamicTailScope !== "all-instructions") throw new TypeError("System Prompt dynamic tail scope is invalid");
+  const size = [...sections, ...(stateSections ?? [])].reduce((total, section) => total + section.content.length, 0);
   if (size > 2_097_152) throw new TypeError("System Prompt snapshot exceeds 2 MiB");
   return Object.freeze({
     schemaVersion: 1,
@@ -82,7 +107,9 @@ function normalizeSnapshot(value: SystemPromptSnapshotInput): SystemPromptSnapsh
       model: identifier(value.model.model, "Model id"),
     }),
     digest: digest(value.digest),
+    ...(value.dynamicTailScope === undefined ? {} : { dynamicTailScope: value.dynamicTailScope }),
     sections: Object.freeze(sections),
+    ...(stateSections === undefined ? {} : { runtimeState: Object.freeze({ digest: stateDigest!, sections: Object.freeze(stateSections) }) }),
   });
 }
 

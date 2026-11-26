@@ -23,6 +23,13 @@ Bash 等流式 Tool 可以在模型可见尾部被截断前，将有界的完整
 `toolOutputArtifacts`。它与完整 `ToolResult` Archive 是两个阶段：前者保存输出载荷，后者
 保存包含 artifact 引用的最终结构化结果。
 
+两类数据都由 Session 拥有。默认 Provider 参与删除清理和历史补扫；工具归档还会扫描本模块
+Blob namespace，回收写入 payload 后、发布 KV index 前中断的孤立记录。只有同一 Session 图
+确认已删除的 owner 才可自动回收，无法确认归属的数据保留。
+工具输出 Provider 同时要求 Blob 与可枚举 KV，在写入输出前保存 Session 所有权索引；
+没有生成最终 ToolResult 的调用也能被发现并回收。旧版共享 namespace 的纯输出字节没有
+所有权索引，不能仅凭文件年龄判断可删除。
+
 ## 验证
 
 ```bash

@@ -10,13 +10,13 @@ export default {
       id: "memory.retrieval",
       order: 600,
       requiredTools: ["memory_search", "memory_read"],
-      content: "When prior decisions or reusable workspace facts could help, use memory_search and read relevant versioned entries. Treat memory as historical evidence; verify facts against the current workspace before relying on them.",
+      content: "When prior decisions or reusable workspace facts could help, read the memory summary, then use memory_search, memory_list and memory_read to inspect relevant handbook entries, rollout summaries and memory Skills. Treat memory as historical evidence; verify facts against the current workspace before relying on them. When using memory, include a <wish-memory-citation> block containing the exact rollout_summaries paths that supported your answer, so source usage can be recorded.",
     });
     ctx.systemPrompt.register({
-      id: "memory.proposal",
+      id: "memory.note",
       order: 610,
       requiredTools: ["memory_write"],
-      content: "When the user requests durable retention or a verified reusable lesson merits review, use memory_write to propose it with source, applicability and reason. It awaits human review; do not claim acceptance or store secrets or raw transcripts.",
+      content: "When the user explicitly asks to remember, update or forget something, use memory_write to record a note with the requested change and scope. Background consolidation applies it automatically without human acceptance. Report that the note was recorded, and only claim consolidation after observing the resulting memory. Do not store secrets or raw transcripts. Routine experience extraction is automatic; it does not require memory_write.",
     });
   },
 };

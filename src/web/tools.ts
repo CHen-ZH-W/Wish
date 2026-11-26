@@ -193,7 +193,9 @@ export const WebSearchTool = {
     const lifecycle = new WebOwnerLifecycle(ctx, "web_search_tool");
     ctx.tools.register(
       createWebSearchTool({ search: {
-        policy: ctx.webSearch.policy,
+        // An enabled provider may await configuration. Resolve its policy only
+        // when used, so its settings page remains reachable during startup.
+        get policy() { return ctx.webSearch.policy; },
         resolve: request => lifecycle.run(() => ctx.webSearch.resolve(request)),
         search: request => lifecycle.run(() => ctx.webSearch.search(request)),
       } }),

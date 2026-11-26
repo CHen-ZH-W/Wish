@@ -36,7 +36,7 @@ test("backscan recovers missed terminal notifications, excludes active Runs and 
   let events = [event("run.opened"), event("run.opened", "run-2")];
   const source = new SessionRunEvidenceSource({ readHistory: async () => ({ records }) }, { readEvents: async () => events });
   assert.deepEqual(await source.scan(), []);
-  events = [...events, event("run.failed")];
+  events = [...events, event("run.failed"), event("run.failed", "run-2")];
   const found = await source.scan();
   assert.equal(found.length, 1); assert.equal(found[0].outcome, "failed");
   assert.equal(found[0].text.includes("SECRET SYSTEM INSTRUCTION"), false);
@@ -56,13 +56,26 @@ test("Workflow evidence uses terminal attempt identity, not later unrelated work
   assert.equal((await source.scan())[0].outcome, "unknown");
 });
 
-test("clipped evidence is visibly incomplete while references bind original committed records", async () => {
+test("evidence preserves every committed message without fixed character truncation", async () => {
   const records = [message(1), message(2, "run-1", "assistant"), message(3)];
   for (const record of records) record.message.content = "x".repeat(20_000);
   const captured = await captureSessionEvidence({ sessions: { readHistory: async () => ({ records }) },
     sessionId: "session-1", runId: "run-1", terminal: event("run.completed") });
-  assert.match(captured.text, /TRUNCATED EVIDENCE/);
-  assert.equal(captured.text.length <= 30_000, true);
+  assert.doesNotMatch(captured.text, /TRUNCATED EVIDENCE/);
+  assert.equal(captured.text.length > 60_000, true);
+  assert.deepEqual(JSON.parse(captured.text).untrustedCommittedMessages.map(item => item.message.content), records.map(item => item.message.content));
   assert.equal(captured.references[0].digest, hash(records));
   assert.equal(captured.references[0].throughSequence, 3);
+});
+
+test("automatic extraction captures the complete interactive session and refreshes it after new turns", async () => {
+  const records = [message(1, "run-1", "user", "user"), message(2, "run-1", "assistant"), message(3, "run-2", "user", "user")];
+  const events = [event("run.opened"), event("run.completed"), event("run.opened", "run-2"), event("run.completed", "run-2")];
+  const source = new SessionRunEvidenceSource({ readHistory: async () => ({ records }) }, { readEvents: async () => events });
+  const first = await source.scan(); assert.equal(first.length, 1);
+  assert.deepEqual(JSON.parse(first[0].text).untrustedCommittedMessages.map(item => item.runId), ["run-1", "run-1", "run-2"]);
+  records.push(message(4, "run-3", "user", "user")); events.push(event("run.opened", "run-3"), event("run.completed", "run-3"));
+  const second = await source.scan(); assert.equal(second.length, 1); assert.notEqual(second[0].id, first[0].id);
+  assert.equal(second[0].references[0].throughSequence, 4);
+  assert.equal(JSON.parse(second[0].text).untrustedCommittedMessages.length, 4);
 });

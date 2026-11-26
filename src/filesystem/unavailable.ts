@@ -20,13 +20,14 @@ export function createUnavailableFilesystem(
     policy: Object.freeze({
       schemaVersion: 1 as const,
       version: "filesystem-unavailable-v1",
-      scope: "workspace" as const,
+      scope: "host-read-profile-write" as const,
       symbolicLinks: "deny" as const,
       maxFileBytes: 1,
       protectedDirectoryNames: Object.freeze([]),
       protectedFileNames: Object.freeze([]),
       protectedFilePrefixes: Object.freeze([]),
       protectedNameExceptions: Object.freeze([]),
+      protectedPaths: Object.freeze([]),
     }),
     preflight(
       _request: PreflightFilesystemPathRequest,

@@ -29,6 +29,8 @@ export interface BlobStorageBackend {
   put(request: BlobPutRequest): Promise<BlobReference>;
   get(request: BlobReadRequest): Promise<Uint8Array | undefined>;
   stat(request: BlobReadRequest): Promise<BlobStat | undefined>;
+  /** Optional enumeration inside one owner-selected namespace. */
+  list?(namespace: string): Promise<readonly BlobReference[]>;
   /** Optional physical release for owner-scoped archives after their readers drain. */
   delete?(request: BlobReadRequest): Promise<boolean>;
   /** Optional owner-isolated namespace release; callers must first fence writers. */

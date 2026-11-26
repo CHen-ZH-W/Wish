@@ -70,3 +70,48 @@ test("failed Journal append does not publish knowledge or partial audit", async 
   entries[0].value = new TextEncoder().encode('{"schemaVersion":99}');
   await assert.rejects(memory.state(), /corrupt/);
 });
+
+test("automatic consolidation atomically merges, retires and replays without candidates", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-memory-auto-store-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const backend = new FileStorageBackend({ id: "file", rootDirectory: directory });
+  const memory = new MemoryRuntime(new JournalMemoryStore(backend.journal.open({ namespace: "memory/default" })));
+  const actor = { kind: "curation", id: "memory-curation" };
+  const initial = { operationId: "init", actor, reason: "raw learning", expectedRevision: 0,
+    upserts: ["topic", "duplicate"].map(id => ({ ...proposal, id, expectedVersion: 0 })), retirements: [] };
+  await memory.consolidate(initial);
+  assert.equal((await memory.state()).candidates.length, 0);
+  const merge = { operationId: "merge", actor, reason: "combine related learning", expectedRevision: 1,
+    upserts: [{ ...proposal, id: "topic", expectedVersion: 1, content: "Combined verified procedures and scope." }],
+    retirements: [{ id: "duplicate", expectedVersion: 1, supersededBy: "topic" }] };
+  assert.equal(await memory.consolidate(merge), 2); assert.equal(await memory.consolidate(merge), 2);
+  assert.deepEqual((await memory.query()).map(item => item.id), ["topic"]);
+  assert.equal((await memory.read("duplicate")).status, "superseded");
+  await assert.rejects(memory.consolidate({ ...merge, content: "ignored", upserts: [{ ...merge.upserts[0], content: "different" }] }), /idempotency/);
+  await assert.rejects(memory.consolidate({ ...merge, operationId: "stale-plan" }), /changed/);
+  assert.throws(() => memory.consolidate({ ...merge, actor: { kind: "agent", id: "wish" } }), /curation Host/);
+  await memory.close(); await backend.close();
+  const reopened = new FileStorageBackend({ id: "file", rootDirectory: directory }); t.after(() => reopened.close());
+  const restored = new MemoryRuntime(new JournalMemoryStore(reopened.journal.open({ namespace: "memory/default" })));
+  assert.equal(await restored.consolidate(merge), 2);
+  assert.equal((await restored.read("topic")).version, 2);
+  assert.equal((await restored.state()).audit.length, 2);
+  await restored.close();
+});
+
+test("failed consolidation journal append exposes neither partial documents nor audit", async () => {
+  const entries = []; let fail = true;
+  const journal = { async *read() { yield* entries; }, async append(batch) {
+    if (fail) throw new Error("disk failure");
+    entries.push({ cursor: entries.length + 1, revision: `r${entries.length + 1}`, value: batch.entries[0] });
+  } };
+  const memory = new MemoryRuntime(new JournalMemoryStore(journal));
+  const change = { operationId: "automatic", actor: { kind: "curation", id: "memory-curation" }, reason: "learning", expectedRevision: 0,
+    upserts: ["one", "two"].map(id => ({ ...proposal, id, expectedVersion: 0 })), retirements: [] };
+  await assert.rejects(memory.consolidate(change), /disk failure/);
+  assert.equal((await memory.state()).documents.length, 0); assert.equal((await memory.state()).revision, 0);
+  fail = false; await memory.consolidate(change); assert.equal((await memory.query()).length, 2);
+  const corrupted = JSON.parse(new TextDecoder().decode(entries[0].value)); corrupted.audit.actor.kind = "agent";
+  entries[0].value = new TextEncoder().encode(JSON.stringify(corrupted));
+  await assert.rejects(memory.state(), /Invalid Memory consolidation/);
+});

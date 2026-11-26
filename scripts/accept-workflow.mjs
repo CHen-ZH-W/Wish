@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { WorkflowRuntime } from "../dist/workflow/runtime.js";
-import { MemoryWorkflowStore } from "../dist/workflow/store.js";
+import { MemoryWorkflowStore, snapshotWorkflow } from "../dist/workflow/store.js";
 import { DomainWorkflowStore } from "../dist/workflow/store.js";
 import { createWorkflowSessionFeature, workflowBlocksSessionRemoval } from "../dist/workflow/consumers/session-feature.js";
 import { FileKvStorageBackend } from "../dist/storage/providers/file/kv.js";
@@ -14,6 +14,7 @@ const request = { key: "first", kind: "task-graph", owner, tasks: [task("a"), ta
 const store = new MemoryWorkflowStore();
 const runtime = new WorkflowRuntime(store);
 const run = await runtime.create(request);
+assert.throws(() => snapshotWorkflow({ ...run, executionPolicy: { unchecked: true } }), /Unsupported Workflow state fields/);
 assert.equal((await runtime.create(request)).id, run.id);
 await assert.rejects(runtime.create({ ...request, budget: { maxTotalAttempts: 1 } }), /conflict/);
 await assert.rejects(runtime.beginAttempt({ runId: run.id, stepId: "b", strategy: "first" }), /dependencies/);
@@ -57,7 +58,11 @@ console.log("workflow lifecycle, budgets, same-attempt recovery and reconciliati
 
 {
   const workflow = new WorkflowRuntime(new MemoryWorkflowStore());
-  const scheduler = { lastError: undefined, async tick() {}, async cancel(id, reason) { await workflow.cancel(id, reason); } };
+  const scheduler = { lastError: undefined, async tick() {}, async cancel(id, reason) {
+    await workflow.cancel(id, reason);
+    // This fixture owns no child process; cancellation confirms that absence.
+    for (const step of (await workflow.get(id)).steps) for (const attempt of step.attempts) if (attempt.status === "cancelled") await workflow.recordStopped({ runId: id, stepId: step.task.id, attemptId: attempt.id });
+  } };
   const feature = createWorkflowSessionFeature(workflow, scheduler);
   const cancellable = await workflow.create({ ...request, key: "session-removal-cancel" });
   await assert.rejects(feature.beforeRemoval("s", "archive"), /关联 Workflow/);
@@ -166,3 +171,16 @@ try {
   assert.equal((await readPayload()).envelope.domainSchemaVersion, 2);
   await migrated.close();
 } finally { await compactKv.close(); await rm(compactDirectory, { recursive: true, force: true }); }
+
+{
+  const workflow = new WorkflowRuntime(new MemoryWorkflowStore());
+  const removed = await workflow.create({ ...request, key: "historical-deleted" });
+  const kept = await workflow.create({ ...request, key: "historical-kept", owner: { ...owner, parentSessionId: "retained" } });
+  await workflow.cancel(removed.id, "Historical terminal work");
+  await workflow.cancel(kept.id, "Historical terminal work");
+  const feature = createWorkflowSessionFeature(workflow, () => undefined);
+  await feature.sweepDeletedSessions(async id => id === owner.parentSessionId);
+  assert.equal(await workflow.get(removed.id), undefined);
+  assert.ok(await workflow.get(kept.id));
+  await workflow.close();
+}

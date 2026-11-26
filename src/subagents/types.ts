@@ -186,6 +186,7 @@ export interface Subagents {
   send(request: SendSubagentRequest): Promise<void>;
   stop(request: StopSubagentRequest): Promise<SubagentRecord>;
   purge(request: StopSubagentRequest): Promise<void>;
+  sweepDeletedSessions?(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void>;
   collect(request: CollectSubagentRequest): Promise<CollectedSubagent>;
   subscribe(listener: SubagentEventListener): () => void;
   close(): Promise<void>;

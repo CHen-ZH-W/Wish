@@ -24,9 +24,12 @@ Tool/capability 集合，并与所有其他策略取交集。Coordinator 因此�
 - `approval-required`：自动允许普通只读能力，其他能力请求审批。
 - `workspace-write`：只有 path-scoped Linux Native Shell 可启用；仅
   `enter_plan_mode` 与 `exit_plan_mode` 的 Tool 调用请求审批，其余 Tool 调用在能力上限、
-  业务策略和 SandboxPolicy 检查通过后自动放行。工作区外路径等不可执行范围仍会被拒绝。
-- `full-access`：不审批并退出工作区、网络和环境变量隔离。Native Provider 只在这一个显式
-  profile 下绕过 Landlock/seccomp；其他 profile 仍进入强制隔离路径。
+  业务策略和 SandboxPolicy 检查通过后自动放行。允许跨工作区读取普通文件，写入仍限于工作区。
+- `full-access`：不进行权限审批，允许在单次 Grant 明确声明的工作区外路径写入；仍执行敏感路径
+  保护、Landlock/seccomp、能力上限和业务策略。Native 命令使用干净环境，网络按调用声明授权。
+
+普通读取不以工作区为边界。四个档位共用 Filesystem 的敏感名称与绝对路径锁，Read、Grep、
+Bash 不因工具入口不同而绕过保护。可读范围、可写范围与审批规则分别检查。
 
 WebUI 的权限选择由 Permissions 自己拥有：通用设置保存“之后创建的 Session”的默认值，
 新建会话 composer 可在首个 Run 前覆盖它，现有会话 composer 修改该 Session 的持久选择。
@@ -36,9 +39,8 @@ Application 在新 Run 入场时把选择固定进 `WishRunPayload`；同一 Run
 追溯改变。
 
 可选项来自当前 Shell policy，而不是前端常量。Linux Native 只公开 `read-only`、
-`approval-required`、具有 path-scoped 强制保护的 `workspace-write`，以及明确标注“无隔离”的
-`full-access`。Host Shell 图仍只公开 `full-access`。因此安全档位与逃生档位在界面和执行路径
-上保持可区分。
+`approval-required`、`workspace-write` 和“完全访问（保留敏感保护）”，这些档位统一通过
+原生后端执行命令并遵守部署设置的敏感路径保护规则。
 
 能力上限是 Agent 的硬 ceiling，审批不能越过。`authorityVersion` 绑定 Agent、Session、
 Run、UserTurn、Step、工具集合、能力上限、Workspace fingerprint/revision 和 Filesystem

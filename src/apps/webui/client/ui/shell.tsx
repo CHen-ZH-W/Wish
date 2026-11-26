@@ -1,6 +1,7 @@
 import { IsolatedView } from "./isolated-view.js";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import type { UiSlots } from "../slots.js";
+import { PanelContent } from "./panel-content.js";
+import { Activity, useEffect, useRef, useState, type CSSProperties } from "react";
+import type { UiPanel, UiSlots, UiSlotSnapshot } from "../slots.js";
 import type { ConnectionSnapshot } from "../connection.js";
 import { Icon, useSnapshot, type ReadableSnapshot } from "./primitives.js";
 import { useLanguage, useText } from "../i18n.js";
@@ -18,6 +19,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
   const sidebarOpen = narrow ? drawerOpen : !collapsed, overlay = narrow && sidebarOpen;
   const navigation = useRef<HTMLElement>(null), expandButton = useRef<HTMLButtonElement>(null);
   const opening = useRef(false), wasOpen = useRef(sidebarOpen);
+  const workspaceLanding = useRef<string | null>(null);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 720px)");
     const resized = () => { setNarrow(media.matches); showDrawer(false); };
@@ -25,7 +27,7 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
     return () => media.removeEventListener("change", resized);
   }, []);
   useEffect(() => {
-    if (sidebarOpen && opening.current) { navigation.current?.querySelector<HTMLButtonElement>("button")?.focus(); opening.current = false; }
+    if (sidebarOpen && opening.current) { navigation.current?.querySelector<HTMLButtonElement>("button:not([disabled])")?.focus({ preventScroll: true }); opening.current = false; }
     if (!sidebarOpen && wasOpen.current && (navigation.current?.contains(document.activeElement) || document.activeElement === document.body)) expandButton.current?.focus();
     wasOpen.current = sidebarOpen;
   }, [sidebarOpen]);
@@ -35,15 +37,18 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
   const railPanels = contributions.panels.filter(panel => panel.navigation === "rail");
   useEffect(() => slots.onOpenPanel(id => {
     const target = slots.getSnapshot().panels.find(item => item.id === id);
-    if (target) { target.onOpen?.(); setArea(target.area); select(id); showDrawer(false); }
+    if (target) {
+      if (target.area === "workspace" && target.navigation !== "rail" && (target.navigation !== "hidden" || target.defaultForArea?.())) workspaceLanding.current = id;
+      target.onOpen?.(); setArea(target.area); select(id); showDrawer(false);
+    }
   }), [slots]);
   const panel = panels.find(item => item.id === selected) ?? panels.find(item => item.defaultForArea?.()) ?? panels.find(item => item.navigation === undefined) ?? panels[0];
-  const localPanels = panels.filter(item => item.navigation === undefined && (panel?.navigationGroup === undefined ? item.navigationGroup === undefined : item.navigationGroup === panel.navigationGroup));
   const globalPanel = panel?.navigation === "rail";
   useEffect(() => { if (selected && !panels.some(item => item.id === selected)) { panel?.onOpen?.(); select(null); } }, [contributions, area, selected, panel]);
   function openArea(next: "workspace" | "settings") {
     const candidates = slots.getSnapshot().panels.filter(item => item.area === next);
-    const target = candidates.find(item => item.defaultForArea?.()) ?? candidates.find(item => item.navigation === undefined);
+    const target = (next === "workspace" ? candidates.find(item => item.id === workspaceLanding.current) : undefined)
+      ?? candidates.find(item => item.defaultForArea?.()) ?? candidates.find(item => item.navigation === undefined);
     if (target) slots.openPanel(target.id);
     else { setArea(next); select(null); showDrawer(false); }
   }
@@ -66,17 +71,29 @@ export function Shell({ slots, connection }: { slots: UiSlots; connection: Reada
       if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeSidebar(); }
     }}>
       <header className="sidebar-header"><div><span className="brand">Wish</span><h2>{sidebarTitle}</h2></div><button className="icon-button" aria-label={t("收起侧栏", "Collapse sidebar")} title={t("收起侧栏", "Collapse sidebar")} aria-expanded={true} aria-controls="wish-sidebar" onClick={closeSidebar}><Icon name="panel-close" /></button></header>
-      <div className="sidebar-content">{panel?.Sidebar ? <IsolatedView View={panel.Sidebar} /> : <>
-        {area === "workspace" ? contributions.navigation.length ? contributions.navigation.filter(item => !item.forPanel || item.forPanel === panel?.id).map(item => <IsolatedView key={item.id} View={item.View} />) : <><h2>{t("会话", "Sessions")}</h2><p className="muted">{t("会话入口尚未加载。", "Session navigation has not loaded.")}</p></> : null}
-        {localPanels.length > 1 ? <nav className="panel-navigation" aria-label={t("可用视图", "Available views")}>{localPanels.map(item => <button key={item.id} className={panel?.id === item.id ? "navigation-item selected" : "navigation-item"} onClick={() => slots.openPanel(item.id)} aria-current={panel?.id === item.id ? "page" : undefined}>{item.Icon ? <IsolatedView View={item.Icon} /> : <Icon name={area === "settings" ? "settings" : "trace"} />}{panelLabel(item)}</button>)}</nav> : null}
-      </>}</div>
+      <div className="sidebar-content">
+        <PanelContent panels={contributions.panels} active={panel?.Sidebar ? panel : undefined} loading={contributions.loading} surface="Sidebar" />
+        {(["workspace", "settings"] as const).map(sidebarArea => <Activity key={sidebarArea} mode={area === sidebarArea && !panel?.Sidebar ? "visible" : "hidden"}>
+          <DefaultSidebar area={sidebarArea} panel={panel?.area === sidebarArea ? panel : undefined} contributions={contributions} slots={slots} />
+        </Activity>)}
+      </div>
     </aside>
     {sidebarOpen && !narrow ? <SidebarResizeHandle side="left" width={sidebarWidth} min={LEFT_SIDEBAR_MIN_WIDTH} max={LEFT_SIDEBAR_MAX_WIDTH} label={t("调整左侧栏宽度", "Resize left sidebar")} controls="wish-sidebar" onChange={setSidebarWidth} /> : null}
     <main id="workspace-main" className="workspace-main" tabIndex={-1} inert={overlay}>
       {!status.online && status.error ? <p className="connection-notice" role="status">{status.error}</p> : null}
       {status.online && !status.businessAvailable ? <p className="connection-notice" role="status">{t("业务服务暂不可用。设置和插件管理仍可操作。", "Agent service is temporarily unavailable. Settings and plugins remain available.")}</p> : null}
       {contributions.notices.map(item => <IsolatedView key={item.id} View={item.View} />)}
-      <div className="workspace-content">{panel ? <IsolatedView View={panel.View} /> : <section className="empty-state"><Icon name="trace" /><h1>{t("会话", "Conversation")}</h1><p>{t("消息、工具调用和子 Agent 工作会按轮次显示在这里。", "Messages, tool calls, and subagent work appear here by turn.")}</p><p className="muted">{t("当前没有可用的会话界面，请检查插件状态。", "No conversation view is available. Check plugin status.")}</p><button className="primary" onClick={() => openArea("settings")}>{t("打开设置与插件", "Open settings and plugins")}</button></section>}</div>
+      <div className="workspace-content"><PanelContent panels={contributions.panels} active={panel} loading={contributions.loading} />{!panel ? <section className="empty-state"><Icon name="trace" /><h1>{t("会话", "Conversation")}</h1><p>{t("消息、工具调用和子 Agent 工作会按轮次显示在这里。", "Messages, tool calls, and subagent work appear here by turn.")}</p><p className="muted">{t("当前没有可用的会话界面，请检查插件状态。", "No conversation view is available. Check plugin status.")}</p><button className="primary" onClick={() => openArea("settings")}>{t("打开设置与插件", "Open settings and plugins")}</button></section> : null}</div>
     </main>
+  </div>;
+}
+
+function DefaultSidebar({ area, panel, contributions, slots }: { area: "workspace" | "settings"; panel: UiPanel | undefined; contributions: UiSlotSnapshot; slots: UiSlots }) {
+  const language = useLanguage(), t = useText();
+  const panels = contributions.panels.filter(item => item.area === area);
+  const localPanels = panels.filter(item => item.navigation === undefined && (panel?.navigationGroup === undefined ? item.navigationGroup === undefined : item.navigationGroup === panel.navigationGroup));
+  return <div className="sidebar-default-content">
+    {area === "workspace" ? contributions.navigation.length ? contributions.navigation.filter(item => !item.forPanel || item.forPanel === panel?.id).map(item => <IsolatedView key={item.id} View={item.View} />) : <><h2>{t("会话", "Sessions")}</h2><p className="muted">{t("会话入口尚未加载。", "Session navigation has not loaded.")}</p></> : null}
+    {localPanels.length > 1 ? <nav className="panel-navigation" aria-label={t("可用视图", "Available views")}>{localPanels.map(item => <button key={item.id} className={panel?.id === item.id ? "navigation-item selected" : "navigation-item"} onClick={() => slots.openPanel(item.id)} aria-current={panel?.id === item.id ? "page" : undefined}>{item.Icon ? <IsolatedView View={item.Icon} /> : <Icon name={area === "settings" ? "settings" : "trace"} />}{language === "en-US" ? item.labelEn ?? item.label : item.label}</button>)}</nav> : null}
   </div>;
 }

@@ -8,7 +8,7 @@ import { ToolExecutor } from "../dist/core/tools/executor.js";
 import { ToolRegistry } from "../dist/core/tools/registry.js";
 import { LocalFilesystemBackend } from
   "../dist/filesystem/providers/local.js";
-import { HostShellBackend } from "../dist/shell/providers/host.js";
+import { LinuxNativeShellBackend } from "../dist/shell/providers/linux-native.js";
 import { createBashTool } from "../dist/shell/consumers/model-tool.js";
 import {
   DEFAULT_MAX_BYTES,
@@ -345,10 +345,10 @@ test("timeout and abort return their stable Tool errors", async () => {
   assert.equal(aborted.error.message, "bash cancelled");
 });
 
-test("the explicit Host Shell merges output and executes in BasicToolContext.cwd", async () => {
+test("the native Shell merges output and executes in BasicToolContext.cwd", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-bash-local-"));
   const filesystem = new LocalFilesystemBackend();
-  const shell = new HostShellBackend(filesystem, { enabled: true });
+  const shell = new LinuxNativeShellBackend(filesystem);
   try {
     const result = await executeBash(
       createBashTool({ shell }),
@@ -371,13 +371,13 @@ test("the explicit Host Shell merges output and executes in BasicToolContext.cwd
 });
 
 test("the local timeout kills the shell's complete process tree", async (context) => {
-  if (process.platform === "win32") {
-    context.skip("Unix process-group assertion");
+  if (process.platform !== "linux") {
+    context.skip("Linux native process-group assertion");
     return;
   }
   const directory = await mkdtemp(join(tmpdir(), "wish-bash-tree-"));
   const filesystem = new LocalFilesystemBackend();
-  const shell = new HostShellBackend(filesystem, { enabled: true });
+  const shell = new LinuxNativeShellBackend(filesystem);
   const marker = join(directory, "descendant-survived.txt");
   try {
     const result = await executeBash(

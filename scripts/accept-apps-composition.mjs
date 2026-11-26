@@ -3,8 +3,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Context } from "@deepseek-ai/cordis";
 
 import { ApplicationFacade } from "../dist/apps/application.js";
+import { SessionFeatureRegistry } from "../dist/apps/session-features.js";
+import { registerManagedSessionFeature } from "../dist/apps/session-feature-owner.js";
 import { createWishAgent } from "../dist/composition/agent-service.js";
 import { createAgentLoopPipeline } from "../dist/composition/agent-loop-standalone.js";
 import { createWishRuntime } from "../dist/composition/runtime-service.js";
@@ -68,6 +71,81 @@ function fixtureConfiguration(options = {}) {
     availableProtocols: ["fixture-protocol"],
   });
 }
+
+function sessionFeatureBridgeFixture(features) {
+  const runs = [], controls = [];
+  const model = { provider: "fixture", model: "primary" };
+  const agent = {
+    definition: { id: "bridge-agent" },
+    startRun(input) {
+      let resolveCompletion;
+      const completion = new Promise(resolve => { resolveCompletion = resolve; });
+      const handle = { runId: input.runId ?? `bridge-run-${runs.length + 1}`, agentId: "bridge-agent", initialUserTurnId: "bridge-turn", scope: input.scope, completion };
+      const run = { handle, active: true, complete(status = "completed") { if (this.active) { this.active = false; resolveCompletion({ runId: handle.runId, status }); } } };
+      runs.push(run); return handle;
+    },
+    control(runId, control) { controls.push({ runId, control }); if (control.type === "abort") runs.find(run => run.handle.runId === runId)?.complete("aborted"); return { runId, type: control.type, accepted: true }; },
+    async *observe() {},
+  };
+  const application = new ApplicationFacade({ sessions: { manager: { async get({ sessionId }) { return { schemaVersion: 1, agentId: "bridge-agent", sessionId, scope: "/bridge", status: "active", createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z", historyRevision: "1" }; } } }, agent,
+    models: { configuredModel: { resolve: () => ({ ref: model }), getDefaultModel: () => model } }, sessionFeatures: features });
+  return { application, runs, controls };
+}
+
+test("Session Feature Run observation receives the registered facade handle including cleanup completion", async () => {
+  const features = new SessionFeatureRegistry(), cleanupEntered = Promise.withResolvers(), releaseCleanup = Promise.withResolvers();
+  const inputs = [], observed = []; let legacyInputs = 0;
+  features.register("observer", { async inspect() {}, async act() {},
+    async beforeInput(sessionId, text, context) { inputs.push({ sessionId, text, context }); },
+    async runStarted(application, handle) { observed.push({ application, handle }); },
+    async purgeRun() { cleanupEntered.resolve(); await releaseCleanup.promise; },
+  });
+  features.register("legacy", { async inspect() {}, async act() {}, async beforeInput(_sessionId, _text) { legacyInputs++; } });
+  const { application, runs } = sessionFeatureBridgeFixture(features);
+  const handle = await application.startRun({ sessionId: "bridge-session", runId: "reserved-run", inputSource: "user", payload: { text: "A natural request" } });
+  assert.equal(observed.length, 1); assert.equal(observed[0].application, application); assert.equal(observed[0].handle, handle);
+  assert.notEqual(handle.completion, runs[0].handle.completion, "Observers must receive cleanup completion rather than only Core completion");
+  assert.deepEqual(inputs, [{ sessionId: "bridge-session", text: "A natural request", context: { kind: "start", runId: "reserved-run", inputSource: "user" } }]);
+  let finished = false; const completion = handle.completion.then(() => { finished = true; });
+  runs[0].complete(); await cleanupEntered.promise; await Promise.resolve(); assert.equal(finished, false);
+  releaseCleanup.resolve(); await completion; assert.equal(finished, true);
+  await features.beforeInput("bridge-session", "Updated scope", { kind: "steer", runId: handle.runId, inputSource: "user" });
+  await features.beforeInput("bridge-session", "Another turn", { kind: "follow_up", runId: handle.runId, inputSource: "user" });
+  assert.equal(inputs[1].context.kind, "steer"); assert.equal(inputs[2].context.kind, "follow_up"); assert.equal(legacyInputs, 3);
+});
+
+test("A failed Run-start observer aborts the new Run and drains feature cleanup before rejecting admission", async () => {
+  const features = new SessionFeatureRegistry(), cleanupEntered = Promise.withResolvers(), releaseCleanup = Promise.withResolvers();
+  const failure = new Error("observer failed"), events = [];
+  features.register("observer", { async inspect() {}, async act() {}, async runStarted() { throw failure; },
+    async purgeRun() { events.push("cleanup-entered"); cleanupEntered.resolve(); await releaseCleanup.promise; events.push("cleanup-finished"); },
+  });
+  const { application, runs, controls } = sessionFeatureBridgeFixture(features);
+  let rejected = false;
+  const starting = application.startRun({ sessionId: "bridge-session", inputSource: "user", payload: { text: "Start an observed Run" } });
+  const rejection = assert.rejects(starting, error => { rejected = true; assert.equal(error, failure); events.push("start-rejected"); return true; });
+  try {
+    await cleanupEntered.promise; assert.equal(runs.length, 1); assert.equal(runs[0].active, false); assert.equal(controls.length, 1); assert.equal(controls[0].control.type, "abort");
+    assert.equal(rejected, false, "Admission must not reject while its hidden Run is still cleaning up");
+  } finally { releaseCleanup.resolve(); }
+  await rejection; assert.deepEqual(events, ["cleanup-entered", "cleanup-finished", "start-rejected"]);
+});
+
+test("Managed Session Feature wrappers preserve input and Run-handle context and reject retained observers after unload", async () => {
+  const root = new Context(), observed = []; let registered, released = false;
+  root.provide("application", { registerSessionFeature(key, feature) { assert.equal(key, "bridge"); registered = feature; return () => { released = true; }; } });
+  try {
+    const fiber = await root.plugin({ inject: ["application"], apply(ctx) { registerManagedSessionFeature(ctx, "bridge", { async inspect() {}, async act() {},
+      async beforeInput(sessionId, text, context) { observed.push({ sessionId, text, context }); }, async runStarted(application, handle) { observed.push({ application, handle }); },
+    }); } });
+    const facade = {}, handle = { runId: "bridge-run" }, context = { kind: "follow_up", runId: "bridge-run", inputSource: "user" };
+    await registered.beforeInput("bridge-session", "follow up", context); await registered.runStarted(facade, handle);
+    assert.equal(observed[0].context, context); assert.equal(observed[1].application, facade); assert.equal(observed[1].handle, handle);
+    await fiber.dispose(); assert.equal(released, true);
+    await assert.rejects(registered.beforeInput("bridge-session", "stale", context), /closed/u);
+    await assert.rejects(registered.runStarted(facade, handle), /closed/u);
+  } finally { await root.fiber.dispose(); }
+});
 
 function modelResources(configuration, options = {}) {
   return createConfiguredModelResources({

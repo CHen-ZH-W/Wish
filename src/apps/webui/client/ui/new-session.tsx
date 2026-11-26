@@ -20,7 +20,10 @@ export function NewSession({ sessions, flow, slots, browser }: { sessions: Sessi
   const selectedLabel = selectedChoice?.label ?? selected?.split(/[\\/]/u).filter(Boolean).at(-1) ?? selected;
   const pending = intent.phase === "creating" || intent.phase === "sending";
   useEffect(() => () => browser.dismiss(), [browser]);
-  useEffect(() => { if (intent.phase === "done") slots.openPanel("conversation"); }, [intent.phase, slots]);
+  useEffect(() => {
+    const current = flow.getSnapshot();
+    if (intent.phase === "done" && current.phase === "done" && current.createdSessionId === intent.createdSessionId) slots.openPanel("conversation");
+  }, [flow, intent.phase, intent.createdSessionId, slots]);
   useEffect(() => {
     if (!menuOpen) return;
     const closeOutside = (event: PointerEvent) => { if (!workspaceControl.current?.contains(event.target as Node)) setMenuOpen(false); };

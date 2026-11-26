@@ -5,6 +5,7 @@ import {
   WebUiControlError,
 } from "../../../apps/webui/controls.js";
 import type { ModelAttemptRecord } from "../attempts.js";
+import { projectSessionModelCost } from "./session-cost.js";
 import type { SessionModelUsageView } from "./webui-types.js";
 
 export const MODEL_USAGE_WEBUI_CONTROL = "model-usage";
@@ -14,7 +15,8 @@ export function projectSessionModelUsage(
   sessionId: string,
   records: readonly ModelAttemptRecord[],
 ): SessionModelUsageView {
-  const completed = records.filter(record => record.status === "completed");
+  const scoped = records.filter(record => record.sessionId === sessionId);
+  const completed = scoped.filter(record => record.status === "completed");
   const reported = completed.filter(record => record.usage !== undefined);
   const cacheReads = reported.filter(record => record.usage!.cachedInputTokens !== undefined);
   const cacheWrites = reported.filter(record => record.usage!.cacheWriteInputTokens !== undefined);
@@ -61,6 +63,7 @@ export function projectSessionModelUsage(
       ...(uncachedInput === undefined ? {} : { uncachedInput }),
     }),
     ...(cacheHitRatio === undefined ? {} : { cacheHitRatio }),
+    cost: projectSessionModelCost(sessionId, scoped),
   });
 }
 

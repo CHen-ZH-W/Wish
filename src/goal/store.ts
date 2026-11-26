@@ -84,8 +84,8 @@ export function snapshotGoalState(value: unknown): GoalState {
   const blockedReason = phase === "blocked" ? blockReason(state.blockedReason) : undefined;
   if (phase !== "blocked" && state.blockedReason !== undefined) throw new TypeError("Only a blocked Goal may carry blockedReason");
   const roundsStarted = nonNegative(state.roundsStarted, "Goal roundsStarted");
-  const maxGoalRounds = positive(state.maxGoalRounds, "Goal maxGoalRounds");
-  if (roundsStarted > maxGoalRounds) throw new TypeError("Goal roundsStarted exceeds maxGoalRounds");
+  const maxGoalRounds = state.maxGoalRounds === undefined ? undefined : positive(state.maxGoalRounds, "Goal maxGoalRounds");
+  if (maxGoalRounds !== undefined && roundsStarted > maxGoalRounds) throw new TypeError("Goal roundsStarted exceeds maxGoalRounds");
   if (state.schemaVersion !== 1) throw new TypeError("Goal state schemaVersion is invalid");
   return Object.freeze({
     schemaVersion: 1 as const,
@@ -97,7 +97,7 @@ export function snapshotGoalState(value: unknown): GoalState {
     phase,
     ...(blockedReason === undefined ? {} : { blockedReason }),
     roundsStarted,
-    maxGoalRounds,
+    ...(maxGoalRounds === undefined ? {} : { maxGoalRounds }),
     createdAt: timestamp(state.createdAt, "Goal createdAt"),
     updatedAt: timestamp(state.updatedAt, "Goal updatedAt"),
   });

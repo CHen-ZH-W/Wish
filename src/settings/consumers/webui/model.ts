@@ -6,6 +6,8 @@ export interface SettingsClientSnapshot { readonly sections: readonly SettingsVi
 /** Shared settings mirror, independent of React and the settings-page layout. */
 export class SettingsClientModel extends SnapshotStore<SettingsClientSnapshot> {
   private readonly queue: RefreshQueue;
+  /** Pending reads are presentation signals, independent of operation authority. */
+  get readiness(): Pick<RefreshQueue, "getSnapshot" | "subscribe"> { return this.queue; }
   private readonly unsubscribe: () => void;
   private closed = false;
   constructor(private readonly connection: ClientConnection) {

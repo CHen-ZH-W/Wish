@@ -18,6 +18,8 @@ for (const [name, file] of [
     await cp(join(repository, "dist"), join(directory, "dist"), { recursive: true });
     await symlink(join(repository, "node_modules"), join(directory, "node_modules"), "dir");
     await writeFile(join(directory, "package.json"), '{"type":"module"}');
+    const lateImport = join(directory, "dist", "late-import-probe.js");
+    if (name === "read") await writeFile(lateImport, "export const loadedLater = true;\n");
     const { bootstrap } = await import(pathToFileURL(join(directory, "dist/boot/bootstrap.js")));
     booted = await bootstrap({ surface: "cli", argv: ["--version"], cwd: directory, homeDirectory: directory,
       environment: { CORDIS_HMR: "1", WISH_DATA_DIR: join(directory, "data") } });
@@ -28,12 +30,15 @@ for (const [name, file] of [
     const before = registry.describe(name);
     const filename = join(directory, "dist", file), source = await readFile(filename, "utf8");
     if (name === "read") {
-      for (const file of ["boot/bootstrap.js", "composition/runtime-service.js", "filesystem/consumers/model-tools/read-entry.js"]) {
+      // A module first imported after the watcher's initial scan still has an
+      // unchanged on-disk baseline; compiler rewrites must not trigger HMR.
+      await import(pathToFileURL(lateImport));
+      for (const file of ["boot/bootstrap.js", "composition/runtime-service.js", "filesystem/consumers/model-tools/read-entry.js", "late-import-probe.js"]) {
         const unchanged = join(directory, "dist", file);
         await writeFile(unchanged, await readFile(unchanged));
       }
       await new Promise(resolve => setTimeout(resolve, 450));
-      assert.equal(booted.codeReload.snapshot().phase, "idle", "unchanged compiler output must not request reload/restart");
+      assert.equal(booted.codeReload.snapshot().phase, "idle", `unchanged compiler output must not request reload/restart: ${JSON.stringify(booted.codeReload.snapshot())}`);
       assert.equal(entry.fiber, previous);
     }
     assert.ok(source.includes(`"${name}_consumer"`));

@@ -32,6 +32,9 @@ export function projectSystemPromptSnapshot(
     ...dynamicSystemPromptSections(projection),
   ];
   if (sections.length === 0) return undefined;
+  const stateSections: readonly SystemPromptSnapshotSection[] = Object.freeze(projection.includedItems.flatMap(item =>
+    item.kind === "state" && item.placement === "dynamic_tail" && (item.message.role === "system" || item.message.role === "developer")
+      ? [Object.freeze({ channel: "dynamic_tail" as const, role: item.message.role, content: item.message.content })] : []));
   return Object.freeze({
     sessionId: input.sessionId,
     runId: input.runId,
@@ -39,16 +42,20 @@ export function projectSystemPromptSnapshot(
     stepId: input.stepId,
     capturedAt: input.runtime.capturedAt,
     model: projection.request.model,
+    dynamicTailScope: "all-instructions",
     digest: createHash("sha256").update(JSON.stringify(sections)).digest("hex"),
     sections: Object.freeze(sections),
+    runtimeState: Object.freeze({
+      digest: createHash("sha256").update(JSON.stringify(stateSections)).digest("hex"),
+      sections: stateSections,
+    }),
   });
 }
 
 function dynamicSystemPromptSections(projection: ContextProjection): readonly SystemPromptSnapshotSection[] {
-  const included = new Set(projection.includedItems.map(item => item.id));
-  return projection.providerGroups.flatMap(group => group.providerId === "system-prompt"
-    ? group.items.flatMap(item => item.kind === "instruction" && item.placement === "dynamic_tail" && included.has(item.id)
-      ? [Object.freeze({ channel: "dynamic_tail" as const, role: item.message.role as "system" | "developer", content: item.message.content })]
-      : [])
+  // Use the final inclusion order, which is also the order projected to the model.
+  return projection.includedItems.flatMap(item => item.kind === "instruction" && item.placement === "dynamic_tail" &&
+    (item.message.role === "system" || item.message.role === "developer")
+    ? [Object.freeze({ channel: "dynamic_tail" as const, role: item.message.role, content: item.message.content })]
     : []);
 }

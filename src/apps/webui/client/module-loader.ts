@@ -3,10 +3,10 @@ import type { ClientUiPlugin } from "./plugins.js";
 import { SnapshotStore } from "./model/store.js";
 import { parseUiModuleManifest, type UiModuleEntry } from "./module-manifest.js";
 
-export interface UiModuleStatus { readonly refreshRequired: boolean; readonly errors: readonly string[] }
+export interface UiModuleStatus { readonly loading: boolean; readonly refreshRequired: boolean; readonly errors: readonly string[] }
 // Cordis publishes a const enum in declarations, not a runtime export for esbuild.
 const ACTIVE: FiberState = 2;
-interface Binding { entry: UiModuleEntry; desired: string; mounted?: { key: string; fork: Fiber; plugin: ClientUiPlugin }; error?: string }
+interface Binding { entry: UiModuleEntry; desired: string; retry?: number; mounted?: { key: string; fork: Fiber; plugin: ClientUiPlugin }; error?: string }
 export interface UiModuleLoaderOptions {
   readonly fetcher?: typeof fetch;
   readonly importer?: (url: string) => Promise<Record<string, unknown>>;
@@ -25,10 +25,11 @@ export class UiModuleLoader extends SnapshotStore<UiModuleStatus> {
   private unsubscribers: (() => void)[] = [];
   private manifestError: string | undefined;
   private refreshRequired = false;
+  private manifestRead = false;
   private readonly fetcher: typeof fetch;
   private readonly importer: (url: string) => Promise<Record<string, unknown>>;
   constructor(private readonly root: Context, private readonly coreUrl: string, private readonly options: UiModuleLoaderOptions = {}) {
-    super(Object.freeze({ refreshRequired: false, errors: Object.freeze([]) }));
+    super(Object.freeze({ loading: true, refreshRequired: false, errors: Object.freeze([]) }));
     this.fetcher = options.fetcher ?? fetch.bind(globalThis);
     this.importer = options.importer ?? (url => import(url));
   }
@@ -46,9 +47,18 @@ export class UiModuleLoader extends SnapshotStore<UiModuleStatus> {
     if (this.closed) return Promise.resolve();
     return this.reading ??= this.read().finally(() => { this.reading = undefined; });
   };
+  /** Settle the current authorized roster before revealing the application. Failures remain inspectable. */
+  async whenSettled(): Promise<void> {
+    if (!this.manifestRead) await this.refresh();
+    this.reconcile();
+    if (!this.getSnapshot().loading || this.closed) return;
+    await new Promise<void>(resolve => {
+      const remove = this.subscribe(() => { if (!this.getSnapshot().loading || this.closed) { remove(); resolve(); } });
+    });
+  }
   retry = async (): Promise<void> => {
     await this.refresh();
-    for (const binding of this.bindings.values()) if (binding.error) { binding.desired = ""; delete binding.error; }
+    for (const binding of this.bindings.values()) if (binding.error) { binding.desired = ""; binding.retry = (binding.retry ?? 0) + 1; delete binding.error; }
     this.reconcile();
   };
   private async read(): Promise<void> {
@@ -77,7 +87,7 @@ export class UiModuleLoader extends SnapshotStore<UiModuleStatus> {
       this.reconcile();
     } catch {
       if (!this.closed) { this.manifestError = "无法检查界面更新。已加载的界面仍可使用，请检查连接后重试。"; this.report(); }
-    } finally { clearTimeout(timeout); if (this.request === controller) this.request = undefined; }
+    } finally { clearTimeout(timeout); if (this.request === controller) this.request = undefined; this.manifestRead = true; this.report(); }
   }
   private key(binding: Binding): string {
     const online = this.root.get("wishConnection")!.getSnapshot(), data = this.root.get("wishManagement")!.getSnapshot().data;
@@ -94,7 +104,10 @@ export class UiModuleLoader extends SnapshotStore<UiModuleStatus> {
       if (binding.mounted?.key === key) continue;
       const entry = binding.entry;
       // Import outside the activation queue: capability loss never waits for a download.
-      void this.importer(entry.url).then(module => {
+      // A failed ESM transport is cached by URL. Explicit retry gets a fresh
+      // entry request while relative imports retain the shared runtime URLs.
+      const importUrl = binding.retry ? `${entry.url}?wish-ui-retry=${binding.retry}` : entry.url;
+      void this.importModule(importUrl).then(module => {
         const plugin = module[entry.exportName] as ClientUiPlugin | undefined;
         if (!plugin || typeof plugin.name !== "string" || typeof plugin.apply !== "function") throw new Error("invalid_ui_plugin");
         this.enqueue(async () => {
@@ -138,6 +151,14 @@ export class UiModuleLoader extends SnapshotStore<UiModuleStatus> {
     binding.error = `${binding.entry.id} 界面更新失败。${binding.mounted ? "暂时保留原界面。" : "此界面暂不可用，其他功能不受影响。"}请重试；若仍失败，请修正该模块后重新构建。`;
     this.report();
   }
+  private async importModule(url: string): Promise<Record<string, unknown>> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([this.importer(url), new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("ui_module_load_timeout")), 15_000);
+      })]);
+    } finally { clearTimeout(timeout); }
+  }
   private async remove(binding: Binding): Promise<void> {
     const mounted = binding.mounted; delete binding.mounted; await mounted?.fork.dispose();
   }
@@ -148,11 +169,16 @@ export class UiModuleLoader extends SnapshotStore<UiModuleStatus> {
   }
   private report(): void {
     const errors = [...(this.manifestError ? [this.manifestError] : []), ...[...this.bindings.values()].flatMap(binding => binding.error ? [binding.error] : [])];
-    if (this.getSnapshot().refreshRequired === this.refreshRequired && JSON.stringify(this.getSnapshot().errors) === JSON.stringify(errors)) return;
-    this.publish({ refreshRequired: this.refreshRequired, errors: Object.freeze(errors) });
+    const loading = !this.closed && (!this.manifestRead || [...this.bindings.values()].some(binding => {
+      const key = this.key(binding);
+      return !!key && binding.mounted?.key !== key && !binding.error;
+    }));
+    if (this.getSnapshot().loading === loading && this.getSnapshot().refreshRequired === this.refreshRequired && JSON.stringify(this.getSnapshot().errors) === JSON.stringify(errors)) return;
+    this.publish({ loading, refreshRequired: this.refreshRequired, errors: Object.freeze(errors) });
   }
   async close(): Promise<void> {
     this.closed = true; clearTimeout(this.timer); this.request?.abort();
+    this.report();
     for (const unsubscribe of this.unsubscribers) unsubscribe();
     for (const binding of this.bindings.values()) { binding.desired = ""; this.enqueue(() => this.remove(binding)); }
     this.bindings.clear(); await this.tail;

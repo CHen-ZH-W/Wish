@@ -9,6 +9,6 @@ export function transitionTask(task: Task, status: TaskStatus, attemptId: string
   };
   if (!allowed[task.status]?.includes(status)) throw new Error(`Illegal task transition ${task.status} -> ${status}`);
   if (task.status === "running" && task.attemptId !== attemptId) throw new Error("Stale task Attempt");
-  const { result: _result, ...rest } = task;
+  const { result: _result, controlId: _controlId, ...rest } = task;
   return Object.freeze({ ...rest, status, attemptId, ...(result === undefined ? {} : { result }) });
 }

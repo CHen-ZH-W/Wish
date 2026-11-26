@@ -115,3 +115,49 @@ test("missing Browser dependency fails visibly; manifest removal and close disca
     await f.loader.close(); const reads = f.reads(); await f.loader.refresh(); assert.equal(f.reads(), reads);
   } finally { await f.close(); }
 });
+
+test("initial UI readiness waits for the authorized roster and settles failed or revoked modules", async () => {
+  const download = deferred();
+  const f = fixture(() => download.promise);
+  try {
+    f.enabled(); await settle();
+    let ready = false;
+    const waiting = f.loader.whenSettled().then(() => { ready = true; });
+    await settle();
+    assert.equal(ready, false, "a slow module keeps the initial application behind its boot surface");
+    assert.equal(f.loader.getSnapshot().loading, true);
+    download.reject(new Error("module offline"));
+    await waiting;
+    assert.equal(f.loader.getSnapshot().loading, false);
+    assert.equal(f.loader.getSnapshot().errors.length, 1, "failure releases startup into an inspectable degraded state");
+  } finally { await f.close(); }
+
+  const late = deferred();
+  const revoked = fixture(() => late.promise);
+  try {
+    revoked.enabled(); await settle();
+    const waiting = revoked.loader.whenSettled();
+    revoked.enabled([]);
+    await waiting;
+    assert.equal(revoked.loader.getSnapshot().loading, false);
+    late.resolve({ Probe: plugin("revoked") }); await settle();
+    assert.equal(revoked.slots.getSnapshot().panels.length, 0);
+  } finally { await revoked.close(); }
+});
+
+test("a stalled initial import has a deadline and cannot activate after timing out", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const late = deferred();
+  const f = fixture(() => late.promise);
+  try {
+    f.enabled(); await settle();
+    const waiting = f.loader.whenSettled();
+    await settle(); t.mock.timers.tick(15_000); await waiting;
+    assert.equal(f.loader.getSnapshot().loading, false);
+    assert.equal(f.loader.getSnapshot().errors.length, 1);
+    late.resolve({ Probe: plugin("late") }); await settle();
+    assert.equal(f.slots.getSnapshot().panels.length, 0, "late bytes do not silently recover a timed-out module");
+    await f.loader.retry(); await settle();
+    assert.equal(f.slots.getSnapshot().panels[0].label, "late", "an explicit retry can recover the module");
+  } finally { await f.close(); t.mock.timers.reset(); }
+});

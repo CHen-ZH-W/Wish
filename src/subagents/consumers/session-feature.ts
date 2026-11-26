@@ -5,7 +5,7 @@ import type { SubagentObservationView } from "./observation-view.js";
 import type { Subagents } from "../types.js";
 
 export function createSubagentSessionFeature(
-  subagents: Pick<Subagents, "observeSession" | "stop" | "capture" | "purge">,
+  subagents: Pick<Subagents, "observeSession" | "stop" | "capture" | "purge" | "sweepDeletedSessions">,
   getSession: (sessionId: string) => Promise<{ readonly agentId: string; readonly scope: string }>,
   agentId: string,
 ): SessionFeature {
@@ -17,6 +17,7 @@ export function createSubagentSessionFeature(
   }
   return {
     purgeOrder: 20,
+    async sweepDeletedSessions(wasDeleted) { await subagents.sweepDeletedSessions?.(wasDeleted); },
     async purgeRun(sessionId, runId) {
       for (const item of (await records(sessionId)).filter(item => item.parentRunId === runId)) {
         await subagents.purge({ id: item.id, parentAgentId: item.parentAgentId, parentSessionId: item.parentSessionId,

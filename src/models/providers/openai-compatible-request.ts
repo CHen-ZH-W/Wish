@@ -65,6 +65,7 @@ export function mapOpenAIRequest(
     model: request.model.model,
     messages,
     stream: true,
+    ...(request.responseSchema === undefined ? {} : { response_format: { type: "json_object" } }),
     ...(tools.length === 0 ? {} : { tools }),
     ...(request.temperature === undefined || !compatibility.supportsTemperature
       ? {}

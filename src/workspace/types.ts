@@ -20,6 +20,9 @@ export interface WorkspaceRepository {
   readonly identity: string;
 }
 
+/** A failed or unavailable probe never establishes repository identity. */
+export type WorkspaceRepositoryStatus = "verified" | "not-found" | "unavailable";
+
 /** Input to one explicit Workspace resolution. */
 export interface ResolveWorkspaceRequest {
   /** Directory spelling selected by the caller before canonicalization. */
@@ -38,6 +41,8 @@ export interface WorkspaceSnapshot {
   readonly revision: WorkspaceRevision;
   readonly instructions: readonly WorkspaceInstruction[];
   readonly repository?: WorkspaceRepository;
+  /** Optional for older/custom Providers that do not report discovery outcomes. */
+  readonly repositoryStatus?: WorkspaceRepositoryStatus;
 }
 
 /** Provider-neutral Workspace capability. */

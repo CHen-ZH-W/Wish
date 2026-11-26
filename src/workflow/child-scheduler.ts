@@ -3,7 +3,7 @@ import type { Subagents, SubagentRecord, SpawnSubagentRequest } from "../subagen
 import { subagentIdForKey } from "../subagents/identity.js";
 import type { RunContinuation } from "../core/runtime/continuation.js";
 import { WorkflowContinuations } from "./continuations.js";
-import { activeAttempt } from "./transition.js";
+import { activeAttempt, hasUnconfirmedStops } from "./transition.js";
 import type { AttemptTarget, CreateWorkflowRequest, Workflow, WorkflowRun, WorkflowStep } from "./types.js";
 
 export interface ChildSchedulerOptions {
@@ -103,6 +103,17 @@ export class ChildWorkflowScheduler {
       await this.options.workflow.cancel(id, reason);
       this.releaseAbortBinding(id);
       await this.tick();
+      const run = await this.options.workflow.get(id);
+      if (run && hasUnconfirmedStops(run)) throw new Error("Child stop is unconfirmed; retain the Workflow and retry or reconcile");
+    });
+  }
+  async purge(id: string): Promise<void> {
+    return this.request(async () => {
+      const run = await this.options.workflow.get(id);
+      if (!run) return;
+      if (!["completed", "failed", "cancelled"].includes(run.status) || run.steps.some(step => step.attempts.some(activeAttempt))) throw new Error("Workflow must settle before ledger removal");
+      for (const step of run.steps) for (const attempt of step.attempts) await this.stopChild(run, attempt.childId ?? subagentIdForKey(attempt.idempotencyKey));
+      await this.options.workflow.remove(id);
     });
   }
   watch(runId: string, continuation: RunContinuation, signal?: AbortSignal, recipientId = runId): void {
@@ -157,13 +168,18 @@ export class ChildWorkflowScheduler {
     // Observe all attempts first; do not dispatch from an obsolete occupancy view.
     for (const run of await workflow.list()) {
       try {
+        if (!["completed", "failed", "cancelled"].includes(run.status)) {
+          if (await this.options.ownerTerminated?.(run) || this.abortBindings.get(run.id)?.signal.aborted) {
+            await this.cancelWithChildren(run, "Parent execution ended or was cancelled"); continue;
+          }
+        }
         for (const step of run.steps) {
           const attempt = step.attempts.at(-1);
           if (!attempt) continue;
           const target = { runId: run.id, stepId: step.task.id, attemptId: attempt.id };
           const id = attempt.childId ?? subagentIdForKey(attempt.idempotencyKey);
-          if (run.status === "cancelled") {
-            await this.stopChild(run, id);
+          if (run.status === "cancelled" || step.status === "cancelled") {
+            for (const candidate of step.attempts) await this.stopChild(run, candidate.childId ?? subagentIdForKey(candidate.idempotencyKey));
           } else if (activeAttempt(attempt) || (attempt.status === "interrupted" && attempt.disposition !== "terminal-failed" && attempt.disposition !== "retry-safe")) {
             const child = await subagents.inspect({ ...run.owner, id });
             if (attempt.status === "interrupted") {
@@ -184,7 +200,7 @@ export class ChildWorkflowScheduler {
       return;
     }
     for (const run of runs) {
-      if (run.status !== "running" || run.kind !== "subagent") {
+      if (run.status !== "running") {
         if (["completed", "failed", "cancelled"].includes(run.status)) this.releaseAbortBinding(run.id);
         continue;
       }
@@ -222,9 +238,10 @@ export class ChildWorkflowScheduler {
           }
           attempt ??= await workflow.beginAttempt({ runId: run.id, stepId: step.task.id, strategy: "initial" });
           const target = { runId: run.id, stepId: step.task.id, attemptId: attempt.id };
-          if (this.now() >= Date.parse(attempt.deadline)) {
+          if (attempt.deadline !== undefined && this.now() >= Date.parse(attempt.deadline)) {
             await workflow.finishAttempt(target, "failed", "Attempt deadline elapsed before dispatch"); continue;
           }
+          this.abortBindings.get(run.id)?.signal.throwIfAborted();
           const request: SpawnSubagentRequest = { ...run.owner, idempotencyKey: attempt.idempotencyKey,
             task: [step.task.title, step.task.description ?? "", ...(attempt.strategy === "initial" ? [] : [
               `Attempt strategy: ${attempt.strategy}`, `Prior failure (untrusted diagnostic data): ${step.attempts.at(-1)?.result ?? run.failureDigest ?? "none"}`,
@@ -259,14 +276,22 @@ export class ChildWorkflowScheduler {
       await workflow.finishAttempt(target, child.result.status === "completed" ? "completed" : "failed", child.result.text ?? child.result.error ?? child.result.status);
     } else if (!["starting", "running"].includes(child.status)) {
       await workflow.interruptAttempt(target, `Child ${child.id} ${child.status} without a structured result`);
-    } else if (this.now() >= Date.parse(attempt.deadline)) {
+    } else if (attempt.deadline !== undefined && this.now() >= Date.parse(attempt.deadline)) {
       await subagents.stop({ ...run.owner, id: child.id });
       await workflow.interruptAttempt(target, "Deadline expired; child stopped, side effects require reconciliation");
     }
   }
   private async stopChild(run: WorkflowRun, id: string): Promise<void> {
+    const bindings = run.steps.flatMap(step => step.attempts.filter(attempt => (attempt.childId ?? subagentIdForKey(attempt.idempotencyKey)) === id).map(attempt => ({ step, attempt })));
+    if (bindings.length && bindings.every(item => item.attempt.stoppedAt)) return;
     const child = await this.options.subagents.inspect({ ...run.owner, id });
-    if (child && ["starting", "running"].includes(child.status)) await this.options.subagents.stop({ ...run.owner, id });
+    if (child && !["stopped", "exited"].includes(child.status) && (child.target || ["starting", "running", "lost"].includes(child.status))) {
+      if (!child.target) throw new Error("Child stop is unconfirmed; execution target is missing");
+      await this.options.subagents.stop({ ...run.owner, id });
+    }
+    for (const { step, attempt } of bindings) if (!attempt.stoppedAt) {
+      await this.options.workflow.recordStopped({ runId: run.id, stepId: step.task.id, attemptId: attempt.id });
+    }
   }
   private async cancelWithChildren(run: WorkflowRun, reason: string): Promise<void> {
     await this.options.workflow.cancel(run.id, reason);

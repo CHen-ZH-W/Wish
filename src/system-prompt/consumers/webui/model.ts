@@ -1,4 +1,4 @@
-import type { ClientConnection } from "../../../apps/webui/client/connection.js";
+import { ClientApiError, type ClientConnection } from "../../../apps/webui/client/connection.js";
 import type { SessionClientModel } from "../../../apps/webui/client/model/session.js";
 import { RefreshQueue, SnapshotStore, freezeWire } from "../../../apps/webui/client/model/store.js";
 import type { LedgerBlock } from "../../../apps/webui/client/projection/ledger.js";
@@ -6,30 +6,71 @@ import type { SystemPromptSnapshot } from "../../history/types.js";
 import type { SessionSystemPromptHistoryView } from "../webui-types.js";
 
 export const SYSTEM_PROMPT_LEDGER_VIEW = "system-prompt-history";
+const MAX_CACHED_SESSIONS = 6;
+const MAX_EXPANDED_PROMPTS = 128;
+
+export interface SystemPromptDisclosureState {
+  readonly identity: string;
+  readonly open: boolean;
+  readonly selectedRequest: string | undefined;
+  setOpen(open: boolean): void;
+  setSelectedRequest(requestId: string): void;
+}
+interface CachedPrompts { readonly snapshots: readonly SystemPromptSnapshot[]; readonly blocks: readonly LedgerBlock[] }
+export interface SystemPromptBlockData {
+  readonly snapshot: SystemPromptSnapshot;
+  readonly update: boolean;
+  readonly requests: readonly SystemPromptSnapshot[];
+}
 
 /** Browser projection of durable snapshots into generic conversation blocks. */
 export class SystemPromptHistoryClientModel extends SnapshotStore<readonly LedgerBlock[]> {
   private readonly queue: RefreshQueue;
+  /** Pending reads are presentation signals, independent of operation authority. */
+  get readiness(): Pick<RefreshQueue, "getSnapshot" | "subscribe"> { return this.queue; }
   private readonly removers: Array<() => void> = [];
   private sessionId: string | null = null;
   private observedKey = "";
+  private instanceId: string | null = null;
+  private readonly cached = new Map<string, CachedPrompts>();
+  private readonly expanded = new Map<string, Set<string>>();
+  private readonly selectedRequests = new Map<string, Map<string, string>>();
+  private presentationEpoch = 0;
   private closed = false;
 
   constructor(private readonly connection: ClientConnection, private readonly sessions: SessionClientModel) {
     super(Object.freeze([]));
     this.queue = new RefreshQueue(async current => {
       const sessionId = this.sessionId;
+      const instanceId = this.instanceId;
       if (!sessionId || !this.available()) return;
+      const fresh = () => current() && this.available() && this.sessionId === sessionId && this.instanceId === instanceId;
       try {
         const response = freezeWire(await connection.request<{ value: SessionSystemPromptHistoryView }>(
           `/api/sessions/${encodeURIComponent(sessionId)}/controls/system-prompt-history`,
         ));
-        if (response.value.schemaVersion !== 1 || response.value.sessionId !== sessionId || !Array.isArray(response.value.snapshots)) throw new Error("系统提示词历史响应与当前会话不匹配");
-        const blocks = projectSnapshots(response.value.snapshots);
-        if (current() && this.sessionId === sessionId) this.publish(blocks);
-      } catch {
-        // The contribution disappears on adapter loss; other conversation history remains usable.
-        if (current() && this.sessionId === sessionId) this.publish(Object.freeze([]));
+        if (response.value.schemaVersion !== 1 || response.value.sessionId !== sessionId || !Array.isArray(response.value.snapshots) ||
+          response.value.snapshots.some(snapshot => !validSnapshot(snapshot) || snapshot.sessionId !== sessionId)) throw new Error("系统提示词历史响应与当前会话不匹配");
+        if (fresh()) {
+          // The endpoint reads the complete journal, exposing the latest snapshot
+          // per Run/Step. Reject missing Steps, but accept newer digests for a Step.
+          const previous = this.cached.get(sessionId);
+          const identities = new Set(response.value.snapshots.map(snapshotIdentity));
+          if (previous?.snapshots.some(snapshot => !identities.has(snapshotIdentity(snapshot)))) return;
+          const cached = previous && sameSnapshots(previous.snapshots, response.value.snapshots)
+            ? previous : { snapshots: response.value.snapshots, blocks: projectSnapshots(response.value.snapshots) };
+          this.remember(sessionId, cached); this.publish(cached.blocks);
+        }
+      } catch (error) {
+        if (!fresh()) return;
+        // A failed freshness read must not unmount a verified historical disclosure.
+        // Explicit adapter/session loss still revokes its cached presentation.
+        if (error instanceof ClientApiError && (error.status === 401 || error.status === 403 ||
+          ["control_not_found", "business_unavailable", "management_closed", "connection_closed"].includes(error.code))) {
+          this.clearCache(); this.publish(Object.freeze([]));
+        } else if (error instanceof ClientApiError && error.code === "session_not_found") {
+          this.cached.delete(sessionId); this.expanded.delete(sessionId); this.selectedRequests.delete(sessionId); this.publish(Object.freeze([]));
+        }
       }
     });
     this.removers.push(
@@ -40,32 +81,98 @@ export class SystemPromptHistoryClientModel extends SnapshotStore<readonly Ledge
   }
 
   readonly refresh = (): Promise<void> => this.queue.request();
-  close(): void { this.closed = true; this.queue.close(); for (const remove of this.removers.splice(0)) remove(); }
+  close(): void { this.closed = true; this.queue.close(); for (const remove of this.removers.splice(0)) remove(); this.clearCache(); this.publish(Object.freeze([])); }
+
+  /** Owned by this browser module, with stale handlers fenced at connection boundaries. */
+  disclosure(blockId: string): SystemPromptDisclosureState {
+    const sessionId = [...this.cached].find(([, value]) => value.blocks.some(block => block.id === blockId))?.[0] ?? this.sessionId;
+    const epoch = this.presentationEpoch;
+    return {
+      identity: `${epoch}/${sessionId ?? ""}/${blockId}`,
+      open: !!sessionId && !!this.expanded.get(sessionId)?.has(blockId),
+      selectedRequest: sessionId ? this.selectedRequests.get(sessionId)?.get(blockId) : undefined,
+      setOpen: open => {
+        if (this.closed || epoch !== this.presentationEpoch || !sessionId || !this.cached.get(sessionId)?.blocks.some(block => block.id === blockId)) return;
+        const expanded = this.expanded.get(sessionId) ?? new Set<string>();
+        expanded.delete(blockId);
+        if (open) expanded.add(blockId);
+        while (expanded.size > MAX_EXPANDED_PROMPTS) expanded.delete(expanded.values().next().value!);
+        if (expanded.size) this.expanded.set(sessionId, expanded); else this.expanded.delete(sessionId);
+      },
+      setSelectedRequest: requestId => {
+        if (this.closed || epoch !== this.presentationEpoch || !sessionId) return;
+        const block = this.cached.get(sessionId)?.blocks.find(block => block.id === blockId);
+        const data = block?.data as SystemPromptBlockData | undefined;
+        if (!data?.requests.some(request => `${request.runId}/${request.stepId}` === requestId)) return;
+        const selected = this.selectedRequests.get(sessionId) ?? new Map<string, string>();
+        selected.delete(blockId); selected.set(blockId, requestId);
+        while (selected.size > MAX_EXPANDED_PROMPTS) selected.delete(selected.keys().next().value!);
+        this.selectedRequests.set(sessionId, selected);
+      },
+    };
+  }
+
+  private remember(sessionId: string, cached: CachedPrompts): void {
+    this.cached.delete(sessionId); this.cached.set(sessionId, cached);
+    while (this.cached.size > MAX_CACHED_SESSIONS) {
+      const oldest = this.cached.keys().next().value!;
+      this.cached.delete(oldest); this.expanded.delete(oldest); this.selectedRequests.delete(oldest);
+    }
+  }
+  private clearCache(): void { this.cached.clear(); this.expanded.clear(); this.selectedRequests.clear(); this.presentationEpoch++; }
 
   private readonly sync = (): void => {
     if (this.closed) return;
     const connection = this.connection.getSnapshot(), sessions = this.sessions.getSnapshot(), run = this.sessions.run.getSnapshot();
     const active = connection.online && connection.businessAvailable;
     const sessionId = active ? sessions.selectedId : null;
+    const changedInstance = this.instanceId !== connection.instanceId;
+    this.instanceId = connection.instanceId;
+    if (changedInstance || !active) this.clearCache();
     const requestBoundaries = run.events.filter(event => event.type === "model.stream" && (event.payload.type === "start" || event.payload.type === "done" || event.payload.type === "error")).length;
     const key = `${connection.instanceId ?? ""}:${active}:${sessionId ?? ""}:${run.runId ?? ""}:${requestBoundaries}:${run.terminal}`;
     if (key === this.observedKey) return;
     const changed = sessionId !== this.sessionId;
     this.observedKey = key; this.sessionId = sessionId;
-    if (changed || !sessionId) this.publish(Object.freeze([]));
+    if (changedInstance || changed || !sessionId) {
+      const cached = sessionId ? this.cached.get(sessionId) : undefined;
+      if (cached && sessionId) this.remember(sessionId, cached);
+      this.publish(cached?.blocks ?? Object.freeze([]));
+    }
     if (sessionId) void this.refresh();
   };
   private available(): boolean { const state = this.connection.getSnapshot(); return !this.closed && state.online && state.businessAvailable; }
 }
 
+function snapshotIdentity(snapshot: SystemPromptSnapshot): string { return JSON.stringify([snapshot.runId, snapshot.stepId]); }
+function sameSnapshots(left: readonly SystemPromptSnapshot[], right: readonly SystemPromptSnapshot[]): boolean {
+  return left.length === right.length && left.every((item, index) => {
+    const other = right[index]!;
+    return item.schemaVersion === other.schemaVersion && item.sessionId === other.sessionId && item.runId === other.runId &&
+      item.userTurnId === other.userTurnId && item.stepId === other.stepId && item.capturedAt === other.capturedAt && item.digest === other.digest && item.dynamicTailScope === other.dynamicTailScope &&
+      item.model.provider === other.model.provider && item.model.model === other.model.model && item.sections.length === other.sections.length &&
+      item.sections.every((section, sectionIndex) => { const next = other.sections[sectionIndex]!; return section.channel === next.channel && section.role === next.role && section.content === next.content; }) &&
+      JSON.stringify(item.runtimeState) === JSON.stringify(other.runtimeState);
+  });
+}
+
 function projectSnapshots(snapshots: readonly SystemPromptSnapshot[]): readonly LedgerBlock[] {
-  const blocks: LedgerBlock[] = [];
+  const groups: Array<{ snapshot: SystemPromptSnapshot; update: boolean; requests: SystemPromptSnapshot[] }> = [];
   let previousDigest: string | undefined;
+  let previousScope: SystemPromptSnapshot["dynamicTailScope"];
   for (const snapshot of [...snapshots].sort((left, right) => left.capturedAt.localeCompare(right.capturedAt))) {
-    if (!validSnapshot(snapshot) || snapshot.digest === previousDigest) continue;
+    if (!validSnapshot(snapshot)) continue;
+    if (snapshot.digest === previousDigest && snapshot.dynamicTailScope === previousScope) {
+      groups.at(-1)!.requests.push(snapshot);
+      continue;
+    }
     const update = previousDigest !== undefined;
-    blocks.push(Object.freeze({
-      id: `system-prompt/${snapshot.runId}/${snapshot.stepId}/${snapshot.digest}`,
+    groups.push({ snapshot, update, requests: [snapshot] });
+    previousDigest = snapshot.digest;
+    previousScope = snapshot.dynamicTailScope;
+  }
+  return Object.freeze(groups.map(({ snapshot, update, requests }) => Object.freeze({
+      id: `system-prompt/${encodeURIComponent(snapshot.sessionId)}/${snapshot.runId}/${snapshot.stepId}/${snapshot.digest}`,
       turnId: `${snapshot.runId}/${snapshot.userTurnId}`,
       stepId: snapshot.stepId,
       runId: snapshot.runId,
@@ -75,19 +182,20 @@ function projectSnapshots(snapshots: readonly SystemPromptSnapshot[]): readonly 
       text: "",
       viewId: SYSTEM_PROMPT_LEDGER_VIEW,
       anchor: update ? "step-start" as const : "turn-start" as const,
-      data: Object.freeze({ snapshot, update }),
-    }));
-    previousDigest = snapshot.digest;
-  }
-  return Object.freeze(blocks);
+      data: Object.freeze({ snapshot, update, requests: Object.freeze(requests) }),
+    })));
 }
 
 function validSnapshot(value: SystemPromptSnapshot): boolean {
-  return !!value && value.schemaVersion === 1 && typeof value.runId === "string" && typeof value.userTurnId === "string" && typeof value.stepId === "string"
+  return !!value && value.schemaVersion === 1 && typeof value.sessionId === "string" && typeof value.runId === "string" && typeof value.userTurnId === "string" && typeof value.stepId === "string"
     && typeof value.capturedAt === "string" && /^[a-f0-9]{64}$/u.test(value.digest)
+    && (value.dynamicTailScope === undefined || value.dynamicTailScope === "all-instructions")
     && !!value.model && typeof value.model.provider === "string" && typeof value.model.model === "string"
     && Array.isArray(value.sections) && value.sections.every(section =>
       (section.channel === "instructions" || section.channel === "dynamic_tail")
       && (section.role === "system" || section.role === "developer")
-      && typeof section.content === "string");
+      && typeof section.content === "string")
+    && (value.runtimeState === undefined || !!value.runtimeState && /^[a-f0-9]{64}$/u.test(value.runtimeState.digest)
+      && Array.isArray(value.runtimeState.sections) && value.runtimeState.sections.every(section => section.channel === "dynamic_tail"
+        && (section.role === "system" || section.role === "developer") && typeof section.content === "string"));
 }

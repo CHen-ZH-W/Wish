@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
@@ -379,7 +380,7 @@ test("role preset crosses the CLI child boundary with Tool and Memory isolation"
     prompt: "Review the change", compaction: { keepRecentTokens: 900 }, memory: "none" }]))[0];
   try {
     const launcher = new WishCliSubagentLauncherBackend({ dataDirectory: directory,
-      prepareResources: async () => [{ type: "wish.memory.snapshot", schemaVersion: 1, payload: {} }],
+      prepareResources: async () => [{ type: "wish.memory.library", schemaVersion: 1, payload: {} }],
     });
     const identity = { id: "child-1", childSessionId: "session-1", childRunId: "run-1" };
     const launch = await launcher.resolve({ parentAgentId: "wish", parentSessionId: "parent-session",
@@ -493,13 +494,15 @@ test("role composition narrows authority and excludes unsupported Plan controls 
 
 test("the shipped Loader profile creates distinct parent and CLI child Agent scopes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-scope-profile-"));
-  const configuration = new URL("../config/cordis.yml", import.meta.url);
+  const configurationSource = await readFile(new URL("../config/cordis.yml", import.meta.url));
   const preset = { role: "reviewer", availableTools: ["read"], prompt: "Inspect only",
     compaction: { keepRecentTokens: 321 }, memory: "none" };
   const graphs = [];
   try {
     await mkdir(join(directory, "workspace"));
     for (const child of [false, true]) {
+      const configuration = pathToFileURL(join(directory, child ? "child.yml" : "parent.yml"));
+      await writeFile(configuration, configurationSource);
       const root = new Context();
       graphs.push(root);
       const launch = createLaunch({ surface: "cli", argv: child ? ["child"] : ["--version"],
@@ -589,17 +592,17 @@ test("child Tool composition requires both a resource feature and its capabiliti
     availableTools: ["read", "memory_search", "memory_write"],
     registeredTools: ["read", "memory_search", "memory_write"],
     toolContracts: new Map([
-      ["memory_search", { requires: ["memory.snapshot"], requiredCapabilities: ["runtime.read"] }],
-      ["memory_write", { requires: ["memory.snapshot"], requiredCapabilities: ["runtime.read", "runtime.control"] }],
+      ["memory_search", { requires: ["memory.read"], requiredCapabilities: ["runtime.read"] }],
+      ["memory_write", { requires: ["memory.read"], requiredCapabilities: ["runtime.read", "runtime.control"] }],
     ]),
     runtimeFeatures: [],
     allowedCapabilities: ["runtime.read", "runtime.control"],
   };
   assert.deepEqual(composeAgentScope(input).availableTools, ["read"]);
-  assert.throws(() => composeAgentScope({ ...input, requestedTools: ["memory_search"] }), /memory.snapshot/u);
-  assert.deepEqual(composeAgentScope({ ...input, runtimeFeatures: ["memory.snapshot"],
+  assert.throws(() => composeAgentScope({ ...input, requestedTools: ["memory_search"] }), /memory.read/u);
+  assert.deepEqual(composeAgentScope({ ...input, runtimeFeatures: ["memory.read"],
     allowedCapabilities: ["runtime.read"] }).availableTools, ["read", "memory_search"]);
-  assert.throws(() => composeAgentScope({ ...input, runtimeFeatures: ["memory.snapshot"],
+  assert.throws(() => composeAgentScope({ ...input, runtimeFeatures: ["memory.read"],
     allowedCapabilities: ["runtime.read"], requestedTools: ["memory_write"] }), /runtime.control/u);
   const executable = { availableTools: ["read", "bash", "write"], registeredTools: ["read", "bash", "write"],
     toolContracts: new Map([["bash", { requires: [], requiredCapabilities: ["process.exec"] }],

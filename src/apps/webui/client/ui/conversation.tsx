@@ -1,5 +1,5 @@
 import { IsolatedView } from "./isolated-view.js";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import type { SessionClientModel } from "../model/session.js";
 import type { SettingsClientModel } from "../../../../settings/consumers/webui/model.js";
 import { projectConversationTurns, projectLedger, type ConversationTurn, type LedgerBlock } from "../projection/ledger.js";
@@ -23,6 +23,7 @@ import {
 } from "./session-dock.js";
 import { defaultRightSidebarWidth, rightSidebarMaxWidth, RIGHT_SIDEBAR_MIN_WIDTH, SidebarResizeHandle } from "./sidebar-resize.js";
 import { MarkdownContent } from "./markdown.js";
+import { ConversationProcess } from "./conversation-process.js";
 
 const LEDGER_PAGE_TURNS = 24;
 
@@ -45,8 +46,13 @@ export function ConversationViewTabs({ slots, current, archived }: { slots: UiSl
   const t = useText();
   return <nav className="conversation-view-tabs" aria-label={t("会话内容", "Conversation content")}>
     <button type="button" aria-current={current === "conversation" ? "page" : undefined} onClick={() => slots.openPanel(archived ? "archives" : "conversation")}>{t("主会话", "Conversation")}</button>
-    <button type="button" aria-current={current === "tool-calls" ? "page" : undefined} onClick={() => slots.openPanel("tool-calls")}>{t("工具调用", "Tool calls")}</button>
+    <button type="button" aria-current={current === "tool-calls" ? "page" : undefined} onClick={() => slots.openPanel(archived ? "archive-tool-calls" : "tool-calls")}>{t("工具调用", "Tool calls")}</button>
   </nav>;
+}
+
+function LatestContribution({ item, sessionId }: { item: UiSlotSnapshot["ledgerContributions"][number]; sessionId: string }) {
+  const block = useSnapshot(item.source).at(-1);
+  return block ? <IsolatedView key={`${sessionId}/${item.id}/${block.id}`} View={item.View} block={block} /> : null;
 }
 
 export function Conversation({ model, settings, slots, drafts }: { model: SessionClientModel; settings: SettingsClientModel; slots: UiSlots; drafts: ComposerDrafts }) {
@@ -54,7 +60,9 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
   const state = useSnapshot(model), stream = useSnapshot(model.run), preferences = useSnapshot(settings);
   const contributions = useSnapshot(slots);
   const [error, setError] = useState<string | null>(null), [follow, setFollow] = useState(true);
+  const pauseFollow = useCallback(() => setFollow(false), []);
   const scroll = useRef<HTMLDivElement>(null);
+  const followedSession = useRef(state.selectedId);
   const prependScrollHeight = useRef<number | null>(null);
   const [ledgerWindow, setLedgerWindow] = useState({ sessionId: state.selectedId, limit: LEDGER_PAGE_TURNS });
   const [requestedTurnId, setRequestedTurnId] = useState<string | null>(null);
@@ -68,17 +76,16 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
   const sidebarWide = useRef(wideSessionSidebar());
   const openingSidebar = useRef(false), sidebarWasOpen = useRef(sidebarOpen);
   const historyReady = state.history?.sessionId === state.selectedId;
-  const topContributions = historyReady ? contributions.ledgerContributions.flatMap(item => {
-    const block = item.source.getSnapshot().at(-1);
-    return block === undefined ? [] : [{ item, block }];
-  }) : [];
+  const topContributions = historyReady ? contributions.ledgerContributions.filter(item => item.placement !== "message") : [];
+  const messageContributions = useMemo(() => historyReady ? contributions.ledgerContributions.filter(item => item.placement === "message") : [], [contributions, historyReady]);
+  const messageBlocks = useMemo(() => messageContributions.flatMap(item => [...item.source.getSnapshot()]), [messageContributions]);
   const sidebarKinds = useMemo(() => contributions.sessionSidebarItems.map(item => item.kind ?? item.id), [contributions.sessionSidebarItems]);
   const sidebarLayout = state.selectedId ? reconcileSessionDockLayout(dockLayouts[state.selectedId], sidebarKinds) : createSessionDockLayout(sidebarKinds);
   const sidebarFullscreen = sidebarOpen && sidebarLayout.fullscreen;
   const sidebarMaxWidth = rightSidebarMaxWidth(conversationWidth || 1240);
   const sidebarWidth = sidebarMaxWidth > 0 ? Math.min(sidebarPreference, sidebarMaxWidth) : 0;
-  const canonicalLedger = useMemo(() => projectLedger(state.history, [], language), [state.history, language]);
-  const combinedLedger = useMemo(() => projectLedger(state.history, stream.events, language), [state.history, stream.events, language]);
+  const canonicalLedger = useMemo(() => projectLedger(state.history, [], language, messageBlocks), [state.history, language, messageBlocks]);
+  const combinedLedger = useMemo(() => projectLedger(state.history, stream.events, language, messageBlocks), [state.history, stream.events, language, messageBlocks]);
   const canonicalTurns = useMemo(() => projectConversationTurns(canonicalLedger), [canonicalLedger]);
   const active = state.runs.find(item => item.status === "running");
   const cleanupError = [...state.runs].reverse().find(item => item.cleanupError)?.cleanupError;
@@ -97,8 +104,14 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
   const hiddenTurnCount = turns.length - visibleTurns.length;
   const session = state.sessions.find(item => item.sessionId === state.selectedId);
   const archived = session?.status === "archived";
+  const sidebarId = archived ? "archive-session-sidebar" : "session-sidebar";
   const mode = preferences.sections.find(item => item.namespace === "webui-composer")?.value["busy-delivery"] === "steer" ? "steer" : "queue";
-  useEffect(() => { setFollow(true); }, [state.selectedId]);
+  useLayoutEffect(() => {
+    if (followedSession.current === state.selectedId) return;
+    followedSession.current = state.selectedId;
+    setFollow(true);
+    setRequestedTurnId(null);
+  }, [state.selectedId]);
   useEffect(() => slots.onOpenLedgerTurn(request => {
     if (request.sessionId !== state.selectedId) return;
     setFollow(false);
@@ -145,6 +158,7 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
       if (!wide && sidebarWide.current) setSidebarOpen(false);
       sidebarWide.current = wide;
     };
+    adapt();
     media.addEventListener("change", adapt);
     return () => media.removeEventListener("change", adapt);
   }, []);
@@ -172,6 +186,16 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
       return next === current[sessionId] ? current : { ...current, [sessionId]: next };
     });
   }
+  useEffect(() => slots.onOpenSessionResource(request => {
+    if (request.sessionId !== state.selectedId) return;
+    const definition = contributions.sessionSidebarItems.find(item => item.accepts?.(request.resource));
+    if (!definition) return;
+    openSidebar();
+    updateSidebarLayout(current => openSessionDockTab(current, current.activePaneId, {
+      kind: definition.kind ?? definition.id, contentId: request.resource.contentId, title: request.resource.title,
+      multiple: false, ...(request.resource.params ? { params: request.resource.params } : {}),
+    }));
+  }), [slots, state.selectedId, contributions.sessionSidebarItems, sidebarKinds]);
   if (!state.selectedId && state.loading) return null;
   if (!state.selectedId && state.filter === "archived") return <section className="empty-state"><Icon name="archive" /><h1>{t("还没有归档会话", "No archived sessions")}</h1><p>{t("归档后的会话会按工作区显示在侧栏中，聊天记录可以随时查看。", "Archived sessions appear by workspace in the sidebar. Their conversation history remains available.")}</p><ErrorNotice text={state.error ? readableError(state.error) : null} /></section>;
   if (!state.selectedId) return <section className="empty-state"><Icon name="trace" /><h1>{t("还没有选择会话", "No session selected")}</h1><p>{t("新会话需要先绑定工作区；确认前不会在 Host 中留下空会话。", "Choose a workspace before starting a session. No empty Host session is created until you send a message.")}</p><ErrorNotice text={error} /><button className="primary" disabled={!state.available || state.working} onClick={() => slots.openPanel("new-session")}>{t("新建会话", "New session")}</button></section>;
@@ -180,10 +204,10 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
       <header className="ledger-header">
         <div className="ledger-header-title"><h1>{session?.title || t("会话", "Conversation")}</h1><p className="muted workspace-path" title={session?.scope}>{session?.scope}</p></div>
         <ConversationViewTabs slots={slots} current="conversation" archived={archived} />
-        <div className="ledger-header-actions">{archived || active ? <span className={`run-state ${active ? "running" : ""}`}>{archived ? t("已归档", "Archived") : t("运行中", "Running")}</span> : null}{!sidebarOpen ? <button ref={sidebarToggle} className="icon-button session-sidebar-toggle" aria-label={t("打开会话侧栏", "Open session sidebar")} title={t("打开会话侧栏", "Open session sidebar")} aria-expanded={false} aria-controls="session-sidebar" onClick={openSidebar}><Icon name="panel-right-open" /></button> : null}</div>
+        <div className="ledger-header-actions">{archived || active ? <span className={`run-state ${active ? "running" : ""}`}>{archived ? t("已归档", "Archived") : t("运行中", "Running")}</span> : null}{!sidebarOpen ? <button ref={sidebarToggle} className="icon-button session-sidebar-toggle" aria-label={t("打开会话侧栏", "Open session sidebar")} title={t("打开会话侧栏", "Open session sidebar")} aria-expanded={false} aria-controls={sidebarId} onClick={openSidebar}><Icon name="panel-right-open" /></button> : null}</div>
       </header>
-      <div className="ledger-scroll" ref={scroll} onScroll={() => { const node = scroll.current; if (node) setFollow(node.scrollHeight - node.scrollTop - node.clientHeight < 96); }}>
-        {topContributions.length ? <section className="conversation-top-context" aria-label={t("会话上下文", "Conversation context")}>{topContributions.map(({ item, block }) => <IsolatedView key={item.id} View={item.View} block={block} />)}</section> : null}
+      <div className="ledger-scroll" ref={scroll} onScroll={() => { const node = scroll.current; if (node?.clientHeight) setFollow(node.scrollHeight - node.scrollTop - node.clientHeight < 96); }}>
+        {topContributions.length ? <section className="conversation-top-context" onFocusCapture={pauseFollow} onPointerDownCapture={pauseFollow} aria-label={t("会话上下文", "Conversation context")}>{topContributions.map(item => <LatestContribution key={item.id} item={item} sessionId={state.selectedId!} />)}</section> : null}
         <div className="conversation-ledger-layout">
           {historyReady && contributions.conversationCards.length ? <aside className="conversation-card-stack" aria-label={t("会话任务", "Session tasks")}>{contributions.conversationCards.map(item => <IsolatedView key={item.id} View={item.View} sessionId={state.selectedId!} />)}</aside> : null}
           <div className="conversation-ledger-feed">
@@ -196,7 +220,7 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
               setFollow(false);
               setLedgerWindow({ sessionId: state.selectedId, limit: turnLimit + LEDGER_PAGE_TURNS });
             }}>{t(`加载更早轮次（还剩 ${hiddenTurnCount} 轮）`, `Load earlier turns (${hiddenTurnCount} remaining)`)}</button></div> : null}
-            {!historyReady && state.loading ? <div className="ledger-welcome" role="status"><h2>{t("正在加载会话…", "Loading conversation…")}</h2><p>{t("完整会话加载后会显示在这里。", "The full conversation will appear here when it is ready.")}</p></div> : !turns.length ? <div className="ledger-welcome"><h2>{t("这个会话还没有消息", "No messages in this conversation yet")}</h2><p>{t("描述你要完成的工作，Wish 会在这里显示过程和最终回答。", "Describe what you want done. Wish will show its work and final answer here.")}</p></div> : visibleTurns.map(turn => <ConversationTurnView key={turn.id} turn={turn} number={allTurns.findIndex(item => item.id === turn.id) + 1} connected={stream.connected} />)}
+            {!historyReady && state.loading ? <div className="ledger-welcome" role="status"><h2>{t("正在加载会话…", "Loading conversation…")}</h2><p>{t("完整会话加载后会显示在这里。", "The full conversation will appear here when it is ready.")}</p></div> : !turns.length ? <div className="ledger-welcome"><h2>{t("这个会话还没有消息", "No messages in this conversation yet")}</h2><p>{t("描述你要完成的工作，Wish 会在这里显示过程和最终回答。", "Describe what you want done. Wish will show its work and final answer here.")}</p></div> : visibleTurns.map(turn => <ConversationTurnView key={`${state.selectedId}/${turn.id}`} turn={turn} number={allTurns.findIndex(item => item.id === turn.id) + 1} connected={stream.connected} contributions={messageContributions} pauseFollow={pauseFollow} />)}
           </div>
         </div>
       </div>
@@ -207,11 +231,11 @@ export function Conversation({ model, settings, slots, drafts }: { model: Sessio
         {contributions.sessionStatusItems.length ? <div className="session-status-dock" aria-label={t("会话统计", "Session statistics")}>{contributions.sessionStatusItems.map(item => <IsolatedView key={item.id} View={item.View} sessionId={state.selectedId!} />)}</div> : null}
       </div>
     </div>
-    {sidebarOpen ? <><button className="session-sidebar-backdrop" aria-label={t("关闭会话侧栏遮罩", "Close session sidebar overlay")} tabIndex={-1} onClick={closeSidebar} />{sidebarMaxWidth >= RIGHT_SIDEBAR_MIN_WIDTH ? <SidebarResizeHandle side="right" width={sidebarWidth} min={RIGHT_SIDEBAR_MIN_WIDTH} max={sidebarMaxWidth} label={t("调整右侧栏宽度", "Resize right sidebar")} controls="session-sidebar" onChange={setSidebarPreference} /> : null}</> : null}
-    <SessionSidebar sidebarRef={sidebar} items={contributions.sessionSidebarItems} sessionId={state.selectedId} layout={sidebarLayout} visible={sidebarOpen} updateLayout={updateSidebarLayout} close={closeSidebar} />
+    {sidebarOpen ? <><button className="session-sidebar-backdrop" aria-label={t("关闭会话侧栏遮罩", "Close session sidebar overlay")} tabIndex={-1} onClick={closeSidebar} />{sidebarMaxWidth >= RIGHT_SIDEBAR_MIN_WIDTH ? <SidebarResizeHandle side="right" width={sidebarWidth} min={RIGHT_SIDEBAR_MIN_WIDTH} max={sidebarMaxWidth} label={t("调整右侧栏宽度", "Resize right sidebar")} controls={sidebarId} onChange={setSidebarPreference} /> : null}</> : null}
+    <SessionSidebar id={sidebarId} sidebarRef={sidebar} items={contributions.sessionSidebarItems} sessionId={state.selectedId} layout={sidebarLayout} visible={sidebarOpen} updateLayout={updateSidebarLayout} close={closeSidebar} />
   </section>;
 }
-function SessionSidebar({ sidebarRef, items, sessionId, layout, visible, updateLayout, close }: { sidebarRef: RefObject<HTMLElement | null>; items: UiSlotSnapshot["sessionSidebarItems"]; sessionId: string; layout: SessionDockLayout; visible: boolean; updateLayout(update: (layout: SessionDockLayout) => SessionDockLayout): void; close(): void }) {
+function SessionSidebar({ id, sidebarRef, items, sessionId, layout, visible, updateLayout, close }: { id: string; sidebarRef: RefObject<HTMLElement | null>; items: UiSlotSnapshot["sessionSidebarItems"]; sessionId: string; layout: SessionDockLayout; visible: boolean; updateLayout(update: (layout: SessionDockLayout) => SessionDockLayout): void; close(): void }) {
   const language = useLanguage(), t = useText();
   const [hasSplitRoom, setHasSplitRoom] = useState(false);
   const pendingPaneFocus = useRef<string | null>(null);
@@ -232,7 +256,8 @@ function SessionSidebar({ sidebarRef, items, sessionId, layout, visible, updateL
     pendingPaneFocus.current = null;
     sidebarRef.current?.querySelector<HTMLButtonElement>(`[data-session-dock-pane="${paneId}"] [data-session-sidebar-focus]`)?.focus();
   }, [layout, sidebarRef]);
-  return <aside ref={sidebarRef} id="session-sidebar" className="session-sidebar" aria-label={t("会话侧栏", "Session sidebar")} data-fullscreen={layout.fullscreen || undefined} hidden={!visible} onKeyDown={event => {
+  const dockPrefix = id === "session-sidebar" ? "session-dock" : "archive-session-dock";
+  return <aside ref={sidebarRef} id={id} className="session-sidebar" aria-label={t("会话侧栏", "Session sidebar")} data-fullscreen={layout.fullscreen || undefined} hidden={!visible} onKeyDown={event => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
     event.preventDefault();
     if (layout.fullscreen) updateLayout(toggleSessionDockFullscreen); else close();
@@ -241,7 +266,7 @@ function SessionSidebar({ sidebarRef, items, sessionId, layout, visible, updateL
       {layout.panes.map((pane, paneIndex) => {
         const tab = pane.activeTabId === null ? undefined : layout.tabs[pane.activeTabId];
         const item = tab === undefined ? undefined : items.find(candidate => (candidate.kind ?? candidate.id) === tab.kind);
-        const panelId = `session-dock-panel-${pane.id}`;
+        const panelId = `${dockPrefix}-panel-${pane.id}`;
         const openTab = (kind: string, options: { readonly title?: string; readonly params?: Readonly<Record<string, unknown>>; readonly replace?: boolean } = {}, append = false): void => {
           const definition = items.find(candidate => (candidate.kind ?? candidate.id) === kind);
           if (!definition) return;
@@ -264,15 +289,15 @@ function SessionSidebar({ sidebarRef, items, sessionId, layout, visible, updateL
         return <section key={pane.id} data-session-dock-pane={pane.id} className={`session-dock-pane${layout.activePaneId === pane.id ? " active" : ""}`} aria-label={t(`会话面板 ${paneIndex + 1}`, `Session pane ${paneIndex + 1}`)} onPointerDown={() => updateLayout(current => focusSessionDockPane(current, pane.id))}>
           <header className="session-dock-strip">
             <nav className="session-dock-tabs" role="tablist" aria-label={t(`会话面板 ${paneIndex + 1} 标签页`, `Session pane ${paneIndex + 1} tabs`)}>
-              {pane.tabIds.map((tabId, tabIndex) => { const candidate = layout.tabs[tabId]; if (!candidate) return null; const selected = candidate.id === pane.activeTabId; const definition = items.find(value => (value.kind ?? value.id) === candidate.kind); return <span key={candidate.id} className="session-dock-tab" data-selected={selected || undefined}><button id={`session-dock-tab-${pane.id}-${tabIndex}`} role="tab" aria-selected={selected} aria-controls={selected ? `${panelId}-${candidate.id}` : undefined} tabIndex={selected ? 0 : -1} data-session-sidebar-focus={selected || undefined} onKeyDown={moveDockTabFocus} onClick={() => updateLayout(current => selectSessionDockTab(current, pane.id, candidate.id))}>{definition?.icon ? <Icon name={definition.icon} /> : null}<span>{candidate.title}</span></button><button className="session-dock-tab-close" aria-label={t(`关闭 ${candidate.title}`, `Close ${candidate.title}`)} title={t("关闭标签页", "Close tab")} onClick={event => { event.stopPropagation(); definition?.onClose?.(sessionId, runtimeTab(candidate, selected && visible)); updateLayout(current => closeSessionDockTab(current, candidate.id)); }}><Icon name="close" /></button></span>; })}
-              {!tab ? <button id={`session-dock-guide-tab-${pane.id}`} className="session-dock-guide-tab" role="tab" aria-selected={true} aria-controls={`${panelId}-guide`} tabIndex={0} data-session-sidebar-focus onKeyDown={moveDockTabFocus}><span>{t("开始", "Start")}</span></button> : null}
+              {pane.tabIds.map((tabId, tabIndex) => { const candidate = layout.tabs[tabId]; if (!candidate) return null; const selected = candidate.id === pane.activeTabId; const definition = items.find(value => (value.kind ?? value.id) === candidate.kind); return <span key={candidate.id} className="session-dock-tab" data-selected={selected || undefined}><button id={`${dockPrefix}-tab-${pane.id}-${tabIndex}`} role="tab" aria-selected={selected} aria-controls={selected ? `${panelId}-${candidate.id}` : undefined} tabIndex={selected ? 0 : -1} data-session-sidebar-focus={selected || undefined} onKeyDown={moveDockTabFocus} onClick={() => updateLayout(current => selectSessionDockTab(current, pane.id, candidate.id))}>{definition?.icon ? <Icon name={definition.icon} /> : null}<span>{candidate.title}</span></button><button className="session-dock-tab-close" aria-label={t(`关闭 ${candidate.title}`, `Close ${candidate.title}`)} title={t("关闭标签页", "Close tab")} onClick={event => { event.stopPropagation(); definition?.onClose?.(sessionId, runtimeTab(candidate, selected && visible)); updateLayout(current => closeSessionDockTab(current, candidate.id)); }}><Icon name="close" /></button></span>; })}
+              {!tab ? <button id={`${dockPrefix}-guide-tab-${pane.id}`} className="session-dock-guide-tab" role="tab" aria-selected={true} aria-controls={`${panelId}-guide`} tabIndex={0} data-session-sidebar-focus onKeyDown={moveDockTabFocus}><span>{t("开始", "Start")}</span></button> : null}
             </nav>
             <div className="session-dock-strip-fill" />
             <button className="session-dock-icon" aria-label={t("新标签页", "New tab")} title={tabLimitReached ? t("窗口已达到上限", "Window limit reached") : t("添加工作窗口", "Add work window")} disabled={tabLimitReached} onClick={event => { event.stopPropagation(); pendingPaneFocus.current = pane.id; updateLayout(current => openSessionDockGuide(current, pane.id)); }}><Icon name="plus" /></button>
             {layout.panes.length < 2 ? <button className="session-dock-icon" aria-label={t("分屏", "Split pane")} title={!layout.fullscreen ? t("请先全屏再分屏", "Enter fullscreen before splitting") : hasSplitRoom ? t("向右分屏", "Split to the right") : t("空间不足，无法分屏", "Not enough room to split")} disabled={!layout.fullscreen || !hasSplitRoom} onClick={event => { event.stopPropagation(); updateLayout(current => { const next = splitSessionDockPane(current, pane.id); if (next !== current) pendingPaneFocus.current = next.activePaneId; return next; }); }}><Icon name="split" /></button> : <button className="session-dock-icon" aria-label={t("关闭此分屏", "Close this pane")} title={t("关闭此分屏", "Close this pane")} onClick={event => { event.stopPropagation(); const closingPane = layout.panes.find(value => value.id === pane.id); for (const tabId of closingPane?.tabIds ?? []) { const closingTab = layout.tabs[tabId]; const definition = closingTab && items.find(value => (value.kind ?? value.id) === closingTab.kind); if (closingTab) definition?.onClose?.(sessionId, runtimeTab(closingTab, false)); } updateLayout(current => closeSessionDockPane(current, pane.id)); }}><Icon name="close" /></button>}
             {paneIndex === layout.panes.length - 1 || (!layout.fullscreen && layout.activePaneId === pane.id) ? <div className="session-dock-chrome">
               <button className="session-dock-icon session-dock-fullscreen-toggle" aria-label={layout.fullscreen ? t("退出全屏", "Exit fullscreen") : t("全屏", "Fullscreen")} title={layout.fullscreen ? t("退出全屏", "Exit fullscreen") : t("全屏", "Fullscreen")} aria-pressed={layout.fullscreen} onClick={event => { event.stopPropagation(); updateLayout(toggleSessionDockFullscreen); }}><Icon name={layout.fullscreen ? "fullscreen-exit" : "fullscreen"} /></button>
-              <button className="session-dock-icon" aria-label={t("收起会话侧栏", "Close session sidebar")} title={t("收起会话侧栏", "Close session sidebar")} aria-expanded={true} aria-controls="session-sidebar" onClick={event => { event.stopPropagation(); close(); }}><Icon name="panel-right-close" /></button>
+              <button className="session-dock-icon" aria-label={t("收起会话侧栏", "Close session sidebar")} title={t("收起会话侧栏", "Close session sidebar")} aria-expanded={true} aria-controls={id} onClick={event => { event.stopPropagation(); close(); }}><Icon name="panel-right-close" /></button>
             </div> : null}
           </header>
           <div className="session-dock-content">{pane.tabIds.map((tabId, tabIndex) => {
@@ -286,8 +311,8 @@ function SessionSidebar({ sidebarRef, items, sessionId, layout, visible, updateL
               update: (params, title) => updateLayout(current => updateSessionDockTab(current, candidate.id, params, title)),
               close: () => { definition.onClose?.(sessionId, runtimeTab(candidate, selected && visible)); updateLayout(current => closeSessionDockTab(current, candidate.id)); },
             };
-            return <div key={candidate.id} id={`${panelId}-${candidate.id}`} className="session-dock-view" role="tabpanel" aria-labelledby={`session-dock-tab-${pane.id}-${tabIndex}`} hidden={!selected}><IsolatedView View={definition.View} sessionId={sessionId} tab={runtimeTab(candidate, selected && visible)} actions={actions} /></div>;
-          })}{tab && !item ? <div className="session-sidebar-empty"><p>{t("正在恢复这个标签页…", "Restoring this tab…")}</p><small>{t("对应界面模块尚未就绪；标签和资源不会被删除。", "Its UI module is not ready yet; the tab and resource are preserved.")}</small></div> : !tab ? <div id={`${panelId}-guide`} className="session-sidebar-guide" role="tabpanel" aria-labelledby={`session-dock-guide-tab-${pane.id}`}><nav className="session-sidebar-guide-options" aria-label={t("可添加的窗口", "Available windows")}>{guideItems.map(candidate => {
+            return <div key={candidate.id} id={`${panelId}-${candidate.id}`} className="session-dock-view" role="tabpanel" aria-labelledby={`${dockPrefix}-tab-${pane.id}-${tabIndex}`} hidden={!selected}><IsolatedView View={definition.View} sessionId={sessionId} tab={runtimeTab(candidate, selected && visible)} actions={actions} /></div>;
+          })}{tab && !item ? <div className="session-sidebar-empty"><p>{t("正在恢复这个标签页…", "Restoring this tab…")}</p><small>{t("对应界面模块尚未就绪；标签和资源不会被删除。", "Its UI module is not ready yet; the tab and resource are preserved.")}</small></div> : !tab ? <div id={`${panelId}-guide`} className="session-sidebar-guide" role="tabpanel" aria-labelledby={`${dockPrefix}-guide-tab-${pane.id}`}><nav className="session-sidebar-guide-options" aria-label={t("可添加的窗口", "Available windows")}>{guideItems.map(candidate => {
             const label = language === "en-US" ? candidate.labelEn ?? candidate.label : candidate.label;
             const description = guideItems.length <= 4 ? language === "en-US" ? candidate.descriptionEn ?? candidate.description : candidate.description : undefined;
             if (candidate.Guide) return <IsolatedView key={candidate.id} View={candidate.Guide} sessionId={sessionId} open={(options?: { readonly title?: string; readonly params?: Readonly<Record<string, unknown>>; readonly replace?: boolean }) => { pendingPaneFocus.current = pane.id; openTab(candidate.kind ?? candidate.id, { ...options, replace: false }, true); }} />;
@@ -315,60 +340,23 @@ function moveDockTabFocus(event: ReactKeyboardEvent<HTMLButtonElement>): void {
   event.preventDefault(); target.focus();
 }
 function wideSessionSidebar(): boolean { return typeof window !== "undefined" && window.matchMedia("(min-width: 1181px)").matches; }
-const ConversationTurnView = memo(function ConversationTurnView({ turn, number, connected }: { turn: ConversationTurn; number: number; connected: boolean }) {
+const ConversationTurnView = memo(function ConversationTurnView({ turn, number, connected, contributions, pauseFollow }: { turn: ConversationTurn; number: number; connected: boolean; contributions: UiSlotSnapshot["ledgerContributions"]; pauseFollow: () => void }) {
   const language = useLanguage();
   return <section className={`conversation-turn${turn.live ? " live" : ""}`} id={`turn-${encodeURIComponent(turn.id)}`}>
     <header className="turn-heading"><span>{language === "en-US" ? `Turn ${number}` : `第 ${number} 轮`}</span></header>
     {turn.requests.map(block => <article className="conversation-request" key={block.id}><div className="message-text">{block.text}</div></article>)}
-    {turn.live ? <LiveRunView blocks={turn.process} connected={connected} /> : <>
-      {turn.process.length ? <ProcessDisclosure blocks={turn.process} toolCount={turn.toolCount} failed={turn.failed} stopped={turn.stopped} /> : null}
-      {turn.answer ? <FinalAnswer block={turn.answer} /> : null}
-    </>}
+    <ConversationProcess turn={turn} connected={connected} pauseFollow={pauseFollow} />
+    {turn.contributions?.map(block => {
+      const item = contributions.find(entry => entry.id === block.viewId);
+      return item ? <div key={block.id} onFocusCapture={pauseFollow} onPointerDownCapture={pauseFollow}><IsolatedView View={item.View} block={block} /></div> : null;
+    })}
+    {!turn.live && turn.answer ? <FinalAnswer block={turn.answer} /> : null}
   </section>;
 });
 const FinalAnswer = memo(function FinalAnswer({ block }: { block: LedgerBlock }) {
   const t = useText();
   return <article className="final-answer"><header><strong>Wish</strong><span>{t("最终回答", "Final answer")}</span></header><div className="message-text message-markdown"><MarkdownContent source={block.text} /></div></article>;
 });
-const LiveRunView = memo(function LiveRunView({ blocks, connected }: { blocks: readonly LedgerBlock[]; connected: boolean }) {
-  const t = useText(), replying = blocks.some(block => block.kind === "assistant" && block.text.trim().length > 0);
-  return <section className="live-run" aria-busy="true"><header><span className="live-run-indicator" aria-hidden="true" /><strong role="status" aria-live="polite">{connected ? replying ? t("Wish 正在回复", "Wish is responding") : t("Wish 正在工作", "Wish is working") : t("正在核对运行状态", "Checking run status")}</strong></header>
-    <div className="process-list">{blocks.length ? blocks.map(block => <ActivityRow key={block.id} block={block} live />) : <p className="live-run-empty">{t("正在分析你的请求…", "Analyzing your request…")}</p>}</div>
-  </section>;
-});
-const ProcessDisclosure = memo(function ProcessDisclosure({ blocks, toolCount, failed, stopped }: { blocks: readonly LedgerBlock[]; toolCount: number; failed: boolean; stopped: boolean }) {
-  const t = useText(), hasReasoning = blocks.some(block => !!block.reasoning);
-  const summary = toolCount > 0
-    ? t(`${toolCount} 个工具${hasReasoning ? " · 包含思考过程" : ""}`, `${toolCount} tool${toolCount === 1 ? "" : "s"}${hasReasoning ? " · reasoning included" : ""}`)
-    : hasReasoning ? t("包含思考过程", "Reasoning included") : t(`${blocks.length} 项活动`, `${blocks.length} activit${blocks.length === 1 ? "y" : "ies"}`);
-  return <details className={`process-disclosure${failed ? " failed" : stopped ? " stopped" : ""}`} open={failed || undefined}><summary><span className="process-state" aria-hidden="true" /><strong>{failed ? t("运行失败", "Run failed") : stopped ? t("运行已停止", "Run stopped") : t("查看过程", "View process")}</strong>{!stopped || blocks.length > 1 ? <small>{summary}</small> : null}</summary><div className="process-list">{blocks.map(block => <ActivityRow key={block.id} block={block} live={false} />)}</div></details>;
-});
-const ActivityRow = memo(function ActivityRow({ block, live }: { block: LedgerBlock; live: boolean }) {
-  const t = useText();
-  if (block.kind === "tool") {
-    const status = toolStatus(block.status, t);
-    return <article className={`process-activity tool-activity ${status.tone}`}><header><span className="activity-indicator" aria-hidden="true" /><strong>{block.title}</strong><span className="activity-status">{status.label}</span></header></article>;
-  }
-  if (block.kind === "system") return <article className={`process-activity ${block.status === "run.aborted" ? "process-stopped" : "process-error"}`}><header><span className="activity-indicator" aria-hidden="true" /><strong>{block.title}</strong></header>{block.text ? <p>{block.text}</p> : null}</article>;
-  return <article className="process-activity model-activity">
-    {block.reasoning ? <details className="reasoning" open={live || undefined}><summary>{live ? t("正在思考", "Thinking") : t("思考过程", "Thinking process")}</summary><pre>{block.reasoning}</pre></details> : null}
-    {block.text ? <div className={live ? "live-stream-text" : "message-text message-markdown"}>{live ? block.text : <MarkdownContent source={block.text} />}</div> : null}
-  </article>;
-});
-function toolStatus(status: string | undefined, t: ReturnType<typeof useText>): { label: string; tone: "pending" | "success" | "failed" | "neutral" } {
-  switch (status) {
-    case "tool.queued": return { label: t("排队中", "Queued"), tone: "pending" };
-    case "tool.prepared": return { label: t("准备中", "Preparing"), tone: "pending" };
-    case "tool.authorization_requested": return { label: t("等待批准", "Awaiting approval"), tone: "pending" };
-    case "tool.dispatched": return { label: t("执行中", "Running"), tone: "pending" };
-    case "tool.completed": return { label: t("已完成", "Completed"), tone: "success" };
-    case "tool.failed": return { label: t("失败", "Failed"), tone: "failed" };
-    case "tool.aborted": return { label: t("已停止", "Stopped"), tone: "failed" };
-    case "tool.authorization_denied": return { label: t("未获批准", "Denied"), tone: "failed" };
-    case "tool.recorded": return { label: t("已记录", "Recorded"), tone: "neutral" };
-    default: return { label: status ?? t("已记录", "Recorded"), tone: "neutral" };
-  }
-}
 function Composer({ sessionId, composerItems, model, draft, busy, available, working, defaultMode }: { sessionId: string; composerItems: UiSlotSnapshot["composerItems"]; model: SessionClientModel; draft: ComposerDraft; busy: boolean; available: boolean; working: boolean; defaultMode: "queue" | "steer" }) {
   const t = useText();
   const text = useSnapshot(draft), setText = draft.set;

@@ -9,6 +9,7 @@ import {
   SessionIdempotencyConflictError,
   SessionInvalidTranscriptError,
   SessionRevisionConflictError,
+  SessionTitleConflictError,
   type AppendSessionCheckpointInput,
   type AppendSessionMessagesInput,
   type ArchiveSessionInput,
@@ -28,6 +29,7 @@ import {
   type SessionMessageOrigin,
   type SessionMessageRecord,
   type SessionStatus,
+  type SessionTitleSource,
   type SessionToolResultArchiveReceipt,
   type UpdateSessionMetadataInput,
 } from "./types.js";
@@ -40,13 +42,16 @@ export interface SessionRecordAllocation {
 export function normalizeCreateSessionInput(
   input: CreateSessionInput,
 ): CreateSessionInput {
+  if (input.title === undefined && input.titleSource !== undefined) {
+    throw invalid("Session titleSource requires a title write", input.sessionId);
+  }
   return Object.freeze({
     sessionId: requireIdentifier(input.sessionId, "Session id"),
     agentId: requireIdentifier(input.agentId, "Session agentId"),
     scope: requireIdentifier(input.scope, "Session scope"),
     ...(input.title === undefined
       ? {}
-      : { title: requireTitle(input.title) }),
+      : { title: requireTitle(input.title), titleSource: requireTitleSource(input.titleSource === undefined ? "manual" : input.titleSource) }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
 }
@@ -76,11 +81,15 @@ export function normalizeListSessionsInput(
 export function normalizeUpdateSessionMetadataInput(
   input: UpdateSessionMetadataInput,
 ): UpdateSessionMetadataInput {
+  if (input.title === undefined && input.titleSource !== undefined) {
+    throw invalid("Session titleSource requires a title write", input.sessionId);
+  }
   return Object.freeze({
     sessionId: requireIdentifier(input.sessionId, "Session id"),
     ...(input.title === undefined
       ? {}
-      : { title: input.title === null ? null : requireTitle(input.title) }),
+      : { title: input.title === null ? null : requireTitle(input.title), titleSource: requireTitleSource(input.titleSource === undefined ? "manual" : input.titleSource) }),
+    ...(input.expectedTitleRevision === undefined ? {} : { expectedTitleRevision: requireTitleRevision(input.expectedTitleRevision) }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
 }
@@ -157,7 +166,8 @@ export function createSessionDescriptor(input: {
       input.historyRevision,
       "Session history revision",
     ),
-    ...(normalized.title === undefined ? {} : { title: normalized.title }),
+    titleRevision: normalized.title === undefined ? 0 : 1,
+    ...(normalized.title === undefined ? {} : { title: normalized.title, titleSource: normalized.titleSource ?? "manual" }),
   });
 }
 
@@ -181,7 +191,11 @@ export function snapshotSession(value: Session): Session {
       value.historyRevision,
       "Session history revision",
     ),
+    titleRevision: requireTitleRevision(value.titleRevision === undefined ? 0 : value.titleRevision),
     ...(value.title === undefined ? {} : { title: requireTitle(value.title) }),
+    ...(value.titleSource === undefined
+      ? value.title === undefined ? {} : { titleSource: "manual" as const }
+      : { titleSource: requireTitleSource(value.titleSource) }),
   });
 }
 
@@ -423,13 +437,24 @@ export function validateCheckpointAgainstHistory(
 export function updateSessionMetadataSnapshot(input: {
   readonly session: Session;
   readonly title: string | null | undefined;
+  readonly titleSource?: SessionTitleSource | undefined;
+  readonly expectedTitleRevision?: number | undefined;
   readonly updatedAt: string;
 }): Session {
   const session = snapshotSession(input.session);
+  const actualTitleRevision = session.titleRevision ?? 0;
+  if (input.expectedTitleRevision !== undefined && requireTitleRevision(input.expectedTitleRevision) !== actualTitleRevision) {
+    throw new SessionTitleConflictError(session.sessionId, input.expectedTitleRevision, actualTitleRevision);
+  }
+  if (input.title === undefined && input.titleSource !== undefined) {
+    throw invalid("Session titleSource requires a title write", session.sessionId);
+  }
   if (input.title === undefined) return session;
   return Object.freeze({
     ...session,
     updatedAt: requireTimestamp(input.updatedAt, "Session updatedAt"),
+    titleRevision: requireTitleRevision(actualTitleRevision + 1),
+    titleSource: requireTitleSource(input.titleSource === undefined ? "manual" : input.titleSource),
     ...(input.title === null ? { title: undefined } : { title: requireTitle(input.title) }),
   }) as Session;
 }
@@ -1079,6 +1104,20 @@ function requireIdentifier(value: string, label: string): string {
 function requireTitle(value: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new SessionInvalidTranscriptError("Session title must be non-empty");
+  }
+  return value;
+}
+
+function requireTitleSource(value: SessionTitleSource): SessionTitleSource {
+  if (value !== "fallback" && value !== "model" && value !== "manual") {
+    throw new SessionInvalidTranscriptError("Session titleSource must be fallback, model or manual");
+  }
+  return value;
+}
+
+function requireTitleRevision(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new SessionInvalidTranscriptError("Session titleRevision must be a non-negative safe integer");
   }
   return value;
 }

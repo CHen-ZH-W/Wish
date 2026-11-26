@@ -274,7 +274,12 @@ test("bootstrap exposes inspection while a real Skills Provider is stopped and r
     await mkdir(join(skillsRoot, "inspect"), { recursive: true });
     await writeFile(join(skillsRoot, "inspect", "SKILL.md"), "---\nname: inspect\ndescription: Inspect first\n---\nRead the source.\n");
     await writeFile(join(directory, "surface.mjs"), "export function apply() {}\n");
-    await writeFile(join(directory, "cordis.yml"), `- id: skills-local
+    await writeFile(join(directory, "cordis.yml"), `- id: storage
+  name: cordis:storage
+- id: storage-file
+  name: cordis:storage-file
+  config: { rootDirectory: ${JSON.stringify(join(directory, "storage"))} }
+- id: skills-local
   name: cordis:skills-local
   config: { userRoot: ${JSON.stringify(skillsRoot)} }
 - id: tools

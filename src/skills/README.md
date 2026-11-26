@@ -5,12 +5,12 @@ AgentLoop、Session、Plan 或任务调度状态。Tool 只是可选 Consumer。
 
 ## 来源与包格式
 
-`LocalSkills` 接受 Host 提供的绝对 `userRoot` 和 Workspace 规范化 `cwd`。
-Cordis Local Provider 依赖 launch，默认用户目录为 Host homeDirectory 下的
-`~/.wish/skills`；纯核心没有隐式用户目录。
-项目唯一来源是 `<cwd>/.agents/skills`，不搜索祖先目录或 `.wish/skills`。
-先枚举用户源，再枚举项目源；每个源按目录名排序。同名时先成功加载的包胜出，
-其余记录在 `catalog.issues`。无效包不会静默覆盖有效包。
+`LocalSkills` 接受 Host 提供的绝对 `userRoot`。Cordis Local Provider 依赖 launch 和
+Storage Backend，默认 Wish 目录为 Host homeDirectory 下的 `~/.wish/skills`；纯核心
+没有隐式目录。Skills 是 Wish 级能力，不扫描工作区的 `.agents/skills`、祖先目录或
+`.wish/skills`，切换会话或工作目录不改变库。`cwd` 仅保留为既有 Host 调用契约。
+先枚举 Wish 目录，再枚举 Host 注册的来源；每个本地源按目录名排序。
+不同来源的同名包分别列出，读取和启停均以 packageId 区分，不静默覆盖或隐藏。无效包返回 `catalog.issues`。
 
 每个一级包目录必须包含 `SKILL.md`，YAML frontmatter 要求：
 
@@ -35,7 +35,7 @@ Complete instructions follow here.
 
 Host 通过 `list({ cwd })` 查询，通过 `read({ cwd, name, expectedDigest })`
 读取完整有界正文。模型不能指定 cwd、用户目录或 invocation 类型。
-资源仅允许 `SKILL.md`、`references/**`、`scripts/**`、`assets/**` 内的 UTF-8
+资源仅允许 `SKILL.md`、`references/**`、`scripts/**`、`assets/**`、`templates/**`、`examples/**` 内的 UTF-8
 文本；绝对路径、空段、`.`、`..`、反斜杠、NUL、符号链接和硬链接文件均被拒绝。
 加载脚本文件只返回文本。执行仍须现有 Shell／Sandbox 授权，长任务仍由 tmux 承载。
 
@@ -44,7 +44,7 @@ Host 通过 `list({ cwd })` 查询，通过 `read({ cwd, name, expectedDigest })
 大小和修改时间。此约束不防御拥有宿主权限的进程修改进程自身或内核。
 
 `expectedPackageId` 固定来源和包位置，模型入口必须提供它；相同 manifest 内容
-也不能掩盖用户／项目来源切换。Host 可选择携带它来拒绝来源变化。
+也不能掩盖 Wish 目录／注册来源切换。Host 可选择携带它来拒绝来源变化。
 `expectedDigest` 固定 SKILL.md 版本，不声称固定整棵资源树。资源独立返回
 `digest`。分页使用 Unicode code-point offset；后续页必须携带该资源的
 `expectedResourceDigest`，更改即失败。`nextOffset` 表示仍有后续内容；
@@ -54,6 +54,29 @@ Host 通过 `list({ cwd })` 查询，通过 `read({ cwd, name, expectedDigest })
 并返回准确 nextOffset；默认 Context 长结果裁剪不会把这一页再次截断。若 Host
 配置更低的裁剪阈值，仍须相应调整该入口或通过归档读取，不应假设内容完整。
 删除、禁用和 manifest 变化会在每次读取重新检查，不从旧缓存恢复已撤销包。
+
+## 显式完整快照与附加来源
+
+`LocalSkills.snapshot({ cwd, signal })` 是显式只读操作，返回 `SkillPackageSnapshot[]`。
+每个包保存原来源和 packageId、SKILL.md 以及 `references/`、`scripts/`、`assets/`
+下全部允许的 UTF-8 文本字节、逐资源大小／SHA-256 和整包 digest。它不会执行脚本或写入
+用户目录。每包最多 256 个文件、1024 个目录项、4 MiB；一次完整快照最多 1000 个包、
+16 MiB 内容，逐文件仍遵循 Provider 配置。根目录其他文件不属于允许资源，不会自动打包。
+资源捕获两次并比较目录与内容，变化、诊断、链接、硬链接、无效 UTF-8 或越界会失败。
+UTF-8 BOM 作为正文的一部分保留，摘要覆盖实际字节。完整快照不会被默认 Profile capture
+或普通 Skill 读取隐式启用。
+
+`createSkillPackageSnapshot(skill, files)` 校验显式包数据；`validateSkillPackageSnapshot`
+复验摘要和元数据。`FrozenSkills(packages)` 提供只读 `list/read/snapshot`，仍检查
+manual-only、来源、manifest/resource digest 与分页。它不会替换生产 Provider。
+
+Host 可调用 `registerSource({ id, list, read, snapshot })` 附加 `SkillSource`，返回幂等撤销
+函数。Local Provider 将注册绑定到调用 Fiber 的 effect；撤销会取消并拒绝进行中读取的
+迟到结果。附加来源排在本地 Wish 目录之后，同名包保留各自身份。来源仍声明
+`user` 或 `memory`（历史冻结快照仍兼容 `workspace`），不会因注册得到更高权限；packageId 额外绑定 source id，避免来源
+更换复用旧授权。读取时继续检查调用身份、manual-only 与原始 manifest，不允许来源声称
+模型可调用却提供 manual-only 内容。没有附加来源时沿用原来的枚举顺序与 packageId。
+完整快照要求可见来源均支持全包捕获；它不会把无法捕获的资源静默当成空包。
 
 ## 可选装配
 
@@ -74,25 +97,68 @@ Host 通过 `list({ cwd })` 查询，通过 `read({ cwd, name, expectedDigest })
   不是模型激活表。默认插件使用 Sessions Service 的默认 manager；独立 Application
   使用其他 dataDirectory 时应通过工厂传入对应 Session graph 的 Workspace Port。
 - `presentation.ts` 与 `consumers/webui/`：SessionFeature 额外提供模块自有的结构化目录投影；
-  Browser 的 React-free Client Model 校验后，把当前 Workspace 的 Skill 分组放入专属侧栏。
-  点击条目通过已有 Host 版本 token 读取正文，不经过会话侧栏，不显示手动刷新，也不会激活
-  Skill。停用 Skills UI Consumer 会一并撤销全局入口、目录侧栏和正文视图。
+  SessionFeature 投影仍供会话内的人工审阅使用；独立 WebUI 页面使用下述 library Control。
+- `consumers/webui-control.ts`：依赖 skills/workspace/webUiControls，提供独立于 Session 的
+  Wish 级技能库，包含手动导入、Memory 自动生成及 Host 注册的 Skills。正文读取固定 packageId/digest；
+  不跟随选中会话，也不会创建会话。`GET /api/controls/skills/default` 返回目录及导入能力，
+  `POST /api/queries/skills/default` 读取正文，`POST /api/controls/skills/default` 手动导入；
+  同一写入口接受 `action: "set-enabled"`，携带 name、packageId/digest、catalog digest 和 enabled，
+  由 Host 复核来源后保存启停状态。
+  POST 沿用 WebUI 的同源和管理令牌校验，客户端不能指定写入根目录。
+- `consumers/webui/`：独立 React-free Client Model 通过 Connection 浏览技能库；页面与
+  专属侧栏按 Wish／记忆生成分组，使用既有 Markdown 展示正文并保留可展开的原文。
+  文件夹或单个 `SKILL.md` 导入成功后立即更新目录并打开正文；离线、Host 替换及卸载
+  撤销旧操作，迟到结果不能覆盖新目录。切页保留当前标签页内的导入草稿。
+  停用 Skills UI Consumer 会一并撤销全局入口、目录侧栏和正文视图。
+
+## 手动导入
+
+本地 Provider 可将一个 Skill 包导入已配置的用户根目录，默认是 `~/.wish/skills`。
+支持单独的 `SKILL.md`，或包含该文件及 `references/`、`scripts/`、`assets/`、`templates/`、`examples/` 下 UTF-8
+文本的文件夹；文件夹前缀会移除，包目录按清单中的 `name` 创建。每文件限制沿用
+Provider `maxFileBytes`，每包最多 256 文件／512000 字节，HTTP 请求另受 1 MiB JSON 上限
+约束。二进制、路径越界、重复路径、格式错误和不支持的资源都会明确拒绝。
+`agents/openai.yaml` 当前不受支持，不能通过导入静默丢弃其中的调用策略。
+
+导入默认拒绝同名项；人工勾选覆盖后，也只能替换当前用户根中的本地同名包，不能替换
+工作区或插件来源。所有导入携带已展示目录的摘要，目录变化时先刷新再重试。
+`LocalSkillImporter` 在写入前完整校验，在有界暂存目录内准备所有文件，提交前再次核对
+目录与目标身份；同一 Provider 内串行导入。覆盖替换整个包，移除旧资源，不逐文件合并。
+普通提交失败恢复旧包；若进程在目录重命名之间崩溃，保留的 `.wish-skill-backup-*` 是
+人工恢复证据，不承诺跨进程崩溃事务或自动恢复。导入不执行资源脚本。
+冻结的隔离 Provider 不开放导入，其他替代 Provider 可不实现该可选能力。
 
 Tools、Context、模式适配器均由各自 Fiber 维护注册生命周期。卸载 Consumer
 不销毁独立能力。Context 在每个新 Step 从当前注册表捕获 Provider 集合，同一
 Step 的重投影固定集合；卸载会取消并排空进行中的读取，不让旧 Provider 继续泄露内容。
 
+## 用户启停
+
+所有来源共享 Wish 级启停管理，默认启用。`skills/activation` Storage KV Domain 持久保存
+按稳定 packageId 绑定的停用记录；更新包正文、Memory 整理或重启不会覆盖用户选择。
+停用包仍可在页面查看和重新启用，但不进入模型目录，模型正文／资源读取也被拒绝；
+完整冻结快照携带启停状态。`disable-model-invocation: true` 是包自身约束，启用不改变它。
+
+`memory-skills` Consumer 将 Memory 工作区中的 Skill 包注册到同一 Skills Provider，
+保留 Memory 对生成文件的所有权。Memory 的模型读取与新子 Agent 读取授权只开放已启用、
+允许模型读取的包；人工管理和整理仍可读取原文。移除桥接 Consumer 后，Memory 不再向
+模型开放 Skill 文件。启停不删除来源文件，也不能撤回已经发给模型的内容；后续 Step
+会提示当前停用选择。冻结 Profile Provider 保留捕获状态，不开放生产库启停写入。
+
 ## 当前边界
 
 Host 可显式读取 manual-only 包；人类面板提供“查看”，但尚无持久 Session 激活表，
 查看正文不会将该包变成模型可调用。用户消息、steering 或 follow_up 的文本不会伪造显式选择。
-普通模型可按目录自主调用允许的包。没有自动执行、Skill 编辑工具、文件监听、
-远程包安装、语义推荐、子 Agent 包复制或整包快照。Compaction 后可重新查询目录，
+普通模型可按目录自主调用允许的包。没有自动执行、模型可调用的 Skill 编辑工具、文件监听、
+远程包安装或语义推荐。Compaction 后可重新查询目录，
 按仍有效的 digest 重读；这不是持久化“已激活 Skill”的承诺。
 
 ## 验证
 
-构建后执行 `node scripts/accept-skills.mjs` 和
-`node scripts/accept-skills-consumers.mjs`；类型契约见 `type-tests/skills.ts`。
+构建后执行 `npm run test:skills:built`；包括核心读取、Consumer、真实临时目录导入、
+无会话 HTTP 读写、重启、各来源启停、同名包、子 Agent 读取授权及 Client Model 生命周期。类型契约见 `type-tests/skills.ts`。
+`node scripts/accept-skills-library-browser.mjs` 使用生产视图和确定性 transport 验证
+桌面／窄屏、明暗主题、启停、文件选择与导入交互；它不等同于真实 Host 浏览器端到端验收。
 测试覆盖解析、来源冲突、路径／链接边界、分页一致性、取消、权限、模式控制、
 上下文不可信边界和 Tool Consumer 的卸载；不代表真实 Provider 或浏览器验收。
+完整快照和来源撤销另见 `node scripts/accept-skill-resource-snapshots.mjs`。

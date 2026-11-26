@@ -1,8 +1,20 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useContext, useRef, useSyncExternalStore } from "react";
 import { useLanguage } from "../i18n.js";
+import { SnapshotVisibility } from "./snapshot-visibility.js";
 
-export interface ReadableSnapshot<T> { getSnapshot(): T; subscribe(listener: () => void): () => void }
-export function useSnapshot<T>(store: ReadableSnapshot<T>): T { return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot); }
+export interface ReadableSnapshot<T> { getSnapshot(): T; subscribe(listener: () => void): () => void; readonly liveWhileHidden?: boolean }
+export function useSnapshot<T>(store: ReadableSnapshot<T>): T {
+  const visible = useContext(SnapshotVisibility);
+  const live = store.liveWhileHidden === true;
+  const last = useRef<{ store: ReadableSnapshot<T>; value: T } | undefined>(undefined);
+  const read = useCallback(() => {
+    if (!visible && !live && last.current?.store === store) return last.current.value;
+    return store.getSnapshot();
+  }, [store, visible, live]);
+  const value = useSyncExternalStore(store.subscribe, read, read);
+  if (visible || live || last.current?.store !== store) last.current = { store, value };
+  return value;
+}
 export function Icon({ name }: { name: "conversation" | "settings" | "gear" | "menu" | "plus" | "close" | "trace" | "more" | "archive" | "chevron" | "panel-open" | "panel-close" | "panel-right-open" | "panel-right-close" | "split" | "fullscreen" | "fullscreen-exit" | "plug" | "book" | "model" | "folder" | "send" | "cube" | "terminal" | "tmux" }) {
   const paths = {
     conversation: "M4 4h16v12H9l-5 4V4m4 4h8M8 12h5",

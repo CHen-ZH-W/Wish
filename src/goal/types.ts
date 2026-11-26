@@ -21,7 +21,8 @@ export interface GoalState extends GoalRef {
   readonly phase: GoalPhase;
   readonly blockedReason?: GoalBlockReason;
   readonly roundsStarted: number;
-  readonly maxGoalRounds: number;
+  /** Optional, explicitly requested bound. Ordinary goals have no round limit. */
+  readonly maxGoalRounds?: number;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -37,7 +38,7 @@ export interface GoalSessionRequest {
 
 export interface CreateGoalRequest extends GoalSessionRequest {
   readonly objective: string;
-  readonly maxGoalRounds?: number;
+  readonly maxGoalRounds?: number | null;
 }
 
 export interface MutateGoalRequest extends GoalSessionRequest {
@@ -46,7 +47,7 @@ export interface MutateGoalRequest extends GoalSessionRequest {
 
 export interface EditGoalRequest extends MutateGoalRequest {
   readonly objective?: string;
-  readonly maxGoalRounds?: number;
+  readonly maxGoalRounds?: number | null;
 }
 
 export interface BlockGoalRequest extends MutateGoalRequest {

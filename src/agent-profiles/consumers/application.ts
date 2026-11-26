@@ -5,6 +5,9 @@ import { canDelegatePermissionProfile } from "../../permissions/delegation.js";
 import { captureComposition, verifyCode } from "../composition.js";
 import { AgentProfileError, digest, verifyRuntime } from "../validation.js";
 import type { ApplicationExecutionProfile } from "../../apps/execution-profile.js";
+import { captureProfileResources } from "../resources.js";
+import ProfileSkills from "../resource-skills.js";
+import ProfileMemory from "../resource-memory.js";
 
 /** Composition adapter; neither Application nor Core Runtime depends on Profile storage. */
 export default {
@@ -32,6 +35,7 @@ export default {
         if (snapshot.permissions.allowedCapabilities?.some(kind => parent.allowedCapabilities && !parent.allowedCapabilities.includes(kind))) throw new AgentProfileError("profile_capability_escalation");
         const worker = ctx.launch.environment.WISH_EXPERIMENT_WORKER === "1";
         if (snapshot.definition.memory === "isolated" && !worker) throw new AgentProfileError("profile_memory_requires_isolated_host", "This Profile's Memory requires an isolated experiment Host");
+        if (snapshot.resources && !worker) throw new AgentProfileError("profile_resources_require_isolated_host");
         const current = captureComposition(ctx);
         if (!worker && digest(current.plugins) !== digest(snapshot.plugins)) throw new AgentProfileError("profile_composition_mismatch", "The current deployment differs from the frozen Profile");
         const scope = new AgentScope(`profile:${snapshot.digest}`, ctx.agents.scope);
@@ -56,7 +60,15 @@ export default {
           if (captureComposition(ctx).identity !== current.identity) throw new AgentProfileError("profile_runtime_changed", "The bound plugin generation changed; start a new Run with an explicit Profile snapshot");
           if (toolRegistry.version !== toolVersion || ctx.contextEngine.providerVersion !== contextVersion || ctx.models.registry.version !== modelVersion) throw new AgentProfileError("profile_contributions_changed");
           await verifyCode(snapshot.code);
+          if (snapshot.resources) {
+            const skills = ctx.get("skills"), memory = ctx.get("memory");
+            if (skills && !(skills instanceof ProfileSkills) || memory && (!(memory instanceof ProfileMemory) || memory.initialStateDigest !== digest(snapshot.resources.memory))) throw new AgentProfileError("profile_frozen_resource_provider_required");
+            const resources = await captureProfileResources({ cwd: ctx.launch.cwd, skills: ctx.get("skills"), emptySkills: !ctx.get("skills"), memory: snapshot.resources.memory });
+            if (resources.digest !== snapshot.resources.digest) throw new AgentProfileError("profile_runtime_resources_changed");
+          }
         };
+        try { await assertCurrent(); }
+        catch (error) { scopes.delete(scope); await scope.dispose(); throw error; }
         const profile: ApplicationExecutionProfile = {
           identity: Object.freeze({ id: snapshot.definition.id, version: snapshot.definition.version, digest: snapshot.digest }),
           model: snapshot.model,

@@ -212,6 +212,11 @@ export class NextStepInbox {
   hasPending(userTurnId: UserTurnId): boolean {
     return this.pending(userTurnId).length > 0;
   }
+  /** Explicit steering may interrupt an asynchronous wait. Internal results
+   * alone keep their existing batching/hold semantics. */
+  hasPendingSteering(userTurnId: UserTurnId): boolean {
+    return this.pending(userTurnId).some(record => record.message.inputSource !== "continuation");
+  }
 
   closeUserTurn(
     userTurnId: UserTurnId,

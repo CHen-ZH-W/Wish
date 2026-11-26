@@ -4,10 +4,13 @@ export interface SkillSummary {
   readonly packageId: string;
   readonly name: string;
   readonly description: string;
-  readonly source: "user" | "workspace";
+  /** workspace is accepted only for historical snapshots; live discovery is Wish-wide. */
+  readonly source: "user" | "workspace" | "memory";
   readonly location: string;
   readonly digest: string;
   readonly modelInvocable: boolean;
+  /** User-owned activation, independent of the package's invocation policy. Legacy snapshots default to enabled. */
+  readonly enabled?: boolean;
 }
 
 export interface SkillCatalog {
@@ -19,6 +22,14 @@ export interface SkillLookup {
   /** Canonical cwd supplied by Workspace, not a model-selected directory. */
   readonly cwd: string;
   readonly signal?: AbortSignal;
+}
+
+export interface SkillActivationRequest extends SkillLookup {
+  readonly name: string;
+  readonly expectedPackageId: string;
+  readonly expectedDigest: string;
+  readonly expectedCatalogDigest: string;
+  readonly enabled: boolean;
 }
 
 export interface ReadSkillRequest extends SkillLookup {
@@ -48,7 +59,28 @@ export interface SkillResource {
   readonly complete: boolean;
 }
 
+/** Complete allowed UTF-8 package bytes; the manifest digest alone does not pin resources. */
+export interface SkillPackageSnapshot {
+  readonly schemaVersion: 1;
+  readonly skill: SkillSummary;
+  readonly resources: readonly {
+    readonly path: string;
+    readonly content: string;
+    readonly digest: string;
+    readonly bytes: number;
+  }[];
+  readonly digest: string;
+}
+
+/** Host-registered Wish source. Its provenance never grants execution authority. */
+export interface SkillSource extends Skills {
+  readonly id: string;
+  snapshot(input: SkillLookup): Promise<readonly SkillPackageSnapshot[]>;
+}
+
 export interface Skills {
   list(input: SkillLookup): Promise<SkillCatalog>;
   read(input: ReadSkillRequest): Promise<SkillResource>;
+  /** Explicit capture only; implementations without complete capture remain compatible readers. */
+  snapshot?(input: SkillLookup): Promise<readonly SkillPackageSnapshot[]>;
 }

@@ -16,7 +16,7 @@ Candidates 将动态源码接入分成候选生成、隔离验证、实验和受
 
 ## 使用
 
-CLI 候选命令启用独立的 managed Host。对同一数据目录保持一个写入进程；连接着该目录的 WebUI Host 不能再由另一个 CLI 同时管理。完整 CLI 工作流先设置 `WISH_MANAGED_CLI=1`，让普通 Run 也装载持久化部署 overlay。数据与产物路径可用 `WISH_DATA_DIR`、`WISH_CANDIDATES_DIR`、`WISH_MANAGEMENT_DATA_DIR` 配置。
+CLI 候选命令启用独立的 managed Host。对同一管理目录保持一个写入进程；连接着该目录的 WebUI Host 不能再由另一个 CLI 同时管理。普通 CLI 默认只读系统插件策略与持久化部署 overlay，可与 WebUI 同时运行；需要独立管理写权限时设置 `WISH_MANAGED_CLI=1`。数据与产物路径可用 `WISH_DATA_DIR`、`WISH_CANDIDATES_DIR`、`WISH_MANAGEMENT_DATA_DIR` 配置。
 
 ```sh
 export WISH_MANAGED_CLI=1
@@ -102,13 +102,19 @@ wish candidate rollback <promotion-id> --approve <review-digest>
 
 当前 baseline 使用可信 process executor，候选使用 sandbox executor。延迟包括隔离与 IPC 开销，不能把差值直接当作纯策略算法或晋升后运行的性能结论。可显式设置端到端延迟、Token、请求次数和分货币成本预算；未知用量或成本不能通过相应预算。未设置的性能预算不参与判定，字段见[质量门禁](../plugin-admission/README.md#运行约束与质量门禁)。
 
-Agent 可在 `WISH_CANDIDATE_TOOLS=1` 时调用 `candidate_submit`、`candidate_validate`、`candidate_evaluate`；没有可供模型调用的批准、晋升或回滚工具。提交工具把真实 Run id 写入来源。这个机制不自行启动一个生成任务；现有 Agent 负责写出源码包。
+`candidate-tools` 通过 WebUI 插件管理启停，不再依赖 `WISH_CANDIDATE_TOOLS`。插件加载后注册
+`candidate_submit`、`candidate_validate`、`candidate_evaluate`，但当前尚无专用的自进化模式，
+因此权限策略将这三个工具排除在所有现有模式的模型可见列表和子 Agent 可委派范围之外，
+并拒绝模型直接请求执行它们；启用插件不会开放这些工具。候选操作仍可由 CLI 和管理 API
+调用。后续模型入口接入专用模式时再开放；批准、晋升和回滚始终由 Host 管理入口负责。
 
 运行中的 WebUI Host 注册 `POST /api/management/extensions/candidates/<action>`，沿用管理控制面的 loopback、Origin、`x-wish-management-token` 和 JSON 检查。操作包括 `submit/list/history/validate/evaluate/review/promote/rollback`，以及准备实验的 `profile-register/profile-capture/dataset/experiment`。`promote` 请求为 `{review, approvedReviewDigest}`；`rollback` 为 `{promotionId, approvedReviewDigest}`。获取 token 的入口沿用 `/api/management/bootstrap`。通过这个接口管理当前 Host，无需再启动一个争用数据目录的 CLI。未添加新的 WebUI 页面。
 
 ## 隔离与恢复范围
 
 当前 Provider 要求 Linux Landlock ABI ≥ 3 和 seccomp，无法建立边界时失败，没有无隔离降级路径。每次只开放发行版 dist/node_modules、已验证产物和私有案例目录；写入限于私有 scratch；不继承 Host 凭证或环境。网络、本地控制 socket、向 Host 发信号、脱离进程组被禁止。未知代码执行只允许线程，不允许创建子进程，因此候选评测不可使用 Bash/tmux 等派生进程能力。构建阶段只运行可信 TypeScript/esbuild 编译器，允许其自身构建子进程。
+
+标准 Memory 在候选 Worker 内以私有进程内状态运行：使用 Profile 显式冻结的初态，未归档资源的旧 Profile 则从空状态开始，不改变旧快照的资源覆盖标记。默认配置排除后台记忆整理及其写入和采集入口，避免派生 `flock` 进程或引入额外模型请求；每个案例独立初始化，状态不会写回 Host。
 
 候选进程不开放宿主终端设备，也不能解除内核设置的父进程死亡清理，或通过 prlimit64 修改其他进程的资源限制。这些约束仅用于 candidate mode，不改变正常 Shell 的终端能力。
 

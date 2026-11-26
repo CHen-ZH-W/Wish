@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -10,10 +11,17 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { Context } from "@deepseek-ai/cordis";
 
 import { LocalWorkspace } from "../dist/workspace/providers/local.js";
+
+const exec = promisify(execFile);
+function git(cwd, ...args) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+  return exec("git", ["-C", cwd, ...args], { env, encoding: "utf8" });
+}
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "wish-workspace-local-"));
@@ -24,9 +32,7 @@ async function fixture() {
   await symlink(workspace, join(directory, "workspace-link"), "dir");
   const root = new Context();
   root.provide("launch", { cwd: directory });
-  await root.plugin(LocalWorkspace, {
-    repositoryMarkers: [".wish-test-git"],
-  });
+  await root.plugin(LocalWorkspace);
   return {
     directory,
     workspace,
@@ -44,7 +50,6 @@ async function configuredFixture(config) {
   const root = new Context();
   root.provide("launch", { cwd: directory });
   await root.plugin(LocalWorkspace, {
-    repositoryMarkers: [".wish-test-git"],
     ...config,
   });
   return {
@@ -138,7 +143,7 @@ test("Local Workspace resolves Git identity and ordered instruction facts", asyn
   const state = await fixture();
   try {
     const nested = join(state.workspace, "src");
-    await mkdir(join(state.workspace, ".wish-test-git"));
+    await git(state.workspace, "init", "--quiet");
     await mkdir(nested);
     await writeFile(join(state.workspace, "AGENTS.md"), "Root rules\n");
     await writeFile(join(nested, "AGENTS.local.md"), "Nested rules\n");
@@ -149,6 +154,8 @@ test("Local Workspace resolves Git identity and ordered instruction facts", asyn
       root: state.workspace,
       identity: first.repository.identity,
     });
+    assert.equal(first.repositoryStatus, "verified");
+    assert.equal(first.root, nested, "repository membership does not expand the selected workspace");
     assert.match(first.repository.identity, /^git-repository:sha256:[a-f0-9]{64}$/u);
     assert.deepEqual(
       first.instructions.map(({ source, content }) => ({ source, content })),
@@ -181,6 +188,81 @@ test("Local Workspace resolves Git identity and ordered instruction facts", asyn
   } finally {
     await state.dispose();
   }
+});
+
+test("an empty parent .git cannot establish a repository or import parent instructions", async () => {
+  const state = await fixture();
+  try {
+    await mkdir(join(state.directory, ".git"));
+    await writeFile(join(state.directory, "AGENTS.md"), "Unrelated parent instructions");
+    await writeFile(join(state.workspace, "AGENTS.md"), "Selected workspace instructions");
+    const snapshot = await state.service.resolve({ root: state.workspace });
+    assert.equal(snapshot.repository, undefined);
+    assert.equal(snapshot.repositoryStatus, "not-found");
+    assert.equal(snapshot.root, state.workspace);
+    assert.deepEqual(snapshot.instructions.map(item => item.content), ["Selected workspace instructions"]);
+  } finally { await state.dispose(); }
+});
+
+test("Git worktrees with a .git file are verified through Git", async () => {
+  const state = await fixture();
+  try {
+    await git(state.workspace, "init", "--quiet");
+    await git(state.workspace, "-c", "user.name=Wish Test", "-c", "user.email=wish@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "fixture");
+    const worktree = join(state.directory, "worktree");
+    await git(state.workspace, "worktree", "add", "--quiet", "--detach", worktree);
+    const snapshot = await state.service.resolve({ root: worktree });
+    assert.equal(snapshot.repositoryStatus, "verified");
+    assert.equal(snapshot.repository.root, worktree);
+    assert.equal(snapshot.root, worktree);
+  } finally { await state.dispose(); }
+});
+
+test("unavailable Git remains unknown and cannot import parent instructions", async () => {
+  const state = await fixture();
+  const previousPath = process.env.PATH;
+  try {
+    await git(state.directory, "init", "--quiet");
+    await writeFile(join(state.directory, "AGENTS.md"), "Parent instructions");
+    process.env.PATH = join(state.directory, "no-executables");
+    const snapshot = await state.service.resolve({ root: state.workspace });
+    assert.equal(snapshot.repository, undefined);
+    assert.equal(snapshot.repositoryStatus, "unavailable");
+    assert.deepEqual(snapshot.instructions, []);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    await state.dispose();
+  }
+});
+
+test("inherited Git environment cannot redirect repository discovery", async () => {
+  const state = await fixture();
+  const previous = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+  try {
+    await git(state.workspace, "init", "--quiet");
+    await git(state.other, "init", "--quiet");
+    process.env.GIT_DIR = join(state.other, ".git");
+    process.env.GIT_WORK_TREE = state.other;
+    const snapshot = await state.service.resolve({ root: state.workspace });
+    assert.equal(snapshot.repositoryStatus, "verified");
+    assert.equal(snapshot.repository.root, state.workspace);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    await state.dispose();
+  }
+});
+
+test("an invalid inner Git marker cannot borrow an outer repository identity", async () => {
+  const state = await fixture();
+  try {
+    await git(state.directory, "init", "--quiet");
+    await writeFile(join(state.directory, "AGENTS.md"), "Outer instructions");
+    await writeFile(join(state.workspace, ".git"), "gitdir: /nonexistent/wish-repository\n");
+    const snapshot = await state.service.resolve({ root: state.workspace });
+    assert.equal(snapshot.repository, undefined);
+    assert.notEqual(snapshot.repositoryStatus, "verified");
+    assert.deepEqual(snapshot.instructions, []);
+  } finally { await state.dispose(); }
 });
 
 test("Local Workspace fails closed on oversized or escaping instructions", async () => {

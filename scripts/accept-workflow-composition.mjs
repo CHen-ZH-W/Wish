@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { bootstrap } from "../dist/boot/bootstrap.js";
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-for (const disabled of [{}, { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" }, { WISH_WORKFLOW_ENABLED: "0" }, { WISH_PLAN_ENABLED: "0" }, { WISH_SUBAGENTS_ENABLED: "0" }, { WISH_TASKS_ENABLED: "0" }, { WISH_WORKFLOW_TOOLS_ENABLED: "0", WISH_SUBAGENT_TOOLS_ENABLED: "0" }]) {
+for (const disabled of [{}, { WISH_SUBAGENT_WORKFLOW_ENABLED: "0" }, { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" }, { WISH_WORKFLOW_ENABLED: "0" }, { WISH_PLAN_ENABLED: "0" }, { WISH_SUBAGENTS_ENABLED: "0" }, { WISH_TASKS_ENABLED: "0" }, { WISH_WORKFLOW_TOOLS_ENABLED: "0", WISH_SUBAGENT_TOOLS_ENABLED: "0" }]) {
   const directory = await mkdtemp(join(tmpdir(), "wish-workflow-composition-"));
   let boot;
   try {
@@ -29,7 +29,7 @@ for (const disabled of [{}, { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" }, { WISH_WORK
     assert.equal(names.includes("tasks_read"), taskRead);
     assert.equal(names.includes("tasks_update"), taskRead && !disabled.WISH_PLAN_ENABLED);
     if (names.includes("spawn_agent")) assert.equal(context.get("subagentToolDispatch").activeStrategy,
-      disabled.WISH_SUBAGENT_WORKFLOW_ENABLED === "1" && childScheduled ? "workflow" : "direct");
+      childScheduled ? "workflow" : "direct");
     for (const name of ["enter_coordinator_mode", "read_coordinator", "exit_coordinator_mode"]) {
       assert.equal(names.includes(name), disabled.WISH_COORDINATOR_ENABLED !== "0" && disabled.WISH_COORDINATOR_TOOLS_ENABLED !== "0");
     }
@@ -67,10 +67,21 @@ for (const disabled of [{}, { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" }, { WISH_WORK
 
 {
   const directory = await mkdtemp(join(tmpdir(), "wish-workflow-managed-composition-"));
+  const configurationFile = join(directory, "cordis.yml"), adapterId = "include:tool-workflow-subagents";
+  const profile = await readFile(new URL("../dist/config/cordis.yml", import.meta.url), "utf8");
+  const adapterProfile = "    - id: tool-workflow-subagents\n      name: 'cordis:workflow-subagent-tools'\n      disabled: !!js >-\n" +
+    "        launch.environment.WISH_SUBAGENT_TOOLS_ENABLED === '0' ||\n" +
+    "        launch.environment.WISH_SUBAGENTS_ENABLED === '0' ||\n" +
+    "        launch.environment.WISH_WORKFLOW_ENABLED === '0'\n";
+  const previousProfile = profile.replace(adapterProfile,
+    `${adapterProfile.trimEnd()} ||\n        launch.environment.WISH_SUBAGENT_WORKFLOW_ENABLED !== '1'\n`);
+  assert.notEqual(previousProfile, profile);
+  const subagentTools = ["spawn_agent", "list_agents", "capture_agent", "send_agent", "stop_agent", "collect_agent"];
   let boot;
-  try {
-    boot = await bootstrap({ surface: "cli", argv: ["--version"], cwd: process.cwd(), homeDirectory: directory,
-      environment: { WISH_DATA_DIR: join(directory, "data"), CORDIS_HMR: "0", WISH_SUBAGENT_WORKFLOW_ENABLED: "1" },
+  const start = async flag => {
+    boot = await bootstrap({ surface: "cli", argv: ["--version"], cwd: process.cwd(), homeDirectory: directory, configurationFile,
+      environment: { WISH_DATA_DIR: join(directory, "data"), CORDIS_HMR: "0",
+        ...(flag === undefined ? {} : { WISH_SUBAGENT_WORKFLOW_ENABLED: flag }) },
       management: { directory: join(directory, "management"), async start(_root, control) {
         control.setRecoveryAvailable(true);
         return async () => control.setRecoveryAvailable(false);
@@ -78,6 +89,47 @@ for (const disabled of [{}, { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" }, { WISH_WORK
     });
     for (let attempt = 0; !boot.pluginManagement.snapshot().writable && attempt < 200; attempt++) await delay(10);
     assert.equal(boot.pluginManagement.snapshot().writable, true);
+  };
+  const changeAdapter = async preference => {
+    const before = boot.pluginManagement.snapshot();
+    const receipt = await boot.pluginManagement.change({ requestId: randomUUID(), revision: before.revision, preference,
+      selection: { instanceId: before.inspection.instanceId, entryIds: [adapterId] } });
+    assert.equal(receipt.status, "succeeded", JSON.stringify(receipt));
+  };
+  const checkAdapter = (strategy, preference) => {
+    const snapshot = boot.pluginManagement.snapshot();
+    assert.equal(snapshot.status, "ready");
+    assert.equal(snapshot.pending, null);
+    assert.equal(snapshot.preferences[adapterId]?.preference, preference);
+    assert.equal(snapshot.inspection.entries.find(entry => entry.id === adapterId).phase, strategy === "workflow" ? "active" : "absent");
+    assert.equal(boot.surfaceContext.get("subagentToolDispatch").activeStrategy, strategy);
+    const names = boot.surfaceContext.get("tools").registry.list().map(tool => tool.name);
+    for (const name of subagentTools) assert.equal(names.filter(candidate => candidate === name).length, 1, name);
+  };
+  try {
+    await writeFile(configurationFile, previousProfile);
+    await start();
+    checkAdapter("direct", undefined);
+    await changeAdapter("disabled");
+    await boot.dispose();
+    await writeFile(configurationFile, profile);
+    await start();
+    checkAdapter("direct", "disabled"); // Upgrading the deployment retains an explicit disabled choice.
+    const baseToolFiber = boot.context.loader.resolve("include:tool-subagents").fiber;
+    await changeAdapter("enabled");
+    checkAdapter("workflow", "enabled");
+    assert.equal(boot.context.loader.resolve("include:tool-subagents").fiber, baseToolFiber);
+    await changeAdapter("disabled");
+    checkAdapter("direct", "disabled");
+    assert.equal(boot.context.loader.resolve("include:tool-subagents").fiber, baseToolFiber);
+    await boot.dispose();
+    await start("1");
+    checkAdapter("direct", "disabled"); // A legacy flag cannot override a saved system switch.
+    await changeAdapter("enabled");
+    await boot.dispose();
+    await start("0");
+    checkAdapter("workflow", "enabled");
+
     for (const entryId of ["include:plan-storage", "include:tasks-storage"]) {
       const before = boot.pluginManagement.snapshot();
       const selection = { instanceId: before.inspection.instanceId, entryIds: [entryId] };
@@ -104,7 +156,6 @@ for (const disabled of [{}, { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" }, { WISH_WORK
     const toolEntry = boot.context.loader.resolve("include:tool-subagents");
     const toolFiber = toolEntry.fiber;
     const cleanupFiber = boot.context.loader.resolve("include:workflow-session-feature").fiber;
-    const subagentTools = ["spawn_agent", "list_agents", "capture_agent", "send_agent", "stop_agent", "collect_agent"];
     assert.equal(boot.surfaceContext.get("subagentToolDispatch").activeStrategy, "workflow");
     const beforeScheduler = boot.pluginManagement.snapshot();
     const schedulerDisabled = await boot.pluginManagement.change({ requestId: randomUUID(), revision: beforeScheduler.revision, preference: "disabled",
@@ -132,4 +183,4 @@ for (const disabled of [{}, { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" }, { WISH_WORK
     for (const name of ["workflow_read", "workflow_cancel", "workflow_retry"]) assert.equal(restoredNames.filter(candidate => candidate === name).length, 1);
   } finally { await boot?.dispose(); await rm(directory, { recursive: true, force: true }); }
 }
-console.log("default direct and opt-in workflow composition passed");
+console.log("managed Workflow activation, persisted profile upgrades and direct dispatch fallback passed");

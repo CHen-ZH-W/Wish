@@ -1,20 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import { createLaunch } from "../dist/boot/launch.js";
 import { installWishPluginCatalog } from "../dist/boot/plugin-catalog.js";
 import { FileSubagentExchange } from "../dist/subagents/files.js";
-import { MEMORY_SNAPSHOT_RESOURCE } from "../dist/memory/child-resources.js";
+import { MEMORY_LIBRARY_RESOURCE } from "../dist/memory/child-resources.js";
 
-const configuration = new URL("../config/cordis.yml", import.meta.url);
+const configurationSource = await readFile(new URL("../config/cordis.yml", import.meta.url));
 
 /** Load the real default graph; replace only interactive surface execution. */
 async function graph(t, { environment = {}, child = false, prepare } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "wish-memory-boot-"));
+  const configuration = pathToFileURL(join(directory, "cordis.yml"));
+  await writeFile(configuration, configurationSource);
   const workspace = join(directory, "workspace"), home = join(directory, "home"), data = join(directory, "data");
   await Promise.all([workspace, home, data].map(path => mkdir(path)));
   const extras = await prepare?.({ directory, workspace, home, data }) ?? {};
@@ -55,9 +58,11 @@ test("default knowledge capabilities are active in an isolated home before openi
   assert.ok(f.tools().includes("memory_read"));
   assert.ok(f.tools().includes("memory_write"));
   assert.equal(f.enabled("memory-storage"), true);
-  assert.equal(f.enabled("memory-child-snapshot"), false);
-  assert.equal(f.enabled("memory-curation"), false);
-  assert.equal(f.enabled("memory-runtime-evidence"), false);
+  assert.equal([...f.root.loader.entries()].some(entry => entry.id === "include:memory-child-snapshot"), false);
+  assert.equal(f.enabled("memory-curation"), true);
+  assert.equal(f.enabled("memory-runtime-evidence"), true);
+  assert.equal(f.enabled("memory-curation-trigger"), true);
+  assert.deepEqual((await f.context.memoryCuration.scheduler.state()).jobs, []);
   assert.equal(f.root.get("skills"), undefined);
   assert.equal(f.root.get("memory"), undefined);
   assert.equal(f.root.get("memoryCuration"), undefined);
@@ -70,7 +75,6 @@ test("knowledge Tools can be disabled without removing Providers, Context or hum
   assert.equal(f.enabled("skills-context"), true);
   assert.equal(f.enabled("memory-context"), true);
   assert.equal(f.enabled("skills-session-feature"), true);
-  assert.equal(f.enabled("memory-session-feature"), true);
   assert.equal(f.tools().some(name => ["list_skills", "read_skill", "memory_search", "memory_read", "memory_write"].includes(name)), false);
 });
 
@@ -91,7 +95,7 @@ test("disabling a knowledge capability disables all of its optional Consumers", 
   for (const entry of f.root.loader.entries()) if (/^include:(skills-|memory-)/u.test(entry.id)) assert.equal(entry.disabled, true, entry.id);
 });
 
-test("curation requires its opt-in and evidence adapters follow available providers", async t => {
+test("curation evidence adapters follow available providers", async t => {
   const f = await graph(t, { environment: { WISH_MEMORY_CURATION_ENABLED: "1", WISH_WORKFLOW_ENABLED: "0", WISH_SUBAGENTS_ENABLED: "0" } });
   assert.ok(f.context.memoryCuration);
   assert.equal(f.enabled("memory-runtime-evidence"), true);
@@ -101,8 +105,8 @@ test("curation requires its opt-in and evidence adapters follow available provid
   assert.deepEqual((await f.context.memoryCuration.scheduler.state()).jobs, []);
 });
 
-test("automatic flag alone does not start or instantiate curation", async t => {
-  const f = await graph(t, { environment: { WISH_MEMORY_AUTO_CURATION: "1" } });
+test("explicit curation disable overrides automatic background work", async t => {
+  const f = await graph(t, { environment: { WISH_MEMORY_AUTO_CURATION: "1", WISH_MEMORY_CURATION_ENABLED: "0" } });
   assert.equal(f.context.get("memoryCuration"), undefined);
   assert.equal(f.enabled("memory-runtime-evidence"), false);
 });
@@ -113,30 +117,29 @@ test("a child without Host attachments never creates an independent Memory autho
   for (const entry of f.root.loader.entries()) if (/^include:memory-/u.test(entry.id)) assert.equal(entry.disabled, true, entry.id);
 });
 
-test("Host-pinned child attachments exclusively select the scoped snapshot Provider", async t => {
+test("Host-bound child library uses the normal Memory Provider in read-only mode", async t => {
   const f = await graph(t, { child: true, environment: { WISH_MEMORY_CURATION_ENABLED: "1", WISH_MEMORY_AUTO_CURATION: "1", WISH_SUBAGENTS_ENABLED: "0" },
     prepare: async ({ workspace, data }) => {
       const exchange = new FileSubagentExchange(data);
       const identity = { id: "boot-child", childSessionId: "boot-child-session", childRunId: "boot-child-run" };
       const manifest = await exchange.writeInputResources(identity,
         { parentAgentId: "parent", parentSessionId: "parent-session", parentRunId: "parent-run", workspaceRoot: workspace },
-        [{ type: MEMORY_SNAPSHOT_RESOURCE, schemaVersion: 1, payload: { snapshot: { schemaVersion: 1, libraryId: "delegated", revision: 0, documents: [] }, allowProposals: false } }]);
+        [{ type: MEMORY_LIBRARY_RESOURCE, schemaVersion: 1, payload: { libraryId: "delegated", directory: join(data, "memories", "delegated"), journalRoot: join(data, "storage"), allowedSkills: [] } }]);
       return { WISH_CHILD_ID: identity.id, WISH_CHILD_SESSION_ID: identity.childSessionId, WISH_CHILD_RUN_ID: identity.childRunId,
         WISH_CHILD_EXCHANGE_DATA_DIR: data, WISH_DATA_DIR: exchange.childDataDirectory(identity.id),
         WISH_STORAGE_FILE_ROOT: join(exchange.childDataDirectory(identity.id), "storage"),
         WISH_CHILD_RESOURCES_FILE: exchange.inputResourcesPath(identity.id), WISH_CHILD_RESOURCES_DIGEST: manifest.digest };
     } });
   assert.equal(f.context.memory.libraryId, "delegated");
-  assert.equal(f.enabled("memory-storage"), false);
-  assert.equal(f.enabled("memory-child-snapshot"), true);
-  assert.equal(f.enabled("memory-session-feature"), false);
+  assert.equal(f.enabled("memory-storage"), true);
+  assert.equal(f.tools().includes("memory_write"), false);
   assert.equal(f.enabled("memory-curation"), false);
   assert.equal(f.enabled("memory-subagent-resources"), false);
-  await assert.rejects(f.context.memory.decide({}), /cannot accept/u);
+  await assert.rejects(f.context.memory.decide({}), /read-only/u);
 });
 
 test("partial or malformed child attachment markers fail closed instead of using root storage", async t => {
   for (const environment of [{ WISH_CHILD_RESOURCES_FILE: "/invalid/file" }, { WISH_CHILD_RESOURCES_DIGEST: "broken" }]) {
-    await assert.rejects(graph(t, { environment }), /memory-child-snapshot|Child Memory/u);
+    await assert.rejects(graph(t, { environment }), /memory-storage|Child Memory/u);
   }
 });

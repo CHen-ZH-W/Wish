@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,11 +12,13 @@ const workspace = join(root, "workspace");
 const dataDirectory = join(root, "data");
 const socketPath = join(root, "tmux.sock");
 const modelsPath = join(root, "models.json");
+const configurationPath = join(root, "cordis.yml");
 let server;
 const requests = [];
 
 try {
   await mkdir(workspace, { recursive: true });
+  await copyFile(new URL("../dist/config/cordis.yml", import.meta.url), configurationPath);
   server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -71,8 +73,7 @@ try {
     WISH_TMUX_SOCKET: socketPath,
     WISH_SUBAGENT_TOOLS_ENABLED: "1",
     WISH_PERMISSION_PROFILE: "full-access",
-    WISH_SHELL_PROVIDER: "host",
-    WISH_SHELL_HOST_ENABLED: "1",
+    CORDIS_CONFIG: configurationPath,
     WISH_MODEL_MAX_RETRIES: "0",
   });
   const result = await execFileAsync(
@@ -93,7 +94,8 @@ try {
     },
   );
   const tmuxDiagnostic = await captureTmux(socketPath);
-  assert.match(result.stdout, /child launched; awaiting structured result/u);
+  // A fast child can finish before the parent emits an intermediate waiting message.
+  // The completion below and its model input must still contain the actual child result.
   assert.match(
     result.stdout,
     /parent integrated child evidence/u,

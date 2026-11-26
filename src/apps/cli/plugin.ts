@@ -11,10 +11,15 @@ import {
 export const name = "cli-surface";
 export const inject = ["launch", "approval", "application"];
 
-/** Run the CLI through the injected Application service. */
+/** A managed CLI adapter; only CLI launches own terminal input and completion. */
 export function apply(ctx: Context): void {
   if (ctx.launch.surface !== "cli") {
-    throw new Error("CLI surface was mounted for a non-CLI process");
+    new PluginWorkOwner(ctx, {
+      code: "cli_surface",
+      codeReload: true,
+      replacement: "generation",
+    });
+    return;
   }
 
   const terminal = new NodeWishCliTerminal();

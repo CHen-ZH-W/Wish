@@ -332,6 +332,48 @@ test("Session refresh reuses history while the metadata revision is unchanged", 
     assert.equal(model.getSnapshot().history.historyRevision, "v2");
   } finally { model.close(); }
 });
+test("background titles publish before a slow Run read and periodic polls do not discard that refresh", async () => {
+  let release, poll;
+  const gate = new Promise(resolve => { release = resolve; });
+  class Connection extends SnapshotStore {
+    changed = false; hold = false; reads = 0; replacement = "正式标题";
+    constructor() { super({ online: true, businessAvailable: true, instanceId: "one" }); }
+    onInvalidation() { return () => {}; }
+    stream() { return new Stream(); }
+    async request(path) {
+      if (path === "/api/sessions") {
+        this.reads++;
+        return { sessions: [{ sessionId: "a", status: "active", historyRevision: "v1", title: this.changed ? this.replacement : "首条消息的截断文本", titleSource: this.changed ? "model" : "fallback", titleRevision: this.changed ? 2 : 1 }] };
+      }
+      if (path.endsWith("/history")) return { history: { sessionId: "a", historyRevision: "v1", records: [] } };
+      if (this.hold) await gate;
+      return { runs: [] };
+    }
+  }
+  const original = globalThis.setInterval;
+  let model;
+  try {
+    globalThis.setInterval = (callback, ...args) => { poll = callback; return original(callback, ...args); };
+    const connection = new Connection(); model = new SessionClientModel(connection);
+    globalThis.setInterval = original;
+    await model.refresh();
+    const history = model.getSnapshot().history;
+    connection.changed = true; connection.hold = true;
+    const reading = model.refresh();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(model.getSnapshot().sessions[0].title, "正式标题", "usable metadata does not wait for Run state");
+    assert.equal(model.getSnapshot().history, history);
+    const reads = connection.reads;
+    connection.replacement = "更新后的正式标题";
+    poll(); poll(); poll();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(model.getSnapshot().sessions[0].title, "更新后的正式标题", "metadata keeps polling even when a prior Run read is still pending");
+    release(); await reading;
+    assert.equal(connection.reads, reads + 1, "periodic polling refreshes metadata without restarting the pending detail read");
+    assert.equal(model.getSnapshot().sessions[0].titleSource, "model");
+  } finally { globalThis.setInterval = original; release(); model?.close(); }
+});
+
 test("Session selection starts history beside the list request and reuses an exact cached revision", async () => {
   let releaseList;
   class Connection extends SnapshotStore {

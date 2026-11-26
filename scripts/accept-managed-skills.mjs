@@ -18,18 +18,21 @@ test("shipped managed profile disables actual Skills provider and all dependent 
     const ctx = booted.surfaceContext;
     const captured = ctx.get("skills");
     assert.equal((await captured.list({ cwd: directory })).skills.length, 1);
+    assert.equal(typeof ctx.get("webUiControls").get("skills").updateDefault, "function");
     assert.ok(ctx.get("tools").registry.list().some(tool => tool.name === "read_skill"));
     const snapshot = booted.pluginManagement.snapshot();
     const off = await booted.pluginManagement.change({ requestId: "skills-off", revision: snapshot.revision, preference: "disabled",
       selection: { instanceId: snapshot.inspection.instanceId, entryIds: ["include:skills-local"] } });
     assert.equal(off.status, "succeeded", JSON.stringify(off));
     assert.equal(ctx.get("skills"), undefined);
+    assert.equal(ctx.get("webUiControls").get("skills"), undefined);
     assert.equal(ctx.get("tools").registry.list().some(tool => tool.name === "read_skill" || tool.name === "list_skills"), false);
     await assert.rejects(captured.list({ cwd: directory }));
     const after = booted.pluginManagement.snapshot();
     const on = await booted.pluginManagement.change({ requestId: "skills-on", revision: after.revision, preference: "enabled", selection: { instanceId: after.inspection.instanceId, entryIds: ["include:skills-local"] } });
     assert.equal(on.status, "succeeded", JSON.stringify(on));
     assert.equal((await ctx.get("skills").list({ cwd: directory })).skills.length, 1);
+    assert.equal(typeof ctx.get("webUiControls").get("skills").queryDefault, "function");
     assert.ok(ctx.get("tools").registry.list().some(tool => tool.name === "read_skill"));
   } finally { await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
 });

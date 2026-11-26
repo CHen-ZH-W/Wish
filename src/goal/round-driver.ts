@@ -100,7 +100,7 @@ export class GoalRoundDriver extends Service {
       await goalService.disarm({ sessionId: input.run.scope, signal: input.signal });
       return Object.freeze({ type: "none" });
     }
-    if (goal.roundsStarted >= goal.maxGoalRounds) {
+    if (goal.maxGoalRounds !== undefined && goal.roundsStarted >= goal.maxGoalRounds) {
       await goalService.block({
         sessionId: input.run.scope,
         ref: goal,
@@ -196,7 +196,7 @@ function matches(goal: GoalView | undefined, reservation: Reservation): goal is 
 
 export function renderGoalRoundPrompt(goal: GoalView, round: number): string {
   return [
-    `Continue the active Goal (round ${round}/${goal.maxGoalRounds}).`,
+    `Continue the active Goal (round ${round}${goal.maxGoalRounds === undefined ? "" : `/${goal.maxGoalRounds}`}).`,
     `Objective: ${goal.objective}`,
     "Make concrete progress. Use get_goal before changing state.",
     "Call update_goal action complete only when the objective is achieved; call blocked only for a concrete persistent blocker.",

@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { Context, FiberState } from "@deepseek-ai/cordis";
@@ -35,6 +36,7 @@ import { PluginStateRegistry } from "../plugin-state/registry.js";
 import { FilePluginStatePersistence } from "../plugin-state/store.js";
 import { verifyPluginContracts } from "../plugin-admission/runtime.js";
 import { pluginManifestView, type WishPluginManifest } from "./plugin-control/manifest.js";
+import { emptyPluginPolicy, PluginPolicyFollower, SystemPluginPolicy, SystemPluginPolicyError } from "./plugin-control/system-policy.js";
 
 const ROOT_INCLUDE_ID = "include";
 
@@ -48,7 +50,9 @@ export interface BootstrapOptions {
   readonly environment?: ModelEnvironment;
   /** Overrides CORDIS_CONFIG and the built-in profile. */
   readonly configurationFile?: string | URL;
-  /** Explicit managed composition; ordinary CLI and unmanaged embeddings keep Include behavior. */
+  /** Read-only system policy shared with the owning Host; does not share its writer lock. */
+  readonly pluginPolicyDirectory?: string;
+  /** Explicit single-writer managed composition; policy followers use pluginPolicyDirectory. */
   readonly management?: {
     readonly directory: string;
     /** Root-owned control plane must be started independently of the business tree. */
@@ -104,6 +108,13 @@ export async function bootstrap(
     configurationFile: fileURLToPath(configuration.url),
     configurationSource: configuration.source,
   });
+  let follower: PluginPolicyFollower | undefined;
+  let initialized = false;
+  let disposal: Promise<void> | undefined;
+  const disposeRoot = () => disposal ??= (async () => {
+    await root.fiber.dispose();
+    await follower?.close();
+  })();
 
   try {
     root.baseUrl = new URL("./", configuration.url).href;
@@ -136,6 +147,7 @@ export async function bootstrap(
     let pluginStops: PluginStopControl;
     if (options.management) {
       const store = await ManagedPluginStore.open(resolve(options.management.directory, "plugins.json"));
+      root.provide("systemPluginPolicy", new SystemPluginPolicy(options.management.directory, () => store.snapshot()));
       stateCommitted = requestId => store.snapshot().receipts.some(receipt => receipt.requestId === requestId && receipt.status === "succeeded");
       management = new ManagedPluginControl(root, plugins, store); pluginStops = management.stops;
       root.provide("managedPlugins", management);
@@ -150,11 +162,33 @@ export async function bootstrap(
       await initializeDeploymentOverlay(overlayFilename);
       const source = new ManagedProfileSource(fileURLToPath(configuration.url), ROOT_INCLUDE_ID, store.snapshot(), undefined, pluginClassifications, overlayFilename);
       root.loader.builtins["wish-managed-profile"] = managedProfilePlugin(source, profile => management!.attach(profile), pluginClassifications);
-    } else pluginStops = installPluginStopControl(root, plugins);
+    } else {
+      pluginStops = installPluginStopControl(root, plugins);
+      if (options.pluginPolicyDirectory !== undefined) {
+        const policy = new SystemPluginPolicy(options.pluginPolicyDirectory);
+        root.provide("systemPluginPolicy", policy);
+        let overlayFilename: string | undefined = resolve(policy.directory, "deployment", "overlay.json");
+        try { await access(overlayFilename); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; overlayFilename = undefined; }
+        const base = new ManagedProfileSource(fileURLToPath(configuration.url), ROOT_INCLUDE_ID, emptyPluginPolicy,
+          undefined, pluginClassifications, overlayFilename);
+        follower = await PluginPolicyFollower.open(policy, base.ids(), () => {
+          launch.dispatchSignal("SIGTERM");
+          if (initialized) void disposeRoot().then(() => launch.complete(143), error => launch.fail(error));
+        });
+        const preferences = Object.fromEntries(Object.entries(follower.state.preferences).filter(([id]) => base.has(id)));
+        const source = new ManagedProfileSource(fileURLToPath(configuration.url), ROOT_INCLUDE_ID,
+          { ...follower.state, preferences }, undefined, pluginClassifications, overlayFilename);
+        if (preferences[`${ROOT_INCLUDE_ID}:${options.surface}`]?.preference === "disabled") {
+          throw new SystemPluginPolicyError(`system_plugin_disabled:${ROOT_INCLUDE_ID}:${options.surface}`);
+        }
+        root.loader.builtins["wish-managed-profile"] = managedProfilePlugin(source, () => {}, pluginClassifications);
+      }
+    }
 
     const rootInclude: EntryOptions = {
       id: ROOT_INCLUDE_ID,
-      name: management ? "cordis:wish-managed-profile" : "cordis:include",
+      name: management || follower ? "cordis:wish-managed-profile" : "cordis:include",
       config: { path: configuration.url.href },
     };
     await pluginState.begin(`startup:${Date.now()}`, ["*"]);
@@ -166,12 +200,19 @@ export async function bootstrap(
       verifyPluginContracts(root, fiber, entry.manifest);
     }
     await pluginState.finish(true);
-    const surfaceContext = management
+    if (follower) {
+      await follower.ready(plugins.inspect().entries.filter(entry => entry.enabled === true && entry.id.startsWith(`${ROOT_INCLUDE_ID}:`)).map(entry => entry.id));
+      if (root.loader.resolve(`${ROOT_INCLUDE_ID}:${options.surface}`).fiber?.state !== FiberState.ACTIVE) {
+        throw new SystemPluginPolicyError(`system_plugin_required_entry_unavailable:${ROOT_INCLUDE_ID}:${options.surface}`);
+      }
+    }
+    const surfaceContext = management || follower
       ? [...root.loader.entries()].find(entry => entry.id === `${ROOT_INCLUDE_ID}:${options.surface}`)?.ctx ?? root
       : assertEntriesActivated(root, options.surface);
     if (management) await startManagedConfigurationWatch(root, management, fileURLToPath(configuration.url));
 
-    let disposal: Promise<void> | undefined;
+    initialized = true;
+    if (follower?.revoked) throw new SystemPluginPolicyError("system_plugin_policy_revoked");
     return Object.freeze({
       context: root,
       surfaceContext,
@@ -183,14 +224,14 @@ export async function bootstrap(
       ...(management ? { pluginManagement: management } : {}),
       dispose(): Promise<void> {
         launch.complete(typeof process.exitCode === "number" ? process.exitCode : 0);
-        return disposal ??= root.fiber.dispose();
+        return disposeRoot();
       },
     });
   } catch (cause: unknown) {
     let failure = cause;
     try { await root.get("pluginState")?.rollback(); await root.get("pluginState")?.finish(false); }
     catch (error) { failure = new AggregateError([failure, error], "plugin_state_startup_recovery_failed"); }
-    try { await root.fiber.dispose(); }
+    try { await disposeRoot(); }
     catch (error) { failure = new AggregateError([failure, error], "bootstrap_cleanup_failed"); }
     const detail = failure instanceof Error ? failure.message : String(failure);
     throw new BootstrapError(

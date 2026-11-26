@@ -13,6 +13,7 @@ import type { AgentStepId } from "../core/runtime/runtime.js";
 export type SessionId = string;
 export type SessionHistoryRevision = string;
 export type SessionStatus = "active" | "archived";
+export type SessionTitleSource = "fallback" | "model" | "manual";
 
 /** Durable identity and display metadata for one conversation. */
 export interface Session {
@@ -26,6 +27,10 @@ export interface Session {
   /** Opaque optimistic-concurrency token for transcript changes only. */
   readonly historyRevision: SessionHistoryRevision;
   readonly title?: string;
+  /** Legacy titles without a source are manual; manual also pins a cleared title. */
+  readonly titleSource?: SessionTitleSource;
+  /** Independent metadata CAS token. Absent legacy values mean zero. */
+  readonly titleRevision?: number;
 }
 
 export type SessionMessageOrigin =
@@ -94,6 +99,8 @@ export interface CreateSessionInput {
   readonly agentId: AgentId;
   readonly scope: string;
   readonly title?: string;
+  /** Requires title; omitted sources on titled creates mean manual. */
+  readonly titleSource?: SessionTitleSource;
   readonly signal?: AbortSignal;
 }
 
@@ -112,6 +119,10 @@ export interface UpdateSessionMetadataInput {
   readonly sessionId: SessionId;
   /** `null` clears the stored title; `undefined` leaves it unchanged. */
   readonly title?: string | null;
+  /** Requires a title write, including null; omitted sources mean manual. */
+  readonly titleSource?: SessionTitleSource;
+  /** Compared atomically with titleRevision inside the metadata transaction. */
+  readonly expectedTitleRevision?: number;
   readonly signal?: AbortSignal;
 }
 
@@ -204,6 +215,7 @@ export type SessionErrorCode =
   | "session_already_exists"
   | "session_archived"
   | "session_revision_conflict"
+  | "session_title_conflict"
   | "session_idempotency_conflict"
   | "session_corruption"
   | "session_invalid_transcript";
@@ -257,6 +269,17 @@ export class SessionRevisionConflictError extends SessionError {
       sessionId,
     );
     this.name = "SessionRevisionConflictError";
+  }
+}
+
+export class SessionTitleConflictError extends SessionError {
+  constructor(
+    sessionId: SessionId,
+    readonly expectedTitleRevision: number,
+    readonly actualTitleRevision: number,
+  ) {
+    super("session_title_conflict", `Session title revision conflict for ${sessionId}`, sessionId);
+    this.name = "SessionTitleConflictError";
   }
 }
 

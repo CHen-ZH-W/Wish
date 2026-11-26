@@ -55,17 +55,6 @@ test("Native Session permission choices persist across all four profiles", async
   }
 });
 
-test("Host Shell advertises only its explicit full-access profile", () => {
-  assert.deepEqual(availablePermissionProfiles({
-    ...nativeShellPolicy,
-    backend: "host",
-    filesystem: "none",
-    network: "none",
-    environment: "inherit",
-    automaticPermissionProfiles: ["full-access"],
-  }), ["full-access"]);
-});
-
 test("Application initializes each new Session and pins permission for a whole Run", async () => {
   let selected = "workspace-write";
   let nextRun = 0;

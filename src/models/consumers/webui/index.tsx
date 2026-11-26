@@ -1,5 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
-import type {} from "../../../apps/webui/client/plugins.js";
+import { bindPageReadiness } from "../../../apps/webui/client/plugins.js";
 import { Icon } from "../../../apps/webui/client/ui/primitives.js";
 import { ModelsSettingsClientModel } from "./model.js";
 import { ModelsSettingsPage } from "./view.js";
@@ -13,8 +13,11 @@ export const ModelsClientUi = {
   inject: ["wishSettings", "wishConnection", "wishSession", "wishNewSession", "wishUiSlots"],
   apply(ctx: Context): void {
     const model = new ModelsSettingsClientModel(ctx.wishSettings, ctx.wishConnection);
+    ctx.effect(() => ctx.wishUiSlots.loading({ id: "model-credentials", panels: ["models"], sources: [model, ctx.wishConnection], getState: () => ({ key: ctx.wishConnection.getSnapshot().instanceId ?? "", pending: ctx.wishConnection.getSnapshot().online && model.getSnapshot().loading }) }));
     const reasoning = new ReasoningClientModel(ctx.wishConnection, ctx.wishSession);
+    ctx.effect(() => bindPageReadiness(ctx, "reasoning", ["conversation", "archives"], reasoning.readiness));
     const newSessionReasoning = new NewSessionReasoningClientModel(ctx.wishConnection, ctx.wishSettings);
+    ctx.effect(() => bindPageReadiness(ctx, "new-reasoning", ["new-session"], newSessionReasoning.readiness, false));
     ctx.effect(() => () => model.close(), "Models settings client model");
     ctx.effect(() => () => reasoning.close(), "Models reasoning client model");
     ctx.effect(() => () => newSessionReasoning.close(), "Models pre-Session reasoning client model");
@@ -35,6 +38,7 @@ export const ModelsClientUi = {
       label: "模型配置",
       labelEn: "Models",
       area: "settings",
+      preserveState: true,
       Icon: () => <Icon name="model" />,
       View: () => <ModelsSettingsPage model={model} />,
     }), "Models UI contribution");

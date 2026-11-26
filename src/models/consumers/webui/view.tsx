@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ErrorNotice, readableError, useSnapshot } from "../../../apps/webui/client/ui/primitives.js";
 import { useText } from "../../../apps/webui/client/i18n.js";
 import type { CredentialStatus } from "../../../credentials/types.js";
@@ -55,8 +55,13 @@ function ModelEditor({ model, choice, selectedModel, choices, override, outputOv
   const [outputLimit, setOutputLimit] = useState(() => formatCapacity(outputOverride));
   const [key, setKey] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
-  useEffect(() => { setCapacity(formatCapacity(override)); setFieldError(null); }, [choice.value, override]);
-  useEffect(() => { setOutputLimit(formatCapacity(outputOverride)); setFieldError(null); }, [choice.value, outputOverride]);
+  const [source, setSource] = useState({ model: choice.value, override, outputOverride });
+  if (source.model !== choice.value || source.override !== override || source.outputOverride !== outputOverride) {
+    if (source.model !== choice.value || source.override !== override) setCapacity(formatCapacity(override));
+    if (source.model !== choice.value || source.outputOverride !== outputOverride) setOutputLimit(formatCapacity(outputOverride));
+    setFieldError(null);
+    setSource({ model: choice.value, override, outputOverride });
+  }
 
   const commitCapacity = () => {
     const parsed = parseCapacity(capacity);

@@ -6,6 +6,7 @@ import { PluginWorkOwner } from "../../../../boot/plugin-control/work-owner.js";
 import type { ToolResultArtifact } from "../../../../core/tools/tool.js";
 import type { BlobReference, BlobStorageBackend } from "../../../../storage/blob.js";
 import type { StorageBackendLease } from "../../../../storage/backend.js";
+import type { KvStorageBackend } from "../../../../storage/kv.js";
 import { StorageClosedError } from "../../../../storage/errors.js";
 import { ToolOutputArtifactsService } from "../service.js";
 import type {
@@ -16,6 +17,7 @@ import type {
 const BLOB_NAMESPACE = "tool-results/output-artifacts";
 const SESSION_NAMESPACE_PREFIX = `${BLOB_NAMESPACE}/session-`;
 const LOCATOR_PREFIX = "wish-tool-output:v1:";
+const OWNER_NAMESPACE = "tool-results/output-artifact-owners";
 
 export interface Config {
   readonly backendId?: string;
@@ -32,6 +34,7 @@ export class BlobToolOutputArtifacts extends ToolOutputArtifactsService {
 
   private readonly lease: StorageBackendLease;
   private readonly blob: BlobStorageBackend;
+  private readonly kv: KvStorageBackend;
   private released = false;
   private readonly work: PluginWorkOwner;
 
@@ -40,8 +43,10 @@ export class BlobToolOutputArtifacts extends ToolOutputArtifactsService {
     const backendId = requireIdentifier(config.backendId ?? "file", "backendId");
     this.lease = ctx.storageBackend.acquire(backendId, {
       blob: { contentAddressed: true },
+      kv: { list: true },
     });
     this.blob = this.lease.resolve(backendId, "blob");
+    this.kv = this.lease.resolve(backendId, "kv");
     this.work = new PluginWorkOwner(ctx, { code: "tool_output_artifacts", codeReload: true, close: () => {
       this.released = true;
       this.lease.release();
@@ -61,12 +66,22 @@ export class BlobToolOutputArtifacts extends ToolOutputArtifactsService {
       this.assertOpen();
       if (!this.blob.deleteNamespace) throw new Error("Tool output artifact namespace deletion is unavailable");
       await this.blob.deleteNamespace(sessionNamespace(sessionId));
+      const owner = await this.kv.get({ namespace: OWNER_NAMESPACE, key: sessionId });
+      if (owner) await this.kv.delete({ namespace: OWNER_NAMESPACE, key: sessionId, precondition: { kind: "revision", revision: owner.revision } });
     });
   }
 
   private async putAccepted(request: PutToolOutputArtifactRequest): Promise<ToolResultArtifact> {
     this.assertOpen();
     validatePutRequest(request);
+    // Persist ownership before payload publication, including interrupted calls
+    // that never reach Tool Result archival.
+    if (!await this.kv.get({ namespace: OWNER_NAMESPACE, key: request.sessionId })) {
+      try {
+        await this.kv.put({ namespace: OWNER_NAMESPACE, key: request.sessionId,
+          value: new TextEncoder().encode(JSON.stringify({ sessionId: request.sessionId })), precondition: { kind: "absent" } });
+      } catch (error) { if ((error as { code?: string }).code !== "storage_conflict") throw error; }
+    }
     const reference = await this.blob.put({
       namespace: sessionNamespace(request.sessionId),
       value: request.value,
@@ -95,6 +110,13 @@ export class BlobToolOutputArtifacts extends ToolOutputArtifactsService {
     });
     this.assertOpen();
     return value;
+  }
+
+  override sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>, knownSessionIds: readonly string[] = []): Promise<void> {
+    return this.work.run(async () => {
+      const owners = new Set([...knownSessionIds, ...(await this.kv.list!({ namespace: OWNER_NAMESPACE })).map(item => item.key)]);
+      for (const sessionId of owners) if (await wasDeleted(sessionId)) await this.purgeSession(sessionId);
+    });
   }
 
   private assertOpen(): void {

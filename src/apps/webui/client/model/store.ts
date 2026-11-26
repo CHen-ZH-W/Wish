@@ -24,17 +24,22 @@ export function freezeWire<T>(value: T): T {
 }
 
 /** Fold invalidations during a read into one successor; a stale read never overwrites the successor. */
-export class RefreshQueue {
+export class RefreshQueue extends SnapshotStore<boolean> {
   private pending: Promise<void> | undefined;
   private version = 0;
   private closed = false;
-  constructor(private readonly refresh: (current: () => boolean) => Promise<void>) {}
+  constructor(private readonly refresh: (current: () => boolean) => Promise<void>) { super(false); }
   request(): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.version++;
-    return this.pending ??= this.run().finally(() => { this.pending = undefined; });
+    this.publish(true);
+    return this.pending ??= this.run().finally(() => { this.pending = undefined; this.publish(false); });
   }
-  close(): void { this.closed = true; this.version++; }
+  /** Periodic checks share an in-flight read; only a real invalidation makes it stale. */
+  poll(): Promise<void> { return this.pending ?? this.request(); }
+  /** Observe the current read and its folded successors without invalidating a valid in-flight response. */
+  whenSettled(): Promise<void> { return this.pending ?? Promise.resolve(); }
+  close(): void { this.closed = true; this.version++; this.publish(false); }
   private async run(): Promise<void> {
     let version: number;
     do { version = this.version; await this.refresh(() => !this.closed && version === this.version); }

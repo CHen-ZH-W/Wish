@@ -21,8 +21,9 @@ export function applyCordisHmrPatch(dependency = join(repository, "node_modules/
     if (!["src/index.ts", "lib/index.js", "lib/types/index.d.ts"].includes(name) || !expected) throw Error("Unexpected patch target");
     const path = join(dependency, name), source = readFileSync(path, "utf8"), digest = hash(source);
     if (digest === expected.after) return { path, source };
-    if (digest === expected.previous) {
-      const next = expected.upgrade.reduce((value, change) => {
+    const upgrade = digest === expected.previous ? expected.upgrade : expected.previousVersions?.[digest];
+    if (upgrade) {
+      const next = upgrade.reduce((value, change) => {
         if (value.split(change.from).length !== 2) throw Error(`Ambiguous HMR patch upgrade: ${name}`);
         return value.replace(change.from, change.to);
       }, source);

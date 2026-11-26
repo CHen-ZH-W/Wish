@@ -355,6 +355,15 @@ export class SubagentRuntime implements Subagents {
     });
   }
 
+  async sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    const records = await this.observe(() => this.store.list());
+    for (const record of records) {
+      if (!await wasDeleted(record.parentSessionId)) continue;
+      await this.purge({ id: record.id, parentAgentId: record.parentAgentId, parentSessionId: record.parentSessionId,
+        parentRunId: record.parentRunId, workspaceRoot: record.workspaceRoot });
+    }
+  }
+
   async collect(request: CollectSubagentRequest): Promise<CollectedSubagent> {
     return this.serial(async () => {
       const record = await this.required(request);
@@ -860,6 +869,9 @@ export class SubagentsRuntimeService extends SubagentsService {
   send(request: SendSubagentRequest): Promise<void> { return this.track(() => this.backend.send(request)); }
   stop(request: StopSubagentRequest): Promise<SubagentRecord> { return this.track(() => this.backend.stop(request)); }
   purge(request: StopSubagentRequest): Promise<void> { return this.track(() => this.backend.purge(request)); }
+  override sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    return this.track(() => this.backend.sweepDeletedSessions(wasDeleted));
+  }
   collect(request: CollectSubagentRequest): Promise<CollectedSubagent> { return this.track(() => this.backend.collect(request)); }
   subscribe(listener: SubagentEventListener): () => void {
     if (this.suspended || this.closing) throw new SubagentClosedError();

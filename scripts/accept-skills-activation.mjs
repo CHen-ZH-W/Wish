@@ -1,0 +1,110 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Context } from "@deepseek-ai/cordis";
+import { StorageHub } from "../dist/storage/service.js";
+import { StorageBackendService } from "../dist/storage/binding.js";
+import { FileStorageBackend } from "../dist/storage/providers/file/backend.js";
+import LocalSkillsService from "../dist/skills/providers/local.js";
+import StorageMemory from "../dist/memory/providers/storage.js";
+import MemorySkills from "../dist/memory/consumers/skills.js";
+import { modelMemoryFiles } from "../dist/memory/files.js";
+import { FrozenSkills } from "../dist/skills/local.js";
+import { skillCatalogDigest } from "../dist/skills/import.js";
+import { createSkillsWebUiControl } from "../dist/skills/consumers/webui-control.js";
+import { SkillContextProvider } from "../dist/skills/consumers/context.js";
+import { SubagentMemoryResources } from "../dist/memory/consumers/subagent-resources.js";
+import { FileSubagentExchange } from "../dist/subagents/files.js";
+import { childMemoryLibrary } from "../dist/memory/child-resources.js";
+
+const manifest = (name, body = "Read before making changes.") => `---\nname: ${name}\ndescription: ${name} instructions\n---\n${body}\n`;
+test("Wish-wide Memory and imported Skills share durable user activation, including model reads and frozen snapshots", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-skills-activation-"));
+  let root;
+  const userRoot = join(directory, "skills"), memoryRoot = join(directory, "memories", "default");
+  const put = async (base, name, body) => { await mkdir(join(base, name), { recursive: true }); await writeFile(join(base, name, "SKILL.md"), manifest(name, body)); };
+  const start = async () => {
+    root = new Context();
+    root.provide("launch", { cwd: directory, homeDirectory: directory });
+    root.provide("sessions", { dataDirectory: directory });
+    await root.plugin(StorageHub);
+    root.storage.register(new FileStorageBackend({ id: "file", rootDirectory: join(directory, "storage") }));
+    class Selected extends StorageBackendService { static inject = ["storage"]; id = "file"; }
+    await root.plugin(Selected);
+    await root.plugin(LocalSkillsService, { userRoot });
+    await root.plugin(StorageMemory);
+    await root.plugin(MemorySkills);
+  };
+  const lookup = { cwd: directory };
+  const request = (catalog, name, enabled) => { const skill = catalog.skills.find(skill => skill.name === name); return {
+    ...lookup, name, expectedPackageId: skill.packageId, expectedDigest: skill.digest, expectedCatalogDigest: skillCatalogDigest(catalog), enabled }; };
+  try {
+    await put(userRoot, "imported");
+    await put(join(directory, ".agents", "skills"), "project-only");
+    await put(join(memoryRoot, "skills"), "learned");
+    await mkdir(join(memoryRoot, "skills", "learned", "scripts"));
+    await writeFile(join(memoryRoot, "skills", "learned", "scripts", "check.sh"), "echo learned\n");
+    await mkdir(join(memoryRoot, "skills", "learned", "templates"));
+    await writeFile(join(memoryRoot, "skills", "learned", "templates", "report.md"), "# Report template\n");
+    await writeFile(join(memoryRoot, "memory_summary.md"), "v1\n\nUse learned for relevant tasks.\n");
+    await start();
+    let catalog = await root.skills.list(lookup);
+    assert.deepEqual(catalog.skills.map(skill => skill.name), ["imported", "learned"]);
+    assert.deepEqual(await root.skills.list({ cwd: "/another/workspace" }), catalog);
+    assert.equal(catalog.skills[1].source, "memory");
+    const learned = request(catalog, "learned", false);
+    assert.match((await root.skills.read({ ...learned, invocation: "model", path: "scripts/check.sh" })).content, /learned/);
+    const control = createSkillsWebUiControl(root.skills, { async resolve({ root }) { return { root, fingerprint: "fp", revision: "rev" }; } });
+    const { cwd, ...body } = learned;
+    const result = await control.updateDefault({}, { action: "set-enabled", ...body }, new AbortController().signal, { workspaceRoot: directory });
+    assert.equal(result.entry.enabled, false);
+    assert.equal(result.catalog.skills.find(skill => skill.name === "learned").enabled, false);
+    await assert.rejects(root.skills.read({ ...learned, invocation: "model" }), /disabled/);
+    assert.match((await root.skills.read({ ...learned, invocation: "host" })).content, /Read before/);
+    assert.equal((await root.memory.files()).some(file => file.path === "skills/learned/SKILL.md"), true);
+    assert.equal((await modelMemoryFiles(root.memory)).some(file => file.path.startsWith("skills/learned/")), false);
+    const exchange = new FileSubagentExchange(join(directory, "children"));
+    const resources = new SubagentMemoryResources({ memory: root.memory });
+    const identity = { id: "child", childSessionId: "child-session", childRunId: "child-run" };
+    const owner = { parentAgentId: "parent", parentSessionId: "session", parentRunId: "run", workspaceRoot: directory };
+    const inputs = await resources.prepare({ ...owner, task: "Inspect", allowedCapabilities: ["runtime.read"] });
+    const child = childMemoryLibrary(await exchange.writeInputResources(identity, owner, inputs));
+    assert.equal(child.allowedSkills.includes("learned"), false);
+    assert.equal(child.directory, root.memory.workspace.directory);
+    assert.equal(JSON.stringify(inputs).includes("Updated by consolidation"), false);
+    await resources.close();
+    const frozen = new FrozenSkills(await root.skills.snapshot(lookup));
+    await assert.rejects(frozen.read({ ...learned, invocation: "model" }), /invocation/);
+    await assert.rejects(root.skills.setEnabled({ ...learned, enabled: true }), { code: "skill_import_catalog_changed" });
+    const context = await new SkillContextProvider(root.skills).provide({ workspace: { cwd: directory }, request: { availableTools: ["read_skill"] } });
+    assert.ok(context.some(item => item.id === "skills:disabled" && item.message.content.includes("learned")));
+    assert.ok(!context.find(item => item.id === "skills:catalog").message.content.includes("learned"));
+    catalog = await root.skills.list(lookup);
+    await root.skills.setEnabled(request(catalog, "imported", false));
+    await root.fiber.dispose(); root = undefined;
+    // Editing generated bytes must not re-enable user-disabled packages.
+    await put(join(memoryRoot, "skills"), "learned", "Updated by consolidation.");
+    await start();
+    catalog = await root.skills.list(lookup);
+    assert.ok(catalog.skills.every(skill => skill.enabled === false));
+    await assert.rejects(root.skills.read({ ...request(catalog, "imported", true), invocation: "model" }), /disabled/);
+    await root.skills.setEnabled(request(catalog, "learned", true));
+    catalog = await root.skills.list(lookup);
+    assert.match((await root.skills.read({ ...request(catalog, "learned", true), invocation: "model" })).content, /Updated by consolidation/);
+    assert.ok((await modelMemoryFiles(root.memory)).some(file => file.path === "skills/learned/SKILL.md"));
+    assert.equal(catalog.skills.find(skill => skill.name === "imported").enabled, false);
+    // Every package remains visible and manageable when generated and imported names collide.
+    await put(join(memoryRoot, "skills"), "imported", "Generated namesake.");
+    catalog = await root.skills.list(lookup);
+    const namesakes = catalog.skills.filter(skill => skill.name === "imported");
+    assert.equal(namesakes.length, 2);
+    assert.equal(new Set(namesakes.map(skill => skill.packageId)).size, 2);
+    const generated = namesakes.find(skill => skill.source === "memory");
+    assert.match((await root.skills.read({ ...lookup, name: generated.name, expectedDigest: generated.digest,
+      expectedPackageId: generated.packageId, invocation: "model" })).content, /Generated namesake/);
+    const captured = new FrozenSkills(await root.skills.snapshot(lookup));
+    assert.equal((await captured.list(lookup)).skills.filter(skill => skill.name === "imported").length, 2);
+  } finally { await root?.fiber.dispose(); await rm(directory, { recursive: true, force: true }); }
+});

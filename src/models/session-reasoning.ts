@@ -53,7 +53,7 @@ const domainSpec: DomainSpec<string, SessionReasoningSelection> = Object.freeze(
 /** Models-owned, Session-keyed durable selection; Storage remains the generic KV owner. */
 export class DomainSessionReasoningStore implements SessionReasoningStore {
   private readonly domain: StorageDomain<string, SessionReasoningSelection>;
-  constructor(storage: StorageBackendResolver, backendId: string) {
+  constructor(private readonly storage: StorageBackendResolver, private readonly backendId: string) {
     this.domain = new StorageDomain({ storage, backendId, spec: domainSpec });
   }
   async get(sessionId: string, signal?: AbortSignal) {
@@ -68,6 +68,15 @@ export class DomainSessionReasoningStore implements SessionReasoningStore {
   }
   async delete(sessionId: string, revision: string, signal?: AbortSignal): Promise<void> {
     await this.domain.resolve(sessionId).delete({ kind: "revision", revision }, signal);
+  }
+  async sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    const kv = this.storage.resolve(this.backendId, "kv");
+    if (!kv.list) throw new Error("Session reasoning store cannot enumerate cleanup owners");
+    for (const entry of await kv.list({ namespace: domainSpec.id })) {
+      if (!await wasDeleted(entry.key)) continue;
+      const current = await this.get(entry.key);
+      if (current) await this.delete(entry.key, current.revision);
+    }
   }
 }
 

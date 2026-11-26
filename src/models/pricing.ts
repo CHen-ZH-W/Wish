@@ -85,7 +85,11 @@ export class ModelPricingResolver {
 const DEEPSEEK_PROVIDER = "deepseek";
 const DEEPSEEK_FLASH = "deepseek-flash";
 const DEEPSEEK_PRO = "deepseek-v4-pro";
-/** Reviewed against DeepSeek Pricing and release notices on 2026-09-19. */
+/**
+ * USD/CNY rates rechecked on 2026-10-21; original rate versions/effective dates retained.
+ * https://api-docs.deepseek.com/quick_start/pricing/
+ * https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+ */
 const DEEPSEEK_FLASH_PRICE_VERSION = "deepseek-flash:2026-09-10T04:00Z";
 const DEEPSEEK_FLASH_EFFECTIVE_FROM = "2026-09-10T04:00:00.000Z";
 const DEEPSEEK_PRO_PRICE_VERSION = "deepseek-v4-pro:2026-08-16T16:00Z";
@@ -148,7 +152,11 @@ const DEEPSEEK_RATES: Readonly<
   }),
 });
 
-/** Current official DeepSeek schedule: shared UTC windows with per-model rates. */
+/**
+ * Official DeepSeek schedule: Beijing weekdays 09:00–12:00 / 14:00–18:00,
+ * excluding Chinese public holidays; weekends remain off-peak even on makeup workdays.
+ * https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+ */
 export class DeepSeekPricingPolicy implements ModelPricingPolicy {
   readonly provider = DEEPSEEK_PROVIDER;
 
@@ -163,6 +171,7 @@ export class DeepSeekPricingPolicy implements ModelPricingPolicy {
     const billedModel = canonicalDeepSeekModel(billedReference.model);
     if (billedModel === undefined) return undefined;
     const period = deepSeekPeriod(instant.millis);
+    if (period === undefined) return undefined;
     const rates = DEEPSEEK_RATES[currency][billedModel][period];
     if (
       rates.effectiveFrom !== undefined &&
@@ -214,14 +223,43 @@ function canonicalDeepSeekModel(model: string): DeepSeekBilledModel | undefined 
   return model === DEEPSEEK_PRO ? DEEPSEEK_PRO : undefined;
 }
 
-function deepSeekPeriod(millis: number): DeepSeekPeriod {
-  const time = new Date(millis);
+/**
+ * Published 2026 holiday schedule, inclusive Beijing calendar dates. Do not infer
+ * holidays for later years from recurring dates or treat makeup weekends as peak.
+ * State Council notice 国办发明电〔2025〕7号, official government reproduction:
+ * https://www.beijing.gov.cn/zhengce/zhengcefagui/202511/t20251104_4258873.html
+ */
+const DEEPSEEK_CHINA_HOLIDAYS: Readonly<
+  Partial<Record<number, readonly (readonly [string, string])[]>>
+> = Object.freeze({
+  2026: Object.freeze([
+    ["2026-01-01", "2026-01-03"] as const,
+    ["2026-02-15", "2026-02-23"] as const,
+    ["2026-04-04", "2026-04-06"] as const,
+    ["2026-05-01", "2026-05-05"] as const,
+    ["2026-06-19", "2026-06-21"] as const,
+    ["2026-09-25", "2026-09-27"] as const,
+    ["2026-10-01", "2026-10-07"] as const,
+  ]),
+});
+
+function deepSeekPeriod(millis: number): DeepSeekPeriod | undefined {
+  // Fixed UTC+08:00 has no DST. Use UTC getters on the shifted date so the
+  // host timezone never changes a holiday, weekday, or billing boundary.
+  const time = new Date(millis + 8 * 60 * 60 * 1_000);
   const weekday = time.getUTCDay();
   if (weekday === 0 || weekday === 6) return "off_peak";
   const hour = time.getUTCHours();
-  return (hour >= 1 && hour < 4) || (hour >= 6 && hour < 10)
-    ? "peak"
-    : "off_peak";
+  if (!((hour >= 9 && hour < 12) || (hour >= 14 && hour < 18))) return "off_peak";
+
+  const holidays = DEEPSEEK_CHINA_HOLIDAYS[time.getUTCFullYear()];
+  // Candidate peak hours need a published calendar. Leave the price unavailable
+  // rather than silently overcharging a future holiday with a guessed schedule.
+  if (holidays === undefined) return undefined;
+  const date = time.toISOString().slice(0, 10);
+  return holidays.some(([from, through]) => date >= from && date <= through)
+    ? "off_peak"
+    : "peak";
 }
 
 function staticQuote(

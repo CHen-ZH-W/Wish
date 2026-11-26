@@ -14,6 +14,8 @@ export interface NewSessionReasoningSnapshot {
 /** Models owns the pre-Session choice; it becomes durable only after the first send creates a Session. */
 export class NewSessionReasoningClientModel extends SnapshotStore<NewSessionReasoningSnapshot> {
   private readonly queue: RefreshQueue;
+  /** Pending reads are presentation signals, independent of operation authority. */
+  get readiness(): Pick<RefreshQueue, "getSnapshot" | "subscribe"> { return this.queue; }
   private readonly removers: Array<() => void> = [];
   private readonly timer: ReturnType<typeof setInterval>;
   private instanceId: string | null = null;

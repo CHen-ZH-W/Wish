@@ -6,14 +6,14 @@ export function normalizeTasks(input: readonly TaskSpec[]): readonly TaskSpec[] 
   const tasks = input.map((task) => {
     if (!task || typeof task !== "object") throw new Error("Invalid task");
     const execution = task.execution;
-    if (!execution || typeof execution.readOnly !== "boolean" || !Number.isSafeInteger(execution.timeoutMs) || execution.timeoutMs < 1 || execution.timeoutMs > 86_400_000) throw new Error("Invalid task execution limits");
+    if (!execution || typeof execution.readOnly !== "boolean" || (execution.timeoutMs !== undefined && (!Number.isSafeInteger(execution.timeoutMs) || execution.timeoutMs < 1 || execution.timeoutMs > 86_400_000))) throw new Error("Invalid task execution limits");
     if (!Array.isArray(task.dependencies)) throw new Error("Task dependencies must be an array");
     const dependencies = task.dependencies.map(id);
     if (new Set(dependencies).size !== dependencies.length) throw new Error("Duplicate dependency");
     return Object.freeze({ id: id(task.id), title: text(task.title),
       ...(task.description === undefined ? {} : { description: text(task.description) }),
       dependencies: Object.freeze(dependencies),
-      execution: Object.freeze({ role: id(execution.role), readOnly: execution.readOnly, timeoutMs: execution.timeoutMs }),
+      execution: Object.freeze({ role: id(execution.role), readOnly: execution.readOnly, ...(execution.timeoutMs === undefined ? {} : { timeoutMs: execution.timeoutMs }) }),
     });
   });
   const byId = new Map(tasks.map((task) => [task.id, task]));

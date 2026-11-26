@@ -1,3 +1,4 @@
+import { LoadingBoundary } from "../../../apps/webui/client/ui/loading-boundary.js";
 import type { Context } from "@deepseek-ai/cordis";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type {} from "../../../apps/webui/client/plugins.js";
@@ -17,7 +18,7 @@ export class WorkspaceFilesClient {
   readBytes(sessionId: string, path: string): Promise<WorkspaceBinaryFileView> { return this.query(sessionId, { operation: "read-bytes", path }); }
 }
 
-type DirectoryLevel = { readonly phase: "loading" } | { readonly phase: "ready"; readonly value: WorkspaceDirectoryView } | { readonly phase: "failed"; readonly error: string };
+type DirectoryLevel = { readonly phase: "loading" } | { readonly phase: "ready"; readonly value: WorkspaceDirectoryView; readonly error?: string } | { readonly phase: "failed"; readonly error: string };
 
 function WorkspaceFilesSidebar({ client, sessionId, actions }: { client: WorkspaceFilesClient } & UiSessionSidebarViewProps) {
   const t = useText();
@@ -25,6 +26,8 @@ function WorkspaceFilesSidebar({ client, sessionId, actions }: { client: Workspa
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(["."]));
   const lifetime = useRef<AbortController | null>(null);
   const levelsRef = useRef(levels); levelsRef.current = levels;
+  const expandedRef = useRef(expanded); expandedRef.current = expanded;
+  const scope = useRef({ client, sessionId });
 
   const load = useCallback(async (path: string, signal: AbortSignal, preserve = true) => {
     setLevels(current => ({ ...current, [path]: preserve && current[path]?.phase === "ready" ? current[path] : { phase: "loading" } }));
@@ -34,16 +37,23 @@ function WorkspaceFilesSidebar({ client, sessionId, actions }: { client: Workspa
     } catch (cause) {
       if (signal.aborted) return;
       const error = readableError(cause instanceof ClientApiError ? cause.code : cause instanceof Error ? cause.message : "workspace_files_unavailable");
-      setLevels(current => ({ ...current, [path]: { phase: "failed", error } }));
+      const revoked = cause instanceof ClientApiError && (cause.status === 401 || cause.status === 403 || cause.status === 404 || ["business_unavailable", "control_not_found", "management_closed", "connection_closed"].includes(cause.code));
+      setLevels(current => {
+        const previous = current[path];
+        return { ...current, [path]: preserve && previous?.phase === "ready" && !revoked ? { ...previous, error } : { phase: "failed", error } };
+      });
     }
   }, [client, sessionId]);
 
   useEffect(() => {
     const controller = new AbortController(); lifetime.current = controller;
-    setLevels({}); setExpanded(new Set(["."]));
-    void load(".", controller.signal, false);
+    const changed = scope.current.client !== client || scope.current.sessionId !== sessionId;
+    scope.current = { client, sessionId };
+    if (changed) { setLevels({}); setExpanded(new Set(["."])); }
+    const paths = changed ? ["."] : new Set([".", ...expandedRef.current]);
+    for (const path of paths) void load(path, controller.signal, !changed);
     return () => { controller.abort(); if (lifetime.current === controller) lifetime.current = null; };
-  }, [load]);
+  }, [client, sessionId, load]);
 
   const toggle = useCallback((path: string) => {
     const controller = lifetime.current; if (!controller) return;
@@ -64,14 +74,15 @@ function WorkspaceFilesSidebar({ client, sessionId, actions }: { client: Workspa
     actions.openResource({ kind: "file", contentId: `file:${sessionId}:${encodeURIComponent(entry.path)}`, title: entry.name, params: { path: entry.path } });
   }, [actions, sessionId]);
 
-  const root = Object.values(levels).find(level => level.phase === "ready")?.value.root;
-  return <section className="workspace-files-view" data-files-state="tree">
+  const activeLevels = scope.current.client === client && scope.current.sessionId === sessionId ? levels : {};
+  const root = Object.values(activeLevels).find(level => level.phase === "ready")?.value.root;
+  return <LoadingBoundary identity={sessionId} pending={!activeLevels["."] || activeLevels["."]?.phase === "loading"}><section className="workspace-files-view" data-files-state="tree">
     <header className="workspace-files-toolbar">
       <code title={root}>{root ?? t("工作区", "Workspace")}</code>
       <button className="workspace-files-refresh" disabled={!root} aria-label={t("刷新文件树", "Refresh file tree")} title={t("刷新", "Refresh")} onClick={refresh}><RefreshIcon /></button>
     </header>
-    <div className="workspace-files-tree" role="tree" aria-label={t("工作区文件", "Workspace files")}><DirectoryLevelView path="." levels={levels} expanded={expanded} toggle={toggle} openFile={openFile} t={t} /></div>
-  </section>;
+    <div className="workspace-files-tree" role="tree" aria-label={t("工作区文件", "Workspace files")}><DirectoryLevelView path="." levels={activeLevels} expanded={expanded} toggle={toggle} openFile={openFile} t={t} /></div>
+  </section></LoadingBoundary>;
 }
 
 function DirectoryLevelView({ path, levels, expanded, toggle, openFile, t }: { path: string; levels: Readonly<Record<string, DirectoryLevel>>; expanded: ReadonlySet<string>; toggle(path: string): void; openFile(entry: WorkspaceFileEntry): void; t: ReturnType<typeof useText> }): ReactNode {
@@ -88,7 +99,7 @@ function DirectoryLevelView({ path, levels, expanded, toggle, openFile, t }: { p
       </button>
       {open ? <DirectoryLevelView path={entry.path} levels={levels} expanded={expanded} toggle={toggle} openFile={openFile} t={t} /> : null}
     </li>;
-  })}{level.value.truncated ? <li className="workspace-files-note">{t("列表已达到显示上限。", "The listing reached its display limit.")}</li> : null}</ul>;
+  })}{level.error ? <li className="workspace-files-note danger" role="status">{level.error}</li> : null}{level.value.truncated ? <li className="workspace-files-note">{t("列表已达到显示上限。", "The listing reached its display limit.")}</li> : null}</ul>;
 }
 
 function RefreshIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6v5h-5M4 18v-5h5M18.5 9A7 7 0 0 0 6 6.5L4 9m16 6-2 2.5A7 7 0 0 1 5.5 15" /></svg>; }

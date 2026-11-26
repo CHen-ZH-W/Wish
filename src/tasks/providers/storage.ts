@@ -15,6 +15,7 @@ export default class StorageTasks extends TasksService {
   readonly replace: Tasks["replace"];
   readonly freeze: Tasks["freeze"];
   readonly transition: Tasks["transition"];
+  readonly projectPending: Tasks["projectPending"];
   readonly close: Tasks["close"];
   constructor(ctx: Context, config: Config = {}) {
     super(ctx);
@@ -27,6 +28,7 @@ export default class StorageTasks extends TasksService {
     this.replace = (...args) => work.run(() => runtime.replace(...args));
     this.freeze = (...args) => work.run(() => runtime.freeze(...args));
     this.transition = (...args) => work.run(() => runtime.transition(...args));
+    this.projectPending = (...args) => work.run(() => runtime.projectPending(...args));
     this.close = () => work.close();
   }
 }

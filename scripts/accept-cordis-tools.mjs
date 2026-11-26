@@ -11,7 +11,7 @@ import { bootstrap } from "../dist/boot/bootstrap.js";
 import LocalFilesystem from "../dist/filesystem/providers/local.js";
 import LocalFilesystemSearch from
   "../dist/filesystem/search/providers/local.js";
-import HostShell from "../dist/shell/providers/host.js";
+import LinuxNativeShell from "../dist/shell/providers/linux-native.js";
 import * as FilesystemToolPlugins from
   "../dist/filesystem/consumers/model-tools/plugin.js";
 import { Grep as GrepTool } from
@@ -54,7 +54,9 @@ const todoNames = ["todo_write"];
 const goalNames = ["get_goal", "create_goal", "update_goal"];
 const workflowNames = ["workflow_read", "workflow_start", "workflow_cancel", "workflow_retry"];
 const skillNames = ["list_skills", "read_skill"];
-const memoryNames = ["memory_search", "memory_read", "memory_write"];
+const memoryNames = ["memory_search", "memory_read", "memory_list", "memory_write"];
+// Registered by the plugin; current Agent modes filter them through Permissions.
+const candidateNames = ["candidate_submit", "candidate_validate", "candidate_evaluate"];
 const productNames = [
   ...basicNames,
   ...tmuxNames,
@@ -67,6 +69,7 @@ const productNames = [
   ...workflowNames,
   ...skillNames,
   ...memoryNames,
+  ...candidateNames,
 ];
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -94,7 +97,7 @@ test("Tool plugins follow the tools service and own their registrations", async 
     registry = root.tools.registry;
     await root.plugin(LocalFilesystem);
     await root.plugin(LocalFilesystemSearch);
-    await root.plugin(HostShell);
+    await root.plugin(LinuxNativeShell);
     await read.await();
     for (const plugin of [
       FilesystemToolPlugins.Write,
@@ -225,7 +228,7 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
     assert.equal(await defaultBoot.completion, 0);
     assertBootTools(
       defaultBoot,
-      [...basicNames, ...tmuxNames, ...planNames, ...coordinatorNames, ...taskNames, ...todoNames, ...goalNames, ...workflowNames, ...skillNames, ...memoryNames],
+      productNames.filter(name => !subagentNames.includes(name)),
       "Subagent model Tools must be independently disableable",
     );
     assert.notEqual(defaultBoot.surfaceContext.get("tmux"), undefined);
@@ -242,7 +245,6 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
       argv: ["--version"],
       cwd: repositoryRoot,
       homeDirectory: directory,
-      environment: { WISH_SUBAGENT_WORKFLOW_ENABLED: "1" },
       configurationFile,
     });
     assert.equal(await booted.completion, 0);
@@ -292,6 +294,22 @@ test("the built-in Loader can disable and restore one Tool by stable id", async 
   }
   assert.equal(booted?.context.get("tools"), undefined);
   assert.deepEqual(booted?.context.fiber.getEffects(), []);
+});
+
+test("default Tools follow the Plan gate", async () => {
+  for (const environment of [{}, { WISH_PLAN_ENABLED: "0" }]) {
+    const directory = await mkdtemp(join(tmpdir(), "wish-loader-plan-tools-"));
+    let booted;
+    try {
+      booted = await bootstrap({ surface: "cli", argv: ["--version"], cwd: repositoryRoot, homeDirectory: directory,
+        environment: { WISH_DATA_DIR: join(directory, "data"), ...environment } });
+      assert.equal(await booted.completion, 0);
+      const planEnabled = environment.WISH_PLAN_ENABLED !== "0";
+      const excluded = new Set(planEnabled ? [] : [...planNames, "tasks_update", "workflow_start"]);
+      assertBootTools(booted, productNames.filter(name => !excluded.has(name)), JSON.stringify(environment));
+      assert.equal(booted.surfaceContext.get("plan") !== undefined, planEnabled);
+    } finally { await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
+  }
 });
 
 function toolNames(registry) {

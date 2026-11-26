@@ -216,3 +216,24 @@ test("Grep Consumer follows Filesystem Search Provider lifecycle", async () => {
     await root.fiber.dispose();
   }
 });
+
+test("Grep searches parent and sibling projects while excluding locked files and directories", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-search-parent-"));
+  const root = join(directory, "workspace"), sibling = join(directory, "reference"), locked = join(directory, "private.txt");
+  const filesystem = new LocalFilesystemBackend({ protectedPaths: [locked] });
+  const search = new LocalFilesystemSearchBackend(filesystem);
+  try {
+    await mkdir(root); await mkdir(sibling); await mkdir(join(directory, ".ssh"));
+    await writeFile(join(sibling, "README.md"), "ggbot public evidence");
+    await writeFile(locked, "ggbot locked evidence");
+    await writeFile(join(directory, ".env"), "ggbot secret environment");
+    await writeFile(join(directory, ".ssh/key"), "ggbot secret key");
+    const result = await executeLocal(root, filesystem, search, { pattern: "ggbot", path: directory });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.match(result.output.content[0].text, /public evidence/u);
+    assert.doesNotMatch(result.output.content[0].text, /locked evidence|secret environment|secret key/u);
+    const denied = await executeLocal(root, filesystem, search, { pattern: "ggbot", path: locked });
+    assert.equal(denied.ok, false);
+    assert.equal(denied.error.code, "permission_denied");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

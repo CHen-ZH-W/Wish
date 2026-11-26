@@ -123,6 +123,7 @@ export class Runtime extends Service {
   /** Host-only Step boundary. Does not unload plugins or own their configuration. */
   readonly execution = new StepExecutionCoordinator();
   private readonly generations = new Set<WishRunGeneration>();
+  private readonly modelStarted = new Map<WishRunGeneration, Set<string>>();
   private readonly completionDrains = new Map<WishRunGeneration, () => Promise<void>>();
   private readonly continuationPolicies = new Set<WishUserTurnContinuationPolicy>();
   private suspended = false;
@@ -177,6 +178,16 @@ export class Runtime extends Service {
     return Object.freeze({ generations: snapshots.length,
       activeRuns: snapshots.reduce((count, snapshot) => count + snapshot.activeRuns.length, 0),
       retiring: snapshots.filter(snapshot => snapshot.state === "retiring").length });
+  }
+
+  /** Give each new Run the first model start, without blocking background work
+   * for the rest of its tools, human-input waits or continuation. */
+  canDispatchBackgroundWork(): boolean {
+    if (this.suspended || this.closed) return false;
+    return [...this.generations].every(generation => {
+      const started = this.modelStarted.get(generation);
+      return generation.snapshot().activeRuns.every(run => started?.has(run.runId));
+    });
   }
 
   /** Register one live UserTurn-boundary policy; disposal stops future calls. */
@@ -277,27 +288,35 @@ export class Runtime extends Service {
       });
       if (maxRunSteps !== undefined) positiveInteger(maxRunSteps, "Run Step limit");
       const stepCounts = new Map<string, number>();
+      const modelStarted = new Set<string>();
       const stepPipeline = this.execution.source(() => {
         const resources = this.requireAgentLoop().open(pipelineInput);
         const pipeline = resources.stepPipeline;
-        return { pipeline: beforeStep === undefined && maxRunSteps === undefined ? pipeline : {
-          async execute(step) {
+        return { pipeline: {
+          async execute(step: Parameters<typeof pipeline.execute>[0]) {
             if (maxRunSteps !== undefined) {
               const runId = step.snapshot.run.runId;
               const count = (stepCounts.get(runId) ?? 0) + 1;
               if (count > maxRunSteps) throw new StepExecutionError("run_step_limit_exceeded");
               stepCounts.set(runId, count);
             }
-            await beforeStep?.(); return pipeline.execute(step);
+            await beforeStep?.();
+            return pipeline.execute({ ...step, output: {
+              ...step.output,
+              publishModel(event) {
+                step.output.publishModel(event);
+                if (event.type === "start") modelStarted.add(step.snapshot.run.runId);
+              },
+            } });
           },
         }, release: () => { resources.release(); } };
       });
       const continuationPolicy = this.compositeContinuationPolicy();
       coreRuntime = createWishRuntime({ stepPipeline }, {
         ...(input.runtime ?? {}),
-        continuationPolicy: maxRunSteps === undefined ? continuationPolicy : { ...continuationPolicy, async finishRun(event) {
+        continuationPolicy: { ...continuationPolicy, async finishRun(event) {
           try { await continuationPolicy.finishRun?.(event); }
-          finally { stepCounts.delete(event.run.runId); }
+          finally { stepCounts.delete(event.run.runId); modelStarted.delete(event.run.runId); }
         } },
       }, this.ctx.runtimeLifecycle);
       const generation = new RunGeneration<WishAgentProtocol>(coreRuntime, {
@@ -316,6 +335,7 @@ export class Runtime extends Service {
         release: async () => {
           sessions.release();
           generations.delete(generation);
+          this.modelStarted.delete(generation);
           this.completionDrains.delete(generation);
           await releaseExecution?.();
         },
@@ -330,6 +350,7 @@ export class Runtime extends Service {
         },
       }), `Run generation ${generation.id}`);
       generations.add(generation);
+      this.modelStarted.set(generation, modelStarted);
       if (drainRunCleanup) this.completionDrains.set(generation, drainRunCleanup);
       return Object.freeze({
         sessions,

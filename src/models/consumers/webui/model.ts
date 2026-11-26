@@ -26,6 +26,7 @@ export interface ModelsSettingsClientSnapshot {
   readonly pending: boolean;
   readonly error: string | null;
   readonly status: string | null;
+  readonly loading: boolean;
 }
 
 /** Models-owned browser projection. React never handles transport or secret persistence. */
@@ -41,7 +42,7 @@ export class ModelsSettingsClientModel extends SnapshotStore<ModelsSettingsClien
     private readonly connection: ClientConnection,
   ) {
     super(Object.freeze({ section: null, choices: Object.freeze([]), selectedModel: null,
-      credentials: Object.freeze({}), writable: false, online: false, pending: false, error: null, status: null }));
+      credentials: Object.freeze({}), writable: false, online: false, pending: false, error: null, status: null, loading: false }));
     this.removers.push(settings.subscribe(this.sync), connection.subscribe(this.sync));
     this.sync();
   }
@@ -151,12 +152,15 @@ export class ModelsSettingsClientModel extends SnapshotStore<ModelsSettingsClien
 
   private async refreshCredentials(references: readonly string[]): Promise<void> {
     const generation = ++this.credentialGeneration;
+    this.publish({ ...this.getSnapshot(), loading: true });
     try {
       const response = await this.connection.request<{ credentials: readonly CredentialStatus[] }>("/api/management/credentials/describe", { references });
       if (this.closed || generation !== this.credentialGeneration) return;
       this.publish({ ...this.getSnapshot(), credentials: Object.freeze(Object.fromEntries(response.credentials.map(status => [status.reference, status]))) });
     } catch (error) {
       if (!this.closed && generation === this.credentialGeneration) this.fail(error);
+    } finally {
+      if (!this.closed && generation === this.credentialGeneration) this.publish({ ...this.getSnapshot(), loading: false });
     }
   }
 

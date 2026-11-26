@@ -41,4 +41,8 @@ export default class StorageSystemPromptHistory extends SystemPromptHistoryServi
     return this.work.run(() => this.ledger.list(sessionId, signal));
   }
   close(): Promise<void> { return this.work.close(); }
+  override purgeSession(sessionId: string): Promise<void> { return this.work.run(() => this.ledger.purgeSession(sessionId)); }
+  override sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    return this.work.run(() => this.ledger.sweepDeletedSessions(wasDeleted));
+  }
 }

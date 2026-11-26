@@ -9,6 +9,62 @@ import { managedWebUi } from "../dist/apps/webui/host/composition.js";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 
+test("system plugin policy controls remain distinct from process loading on desktop and mobile", { timeout: 30000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-system-policy-browser-"));
+  let booted, browser;
+  try {
+    booted = await bootstrap({ surface: "webui", cwd: directory, homeDirectory: directory,
+      environment: { WISH_DATA_DIR: join(directory, "data"), CORDIS_HMR: "0" },
+      management: managedWebUi({ directory: join(directory, "management"), port: 0 }),
+    });
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(booted.context.webManagementHost.url);
+    await page.getByRole("button", { name: "设置与插件", exact: true }).click();
+    await page.getByRole("button", { name: "插件管理", exact: true }).click();
+    await page.getByRole("columnheader", { name: "系统启停", exact: true }).waitFor();
+    await page.getByRole("columnheader", { name: "本进程状态", exact: true }).waitFor();
+    const cli = page.getByRole("button", { name: "停用 include:cli", exact: true });
+    await cli.waitFor();
+    assert.equal(await cli.isDisabled(), false);
+    assert.equal(await cli.textContent(), "已启用");
+    assert.match(await cli.locator("xpath=ancestor::div[@role='row']").textContent(), /未加载/u);
+    await cli.click();
+    const enable = page.getByRole("button", { name: "启用 include:cli", exact: true });
+    await enable.waitFor();
+    assert.equal(booted.pluginManagement.snapshot().preferences["include:cli"].preference, "disabled");
+    await enable.click(); await cli.waitFor();
+    assert.equal(booted.plugins.inspect().entries.find(entry => entry.id === "include:cli").phase, "active");
+    assert.equal((await fetch(booted.context.webManagementHost.url + "/api/health")).status, 200);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("searchbox", { name: "筛选插件", exact: true }).fill("candidate-tools");
+    const candidate = page.getByRole("button", { name: "停用 include:candidate-tools", exact: true });
+    await candidate.click();
+    await page.getByRole("button", { name: "启用 include:candidate-tools", exact: true }).click();
+    await candidate.waitFor();
+    assert.equal(await candidate.textContent(), "已启用");
+    assert.equal(booted.plugins.inspect().entries.find(entry => entry.id === "include:candidate-tools").phase, "active");
+    assert.match(await candidate.locator("xpath=ancestor::div[@role='row']").textContent(), /已加载/u);
+    await page.getByRole("searchbox", { name: "筛选插件", exact: true }).fill("workflow-subagent-tools");
+    const workflow = page.getByRole("button", { name: "停用 include:tool-workflow-subagents", exact: true });
+    await workflow.waitFor();
+    assert.equal(booted.surfaceContext.get("subagentToolDispatch").activeStrategy, "workflow");
+    await workflow.click();
+    const enableWorkflow = page.getByRole("button", { name: "启用 include:tool-workflow-subagents", exact: true });
+    await enableWorkflow.waitFor();
+    assert.equal(booted.surfaceContext.get("subagentToolDispatch").activeStrategy, "direct");
+    await enableWorkflow.click();
+    await workflow.waitFor();
+    assert.equal(booted.plugins.inspect().entries.find(entry => entry.id === "include:tool-workflow-subagents").phase, "active");
+    assert.equal(booted.surfaceContext.get("subagentToolDispatch").activeStrategy, "workflow");
+    assert.match(await workflow.locator("xpath=ancestor::div[@role='row']").textContent(), /已加载/u);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    assert.deepEqual(errors, []);
+  } finally { await browser?.close(); await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
+});
+
 async function capture(page, name, resetScroll = true) {
   if (!process.env.WISH_WEBUI_CAPTURE_DIR) return;
   const directory = process.env.WISH_WEBUI_CAPTURE_DIR;
@@ -40,6 +96,7 @@ async function createDefaultSession(page, booted, directory) {
 }
 
 async function openFirstSession(page) {
+  await page.locator(".wish-shell").waitFor();
   const link = page.getByRole("navigation", { name: "会话列表", exact: true }).locator(".session-link").first();
   if (!await link.isVisible()) {
     const expand = page.getByRole("button", { name: "展开侧栏", exact: true });
@@ -81,7 +138,7 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     await permission.waitFor();
     await page.waitForFunction(() => !document.querySelector("#wish-new-session-permission-profile")?.disabled);
     assert.equal(await permission.inputValue(), "approval-required");
-    assert.deepEqual(await permission.locator("option").allTextContents(), ["只读", "需要审批", "工作区可写", "完全访问（无隔离）"]);
+    assert.deepEqual(await permission.locator("option").allTextContents(), ["只读", "需要审批", "工作区可写", "完全访问（保留敏感保护）"]);
     const card = await page.locator(".new-session-composer").boundingBox(), effortBox = await reasoning.boundingBox(), sendBox = await page.locator(".new-session-send").boundingBox();
     assert.ok(card && effortBox && sendBox && effortBox.x >= card.x && effortBox.y >= card.y &&
       sendBox.x + sendBox.width <= card.x + card.width && sendBox.y + sendBox.height <= card.y + card.height,
@@ -144,8 +201,10 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     assert.equal(await page.getByRole("button", { name: "打开会话侧栏", exact: true }).isVisible(), true);
     const contentViews = page.getByRole("navigation", { name: "会话内容", exact: true });
     assert.equal(await contentViews.getByRole("button", { name: "主会话", exact: true }).getAttribute("aria-current"), "page", "the main Session shows both content views and marks itself current");
+    const conversationNode = await page.locator(".conversation").elementHandle();
     await page.getByRole("button", { name: "工具调用", exact: true }).click();
     await page.locator(".tool-calls-page").waitFor();
+    assert.equal(await conversationNode.evaluate(node => node.isConnected), true, "the production composition retains the conversation while Tool calls is open");
     assert.equal(await contentViews.getByRole("button", { name: "工具调用", exact: true }).getAttribute("aria-current"), "page", "the same paired navigation marks Tool calls current");
     await page.setViewportSize({ width: 390, height: 844 });
     const mainTab = contentViews.getByRole("button", { name: "主会话", exact: true });
@@ -154,6 +213,7 @@ test("new Session chooses a Host Workspace before creation and stays outside the
     assert.ok(mainTabBox && toolTabBox && mainTabBox.x >= 0 && toolTabBox.x + toolTabBox.width <= 390, "both conversation content tabs remain visible at mobile width");
     await mainTab.click();
     await page.locator("#wish-composer").waitFor();
+    assert.equal(await conversationNode.evaluate(node => node === document.querySelector(".conversation")), true, "returning through the real Host restores the same conversation DOM");
     assert.equal((await manager.list()).length, 1, "leaving a new intent keeps only the original Session");
   } finally { await browser?.close(); await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -282,26 +342,26 @@ test("global Archive navigation and active/archived workspace grouping work on d
     await rail.getByRole("button", { name: "归档", exact: true }).click();
     const archived = page.getByRole("navigation", { name: "归档会话列表", exact: true });
     await archived.getByRole("button", { name: /^旧版界面/ }).waitFor();
-    assert.equal(await active.count(), 0, "archive owns the sidebar; the active list is unmounted");
-    assert.equal(await page.locator(".panel-navigation").count(), 0, "active business navigation must not remain in Archive");
-    await page.locator(".ledger-header h1").filter({ hasText: "旧版界面" }).waitFor();
+    assert.equal(await active.count(), 0, "archive owns the visible sidebar while the active list is retained");
+    assert.equal(await page.locator(".panel-navigation:visible").count(), 0, "active business navigation must not remain visible in Archive");
+    await page.getByRole("heading", { name: "旧版界面", exact: true }).waitFor();
     await page.locator(".message-text").filter({ hasText: "旧版界面的独立历史记录" }).waitFor();
     await page.getByRole("button", { name: "工具调用", exact: true }).click();
     await page.locator(".tool-calls-page").waitFor();
     assert.equal(await page.getByRole("navigation", { name: "会话内容", exact: true }).getByRole("button", { name: "工具调用", exact: true }).getAttribute("aria-current"), "page");
     await page.getByRole("button", { name: "主会话", exact: true }).click();
-    await page.locator(".ledger-header h1").filter({ hasText: "旧版界面" }).waitFor();
-    assert.equal(await page.locator(".message-text").filter({ hasText: "检查文档" }).count(), 0);
-    assert.equal(await page.locator("#wish-composer").count(), 0);
+    await page.getByRole("heading", { name: "旧版界面", exact: true }).waitFor();
+    assert.equal(await page.locator(".message-text:visible").filter({ hasText: "检查文档" }).count(), 0);
+    assert.equal(await page.locator("#wish-composer").isVisible(), false, "the retained active composer is unavailable in Archive");
     assert.deepEqual(await archived.locator(".workspace-session-group").evaluateAll(nodes => nodes.map(node => ({ scope: node.dataset.workspace, count: node.querySelectorAll(".session-link").length }))), [{ scope: wish, count: 1 }, { scope: docs, count: 1 }]);
     assert.equal(await page.locator(".panel-navigation").getByRole("button", { name: "归档", exact: true }).count(), 0);
     await capture(page, "desktop-archive-groups");
     await archived.getByRole("button", { name: "发布记录", exact: true }).click();
     await rail.getByRole("button", { name: "会话", exact: true }).click();
-    await page.locator(".ledger-header h1").filter({ hasText: "检查文档" }).waitFor();
+    await page.getByRole("heading", { name: "检查文档", exact: true }).waitFor();
     assert.equal(await page.locator("#wish-composer").inputValue(), "普通会话草稿");
     await rail.getByRole("button", { name: "归档", exact: true }).click();
-    await page.locator(".ledger-header h1").filter({ hasText: "发布记录" }).waitFor();
+    await page.getByRole("heading", { name: "发布记录", exact: true }).waitFor();
     await archived.getByRole("button", { name: "更多操作：旧版界面", exact: true }).click();
     await page.getByRole("menuitem", { name: "取消归档", exact: true }).click();
     await archived.getByRole("button", { name: "旧版界面", exact: true }).waitFor({ state: "detached" });
@@ -388,16 +448,27 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
       environment: { WISH_DATA_DIR: join(directory, "data"), WISH_WEBUI_WORKSPACE_ROOT: directory },
       management: managedWebUi({ directory: join(directory, "management"), port: 0 }) };
     booted = await bootstrap(options);
+    const initialPolicy = booted.pluginManagement.snapshot();
+    assert.equal((await booted.pluginManagement.change({ requestId: "browser-initial-fetch-disabled", revision: initialPolicy.revision,
+      selection: { instanceId: initialPolicy.inspection.instanceId, entryIds: ["include:tool-web-fetch", "include:web-fetch-http"] }, preference: "disabled" })).status, "succeeded");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [];
+    let revokingSkills = false;
     page.on("pageerror", error => errors.push(error.message));
-    page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+    page.on("console", message => {
+      if (message.type() !== "error") return;
+      // The revoked endpoint may reject a read started before its UI owner is disposed.
+      if (revokingSkills && message.text().includes("404") && message.location().url.endsWith("/api/controls/skills/default")) return;
+      errors.push(`${message.text()} (${message.location().url})`);
+    });
     await page.goto(booted.context.get("webManagementHost").url);
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
     const settingsNavigation = page.getByRole("navigation", { name: "可用视图", exact: true });
     await settingsNavigation.getByRole("button", { name: "模型配置", exact: true }).waitFor({ timeout: 6000 });
-    assert.deepEqual(await settingsNavigation.locator(".navigation-item").allTextContents(), ["通用设置", "插件管理", "模型配置"]);
+    const settingLabels = await settingsNavigation.locator(".navigation-item").allTextContents();
+    assert.deepEqual(settingLabels.slice(0, 2), ["通用设置", "插件管理"]);
+    assert.deepEqual(settingLabels.slice(2).sort(), ["模型配置", "网页搜索"].sort());
     assert.equal(await settingsNavigation.getByRole("button", { name: "Skills", exact: true }).count(), 0);
     assert.equal(await settingsNavigation.getByRole("button", { name: "通用设置", exact: true }).getAttribute("aria-current"), "page");
     await page.getByRole("heading", { name: "通用设置", exact: true }).waitFor();
@@ -409,7 +480,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     });
     const settingsIcons = async () => {
       const paths = [];
-      for (const label of ["通用设置", "插件管理", "模型配置"]) {
+      for (const label of ["通用设置", "插件管理", "模型配置", "网页搜索"]) {
         const icon = settingsNavigation.getByRole("button", { name: label, exact: true }).locator("svg");
         assert.equal(await icon.isVisible(), true);
         assert.equal(await icon.getAttribute("aria-hidden"), "true");
@@ -434,7 +505,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     await capture(page, "mobile-settings-icons");
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByRole("button", { name: "插件管理", exact: true }).click();
-    assert.equal(await page.getByRole("columnheader", { name: "配置状态", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("columnheader", { name: "系统启停", exact: true }).count(), 1);
     assert.equal(await page.getByRole("columnheader", { name: "用户偏好", exact: true }).count(), 0);
     const enabledConfiguration = page.getByRole("button", { name: "停用 include:skills-local", exact: true });
     assert.equal(await enabledConfiguration.evaluate(node => getComputedStyle(node).color), "rgb(31, 107, 67)");
@@ -443,11 +514,11 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     assert.equal(await disabledWebFetch.isDisabled(), false);
     assert.equal(await disabledWebFetch.evaluate(node => getComputedStyle(node).color), "rgb(165, 38, 50)");
     assert.equal(await disabledWebFetch.textContent(), "已停用");
-    const unmetConfiguration = page.getByRole("button", { name: "条件未满足 include:web-search-searxng", exact: true });
+    const unmetConfiguration = page.getByRole("button", { name: "停用 include:candidate-tools", exact: true });
     await unmetConfiguration.waitFor();
-    assert.equal(await unmetConfiguration.isDisabled(), true);
-    assert.equal(await unmetConfiguration.evaluate(node => getComputedStyle(node).color), "rgb(82, 97, 122)");
-    assert.equal(await unmetConfiguration.textContent(), "条件未满足");
+    assert.equal(await unmetConfiguration.isDisabled(), false);
+    assert.equal(await unmetConfiguration.evaluate(node => getComputedStyle(node).color), "rgb(31, 107, 67)");
+    assert.equal(await unmetConfiguration.textContent(), "已启用");
     await disabledWebFetch.click();
     const enabledWebFetch = page.getByRole("button", { name: "停用 include:web-fetch-http", exact: true });
     await enabledWebFetch.waitFor();
@@ -485,6 +556,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     assert.ok(mobileTable.width > mobileTable.container, "inspection table keeps its columns and scrolls inside its own boundary");
     await capture(page, "mobile-plugin-inspection", false);
     await page.setViewportSize({ width: 1440, height: 1000 });
+    revokingSkills = true;
     await enabledConfiguration.click();
     await rail.getByRole("button", { name: "Skills", exact: true }).waitFor({ state: "detached" });
     assert.equal(booted.surfaceContext.get("skills"), undefined);
@@ -505,10 +577,11 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     await rail.getByRole("button", { name: "Skills", exact: true }).click();
     const skillNavigation = page.getByRole("navigation", { name: "Skill 列表", exact: true });
     await skillNavigation.getByRole("button", { name: /sample/ }).waitFor();
+    revokingSkills = false;
     assert.equal(await page.getByRole("navigation", { name: "会话列表", exact: true }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "刷新状态", exact: true }).count(), 0);
     await skillNavigation.getByRole("button", { name: /sample/ }).click();
-    await page.locator(".skill-document").filter({ hasText: "Read the sample." }).waitFor();
+    await page.locator(".skill-markdown").filter({ hasText: "Read the sample." }).waitFor();
     const { sessions: [session] } = await (await fetch(booted.context.get("webManagementHost").url + "/api/sessions")).json();
     const plan = booted.surfaceContext.get("plan");
     await plan.enter({ sessionId: session.sessionId }); await plan.update({ sessionId: session.sessionId, markdown: "# 浏览器验收计划\n先验证，再实施。" });
@@ -525,7 +598,7 @@ test("real browser mounts Cordis slots, disables actual Skills, restores UI, and
     await page.reload();
     await openFirstSession(page);
     assert.equal(await page.locator(".session-index").getByRole("navigation", { name: "可用视图", exact: true }).count(), 0, "the conversation sidebar contains no redundant page switcher");
-    await page.locator(".conversation-tool-calls").getByText("工具调用", { exact: true }).waitFor();
+    await page.getByRole("navigation", { name: "会话内容", exact: true }).getByRole("button", { name: "工具调用", exact: true }).waitFor();
     for (const removed of ["执行轨迹", "Plan", "任务图", "Workflow", "Memory", "Context", "Subagents"]) {
       assert.equal(await page.locator(".session-index").getByRole("button", { name: removed, exact: true }).count(), 0, `${removed} is not a Session sidebar page`);
     }
@@ -614,7 +687,7 @@ test("real child Agent renders inside the live process with owned identity, snap
   try {
     await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
     booted = await bootstrap({ surface: "webui", cwd: directory, homeDirectory: directory,
-      environment: { WISH_DATA_DIR: join(directory, "data"), WISH_WEBUI_WORKSPACE_ROOT: directory, WISH_MODELS_JSON: JSON.stringify(modelConfiguration(provider.address().port)), WISH_PERMISSION_PROFILE: "full-access", WISH_SHELL_PROVIDER: "host", WISH_SHELL_HOST_ENABLED: "1" },
+      environment: { WISH_DATA_DIR: join(directory, "data"), WISH_WEBUI_WORKSPACE_ROOT: directory, WISH_MODELS_JSON: JSON.stringify(modelConfiguration(provider.address().port)), WISH_SESSION_TITLE_ENABLED: "0", WISH_MEMORY_CURATION_ENABLED: "0", WISH_PERMISSION_PROFILE: "full-access" },
       management: managedWebUi({ directory: join(directory, "management"), port: 0 }) });
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [];
@@ -652,8 +725,12 @@ test("real child Agent renders inside the live process with owned identity, snap
     await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
     await page.locator(".session-link[aria-current=page]").click();
     await page.getByRole("button", { name: "工具调用", exact: true }).click();
-    await page.locator(".tool-call-row").filter({ hasText: "spawn_agent" }).locator(".tool-call-details > summary").click();
-    await page.locator(".child-result").filter({ hasText: "UI_CHILD_RESULT_OK" }).waitFor({ timeout: 10000 });
+    const retainedDetails = page.locator(".tool-call-row").filter({ hasText: "spawn_agent" }).locator(".tool-call-details");
+    assert.equal(await retainedDetails.evaluate(node => node.open), true, "Tool details remain expanded after returning to the same Session");
+    await page.getByText("当前没有与此次调用身份匹配的子任务观察记录；保留下方原始证据。", { exact: true }).waitFor({ timeout: 10000 });
+    await retainedDetails.locator(".raw-tool > summary").click();
+    await retainedDetails.locator("pre").filter({ hasText: "Started child Agent." }).waitFor();
+    assert.match(await retainedDetails.innerText(), /Agent: [a-f0-9-]+/u, "Run cleanup retains the canonical child identity as historical evidence");
     assert.equal(childRequests, 1); assert.deepEqual(errors, []);
   } finally {
     releaseChild(); await browser?.close();
@@ -690,7 +767,7 @@ test("conversation workbench streams live output, reloads the canonical answer a
     const configuration = { schemaVersion: 1, defaultModel: "fixture/primary", fallbackModels: [], maxRetries: 0,
       providers: [{ id: "fixture", protocol: "openai-chat-completions", baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, auth: { type: "none" }, developerRoleMode: "native", models: [{ id: "primary", status: "active", contextWindowTokens: 65536, maxOutputTokens: 4096, input: { text: true, image: false }, reasoning: false, toolCalling: true, developerRole: true }, { id: "secondary", status: "active", contextWindowTokens: 65536, maxOutputTokens: 4096, input: { text: true, image: false }, reasoning: false, toolCalling: true, developerRole: true }] }] };
     booted = await bootstrap({ surface: "webui", cwd: directory, homeDirectory: directory,
-      environment: { WISH_DATA_DIR: join(directory, "data"), WISH_WEBUI_WORKSPACE_ROOT: directory, WISH_MODELS_JSON: JSON.stringify(configuration), WISH_PERMISSION_PROFILE: "approval-required" },
+      environment: { WISH_DATA_DIR: join(directory, "data"), WISH_WEBUI_WORKSPACE_ROOT: directory, WISH_MODELS_JSON: JSON.stringify(configuration), WISH_PERMISSION_PROFILE: "approval-required", WISH_SESSION_TITLE_ENABLED: "0", WISH_MEMORY_CURATION_ENABLED: "0" },
       management: managedWebUi({ directory: join(directory, "management"), port: 0 }) });
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [];
@@ -733,19 +810,75 @@ test("conversation workbench streams live output, reloads the canonical answer a
     await capture(page, "desktop-model-usage");
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
+    const prompt = page.locator(".conversation:visible .system-prompt-disclosure");
+    await prompt.locator(":scope > summary").click();
+    await prompt.locator(".system-prompt-body").waitFor();
+    const promptNode = await prompt.elementHandle(), promptBody = await prompt.locator(".system-prompt-body").elementHandle();
+    const promptText = await promptBody.textContent();
+    assert.ok(promptText.length > 0, "the real first Run exposes its persisted System Prompt snapshot");
+    await page.evaluate(() => {
+      const row = document.querySelector(".system-prompt-disclosure"), body = row.querySelector(".system-prompt-body");
+      const audit = { row, body, removals: 0, closures: 0 };
+      const observer = new MutationObserver(records => {
+        for (const record of records) {
+          if (record.type === "attributes" && record.target === row && !row.open) audit.closures++;
+          for (const removed of record.removedNodes) if (removed === row || removed === body || removed.contains(row) || removed.contains(body)) audit.removals++;
+        }
+      });
+      observer.observe(document.querySelector(".workspace-content"), { childList: true, subtree: true, attributes: true, attributeFilter: ["open"] });
+      window.promptNavigationAudit = { ...audit, observer, read: () => ({ removals: audit.removals, closures: audit.closures }) };
+    });
+    const assertPromptRetained = async () => {
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await promptNode.evaluate(node => node.isConnected && node === document.querySelector(".system-prompt-disclosure") && node.open), true,
+        "the real Host keeps the same expanded System Prompt DOM through refresh and navigation");
+      assert.equal(await promptBody.evaluate(node => node.isConnected && node === document.querySelector(".system-prompt-body")), true,
+        "the prompt body never disappears while its owner remains available");
+      assert.equal(await promptBody.textContent(), promptText);
+      assert.deepEqual(await page.evaluate(() => window.promptNavigationAudit.read()), { removals: 0, closures: 0 });
+    };
+
+    // A real settings save broadcasts management SSE invalidation. Fail only
+    // its next prompt read: an available owner's last snapshot must stay on screen.
+    const promptControl = "**/api/sessions/*/controls/system-prompt-history";
+    await page.route(promptControl, route => route.fulfill({ status: 503, contentType: "application/json",
+      body: JSON.stringify({ error: { code: "fixture_transient_read", message: "temporary acceptance read failure" } }) }), { times: 1 });
     await page.getByRole("button", { name: "设置与插件", exact: true }).click();
+    await page.getByRole("button", { name: "通用设置", exact: true }).click();
+    const delivery = page.locator("select#webui-composer-busy-delivery"), initialDelivery = await delivery.inputValue();
+    const failedPromptRead = page.waitForResponse(response => response.url().endsWith("/controls/system-prompt-history") && response.status() === 503);
+    await delivery.selectOption(initialDelivery === "queue" ? "steer" : "queue");
+    await (await failedPromptRead).finished();
+    await page.locator(".settings-section").filter({ has: delivery }).locator(".setting-commit-status").filter({ hasText: "已应用" }).waitFor();
     await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
+    await assertPromptRetained();
+    await page.getByRole("button", { name: "工具调用", exact: true }).click();
+    await page.locator(".tool-calls-page:visible").waitFor();
+    await page.getByRole("button", { name: "主会话", exact: true }).click();
+    await assertPromptRetained();
+
+    // Recover through another actual settings invalidation and preserve the
+    // original preference before the rest of the workbench acceptance continues.
+    await page.getByRole("button", { name: "设置与插件", exact: true }).click();
+    await page.getByRole("button", { name: "通用设置", exact: true }).click();
+    const recoveredPromptRead = page.waitForResponse(response => response.url().endsWith("/controls/system-prompt-history") && response.status() === 200);
+    await delivery.selectOption(initialDelivery);
+    await (await recoveredPromptRead).finished();
+    await page.locator(".settings-section").filter({ has: delivery }).locator(".setting-commit-status").filter({ hasText: "已应用" }).waitFor();
+    await page.locator(".utility-rail").getByRole("button", { name: "会话", exact: true }).click();
+    await assertPromptRetained();
+    await page.evaluate(() => window.promptNavigationAudit.observer.disconnect());
     assert.equal(await page.locator("#wish-composer").inputValue(), "保留这段草稿");
     await page.reload();
     await openFirstSession(page);
     await page.locator(".message-text").filter({ hasText: "这是一条本地验收回复。" }).waitFor();
     await page.locator(".final-answer .message-markdown h2").filter({ hasText: "Markdown 验收" }).waitFor();
-    assert.equal(await page.locator(".final-answer").count(), 1); assert.equal(requests, 1); assert.deepEqual(errors, []);
+    assert.equal(await page.locator(".final-answer").count(), 1, "one canonical final answer"); assert.equal(requests, 1, "one fixture model request"); assert.deepEqual(errors, []);
     await page.locator("#wish-composer").fill("将验收正文写入 approved.txt");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await page.getByRole("region", { name: "工具审批 write", exact: true }).waitFor({ timeout: 6000 }).catch(async error => { throw new Error(JSON.stringify({ errors, requests, body: await page.locator("body").innerText() }), { cause: error }); });
     await capture(page, "desktop-approval");
-    await page.getByRole("button", { name: "批准工具调用", exact: true }).click();
+    await page.getByRole("region", { name: "工具审批 write", exact: true }).getByRole("button", { name: "批准", exact: true }).click();
     await page.getByRole("button", { name: "发送消息", exact: true }).waitFor();
     await page.getByRole("button", { name: "工具调用", exact: true }).click();
     const writeTool = page.locator(".tool-call-row").filter({ hasText: "write" }).last();

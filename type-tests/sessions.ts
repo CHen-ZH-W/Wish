@@ -9,10 +9,12 @@ import {
   InMemorySessionStore,
   SessionHistoryAdapter,
   SessionManager,
+  SessionTitleConflictError,
   SessionTranscriptPipeline,
   createSessionInputRenderer,
   type SessionResourcesHandle,
   type SessionStore,
+  type SessionTitleSource,
 } from "../src/sessions/index.js";
 import {
   FileSessionStore,
@@ -26,6 +28,12 @@ declare const managedResources: SessionResourcesHandle;
 const file: SessionStore = new FileSessionStore({
   rootDirectory: "/tmp/wish-session-type-test",
 });
+const source: SessionTitleSource = "model";
+const titleWrite = sessions.updateMetadata({ sessionId: "title-session", title: "Generated", titleSource: source, expectedTitleRevision: 0 });
+const conflict = new SessionTitleConflictError("title-session", 0, 1);
+const actualTitleRevision: number = conflict.actualTitleRevision;
+void titleWrite;
+void actualTitleRevision;
 
 declare const renderer: AgentLoopInputRenderer<{ readonly text: string }>;
 const input: AgentLoopInputRenderer<{ readonly text: string }> =

@@ -71,6 +71,8 @@ export interface ModelRequest {
   readonly instructions: readonly ModelInstruction[];
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ModelToolDefinition[];
+  /** Structured text contract. Adapters use native schema/JSON mode where supported. */
+  readonly responseSchema?: { readonly name: string; readonly schema: Readonly<Record<string, unknown>> };
   /** Model-owned, validated selection fixed when a Run starts. */
   readonly reasoningEffort?: string;
   readonly temperature?: number;

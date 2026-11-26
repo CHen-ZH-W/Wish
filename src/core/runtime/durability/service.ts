@@ -66,6 +66,8 @@ export abstract class RuntimeLifecycleAuthorityService extends Service
     runId?: string,
     signal?: AbortSignal,
   ): Promise<readonly DurableRuntimeLifecycleEvent[]>;
+  purgeSession?(sessionId: string): Promise<void>;
+  sweepDeletedSessions?(wasDeleted: (scope: string) => Promise<boolean>): Promise<void>;
 }
 
 declare module "@deepseek-ai/cordis" {

@@ -130,6 +130,16 @@ test("builds the default Provider order and snapshots immutable Step input", () 
   );
 });
 
+test("Context keeps repository verification outcomes in the immutable Step facts", () => {
+  const bundle = createContextBundle(bundleOptions());
+  const workspace = { cwd: "/workspace", fingerprint: "workspace", revision: "revision", instructions: [], repositoryStatus: "unavailable" };
+  const environment = bundle.forStep({ snapshot: snapshot(), sessionId: "session-1", model: modelRef, workspace });
+  workspace.repositoryStatus = "not-found";
+  assert.equal(environment.input.workspace.repositoryStatus, "unavailable");
+  assert.throws(() => bundle.forStep({ snapshot: snapshot(), sessionId: "session-1", model: modelRef,
+    workspace: { ...workspace, repositoryStatus: "verified" } }), /repository status/u);
+});
+
 test("validates complete Provider registration order without hiding extensions", () => {
   const referenceProvider = {
     id: "reference",

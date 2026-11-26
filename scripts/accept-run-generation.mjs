@@ -433,6 +433,12 @@ test("Loader stable-id update safely replaces a WebUI graph with an active model
         WISH_WEBUI_HOST: "127.0.0.1",
         WISH_WEBUI_PORT: String(webPort),
         WISH_WEBUI_WORKSPACE_ROOT: directory,
+        // This provider tracks the main Run's single stream. Title generation
+        // has its own lifecycle acceptance and must not satisfy this readiness probe.
+        WISH_SESSION_TITLE_ENABLED: "0",
+        // This streaming fixture scripts the foreground Run. The independent
+        // Memory consolidator has its own provider protocol and acceptance.
+        WISH_MEMORY_CURATION_ENABLED: "0",
         WISH_RUN_GENERATION_DRAIN_TIMEOUT_MS: "2000",
       },
     });

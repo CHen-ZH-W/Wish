@@ -18,6 +18,7 @@ export function ToolCalls({ model, slots }: { model: SessionClientModel; slots: 
   const [follow, setFollow] = useState(true);
   const [pageWindow, setPageWindow] = useState({ sessionId: state.selectedId, limit: TOOL_PAGE_TURNS });
   const scroll = useRef<HTMLDivElement>(null), prependScrollHeight = useRef<number | null>(null);
+  const followedSession = useRef(state.selectedId);
   const historyReady = state.history?.sessionId === state.selectedId;
   const history = historyReady ? state.history : null;
   const ledgerTurns = useMemo(() => projectLedger(history, stream.events, language), [history, stream.events, language]);
@@ -33,7 +34,11 @@ export function ToolCalls({ model, slots }: { model: SessionClientModel; slots: 
   const active = state.runs.find(item => item.status === "running");
   const openManagement = useCallback(() => slots.openPanel("plugins"), [slots]);
 
-  useEffect(() => { setFollow(true); }, [state.selectedId]);
+  useLayoutEffect(() => {
+    if (followedSession.current === state.selectedId) return;
+    followedSession.current = state.selectedId;
+    setFollow(true);
+  }, [state.selectedId]);
   useEffect(() => { if (follow && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [toolTurns, follow]);
   useLayoutEffect(() => {
     const before = prependScrollHeight.current, node = scroll.current;
@@ -50,7 +55,7 @@ export function ToolCalls({ model, slots }: { model: SessionClientModel; slots: 
       <ConversationViewTabs slots={slots} current="tool-calls" archived={archived} />
       <div className="ledger-header-actions">{archived || active ? <span className={`run-state ${active ? "running" : ""}`}>{archived ? t("已归档", "Archived") : t("运行中", "Running")}</span> : null}</div>
     </header>
-    <div className="tool-calls-scroll" ref={scroll} onScroll={() => { const node = scroll.current; if (node) setFollow(node.scrollHeight - node.scrollTop - node.clientHeight < 96); }}>
+    <div className="tool-calls-scroll" ref={scroll} onScroll={() => { const node = scroll.current; if (node?.clientHeight) setFollow(node.scrollHeight - node.scrollTop - node.clientHeight < 96); }}>
       <div className="tool-calls-feed">
         <ErrorNotice text={state.error ? readableError(state.error) : null} />
         {stream.error ? <p className="notice warning">{stream.error}</p> : null}

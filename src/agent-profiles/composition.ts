@@ -6,6 +6,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Entry } from "@deepseek-ai/cordis-plugin-loader";
 import { AgentProfileError, canonical, digest, freezeJson } from "./validation.js";
 import type { ProfileCodeFile, ProfilePlugin } from "./types.js";
+import { validateProfileResources, type ProfileResources } from "./resources.js";
 
 /** Resolve Loader expressions once; omit absent optional settings and refuse executable values. */
 export function configJson(value: unknown, parent = ""): unknown {
@@ -109,14 +110,30 @@ export async function verifyCode(files: readonly ProfileCodeFile[]): Promise<voi
 }
 
 /** Only Host-owned storage/process locations are relocated; semantic plugin settings stay frozen. */
-export function experimentDeployment(deployment: readonly Readonly<Record<string, unknown>>[], directory: string): string {
+export function experimentDeployment(deployment: readonly Readonly<Record<string, unknown>>[], directory: string, resources?: ProfileResources, resourceMode: "sealed" | "overlay" = "sealed"): string {
+  if (resources) validateProfileResources(resources);
+  // Legacy Profiles have no archived resources and start with empty private
+  // Memory. Never boot the shared-file Provider (and its flock subprocess) in a
+  // candidate. This runtime initial state does not change snapshot coverage.
+  const empty = { schemaVersion: 1 as const, coverage: "complete" as const,
+    skills: { packages: [], digest: digest([]) }, memory: { kind: "empty" as const } };
+  const memoryResources = resources ?? { ...empty, digest: digest(empty) };
   const rows = structuredClone(deployment) as Record<string, unknown>[];
   const candidateControls = new Set(["service.js", "providers/linux.js", "consumers/cli.js", "consumers/management.js", "consumers/model-tools.js"].map(path => new URL(`../candidates/${path}`, import.meta.url).href));
   const visit = (items: Record<string, unknown>[]): void => {
     for (const row of items) {
       if (row.group === true && Array.isArray(row.config)) { visit(row.config as Record<string, unknown>[]); continue; }
       const name = String(row.name);
-      if (candidateControls.has(name)) row.disabled = true;
+      if (resources && (/\/skills\/providers\/local\.js$/u.test(name) || name === new URL("./resource-skills.js", import.meta.url).href)) {
+        row.name = new URL("./resource-skills.js", import.meta.url).href;
+        row.config = { resourcesJson: canonical(resources), mode: resourceMode };
+      }
+      if (/\/memory\/providers\/storage\.js$/u.test(name) || name === new URL("./resource-memory.js", import.meta.url).href) {
+        row.name = new URL("./resource-memory.js", import.meta.url).href;
+        row.config = { resourcesJson: canonical(memoryResources) };
+      }
+      // Host control owners can opt out without adding domain dependencies to the Worker.
+      if (candidateControls.has(name) || row.experiment === "exclude") row.disabled = true;
       const config = row.config && typeof row.config === "object" ? row.config as Record<string, unknown> : {};
       row.config = config;
       if (name.endsWith("/storage/providers/file/plugin.js")) config.rootDirectory = join(directory, "storage");
@@ -125,6 +142,8 @@ export function experimentDeployment(deployment: readonly Readonly<Record<string
       if (name.endsWith("/sessions/providers/file/plugin.js")) config.dataDirectory = join(directory, "data");
       if (name.endsWith("/tmux/providers/local.js")) { config.socketPath = join(directory, "tmux.sock"); config.sessionPrefix = "wish-experiment"; }
       if (/\/(?:apps\/webui\/plugin|.*\/consumers\/webui-control|.*\/consumers\/webui)\.js$/u.test(name)) row.disabled = true;
+      // A frozen WebUI deployment still boots the isolated Worker through its CLI surface.
+      if (name.endsWith("/apps/cli/plugin.js") && row.experiment !== "exclude") row.disabled = false;
       if (name.endsWith("/boot/plugin-control/config-watch.js") || name.includes("cordis-plugin-hmr/")) row.disabled = true;
     }
   };

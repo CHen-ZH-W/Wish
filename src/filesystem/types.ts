@@ -10,13 +10,15 @@ export type FilesystemEntryKind = "file" | "directory";
 export interface FilesystemPolicy {
   readonly schemaVersion: 1;
   readonly version: string;
-  readonly scope: "workspace";
+  readonly scope: "host-read-profile-write";
   readonly symbolicLinks: "deny";
   readonly maxFileBytes: number;
   readonly protectedDirectoryNames: readonly string[];
   readonly protectedFileNames: readonly string[];
   readonly protectedFilePrefixes: readonly string[];
   readonly protectedNameExceptions: readonly string[];
+  /** Absolute paths locked for both reads and writes, including descendants. */
+  readonly protectedPaths: readonly string[];
 }
 
 /** Exact Step facts that every filesystem operation must bind to. */

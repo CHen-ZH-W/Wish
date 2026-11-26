@@ -74,6 +74,8 @@ struct options {
   int network_enabled;
   int network_set;
   int candidate_mode; /* 1: trusted compiler, 2: unknown code (threads only). */
+  int host_read;
+  int host_write;
   const char *read_paths[MAX_SCOPED_PATH_ITEMS];
   size_t read_path_count;
   const char *write_paths[MAX_SCOPED_PATH_ITEMS];
@@ -84,6 +86,8 @@ struct options {
   size_t protected_prefix_count;
   const char *protected_name_exceptions[MAX_PROTECTED_POLICY_ITEMS];
   size_t protected_name_exception_count;
+  const char *protected_paths[MAX_PROTECTED_POLICY_ITEMS];
+  size_t protected_path_count;
   int command_index;
 };
 
@@ -174,6 +178,14 @@ static char *join_path(const char *parent, const char *name) {
 
 static int is_inside(const char *root, const char *path);
 
+static int is_locked_path(const struct options *options, const char *path) {
+  size_t index;
+  for (index = 0; index < options->protected_path_count; index++) {
+    if (is_inside(options->protected_paths[index], path)) return 1;
+  }
+  return 0;
+}
+
 static int relative_path_contains_protected_name(
     const struct options *options, const char *relative_path) {
   const char *cursor = relative_path;
@@ -214,11 +226,13 @@ static int relative_path_contains_protected_name(
 static void resolve_scoped_path(const char *workspace,
                                 const char *relative_path,
                                 const struct options *options,
+                                int writing,
                                 char resolved[PATH_MAX]) {
   char *joined;
   const char *canonical_relative;
 
-  if (relative_path[0] == '\0' || relative_path[0] == '/' ||
+  int host_access = writing ? options->host_write : options->host_read;
+  if (relative_path[0] == '\0' || (!host_access && relative_path[0] == '/' && !is_inside(workspace, relative_path)) ||
       relative_path_contains_protected_name(options, relative_path)) {
     fail_message("invalid or protected scoped workspace path");
   }
@@ -228,19 +242,19 @@ static void resolve_scoped_path(const char *workspace,
     }
     strcpy(resolved, workspace);
   } else {
-    joined = join_path(workspace, relative_path);
+    joined = relative_path[0] == '/' ? strdup(relative_path) : join_path(workspace, relative_path);
+    if (joined == NULL) fail("strdup");
     if (realpath(joined, resolved) == NULL) {
       fail(joined);
     }
     free(joined);
   }
-  if (!is_inside(workspace, resolved)) {
+  if (!host_access && !is_inside(workspace, resolved)) {
     fail_message("scoped path resolves outside workspace");
   }
-  canonical_relative = strcmp(workspace, resolved) == 0
-                           ? "."
-                           : resolved + strlen(workspace) + 1;
-  if (relative_path_contains_protected_name(options, canonical_relative)) {
+  canonical_relative = !options->host_read && is_inside(workspace, resolved)
+    ? (strcmp(workspace, resolved) == 0 ? "." : resolved + strlen(workspace) + (strcmp(workspace, "/") != 0)) : resolved;
+  if (is_locked_path(options, resolved) || relative_path_contains_protected_name(options, canonical_relative)) {
     fail_message("scoped path resolves to a protected workspace path");
   }
 }
@@ -259,9 +273,17 @@ static int add_scoped_tree(int ruleset_fd, const char *path,
   DIR *directory;
   struct dirent *entry;
   int clean_subtree = 1;
+  size_t protected_index;
 
+  if (is_locked_path(options, path)) return 0;
+  /* Locks also reserve missing descendants; a broad ancestor rule must not
+   * make a newly created locked path accessible later in this process. */
+  for (protected_index = 0; protected_index < options->protected_path_count; protected_index++) {
+    if (is_inside(path, options->protected_paths[protected_index])) clean_subtree = 0;
+  }
   directory = opendir(path);
   if (directory == NULL) {
+    if (errno == EACCES || errno == EPERM || errno == ENOENT) return 0;
     fail(path);
   }
 
@@ -279,6 +301,11 @@ static int add_scoped_tree(int ruleset_fd, const char *path,
     }
 
     child_path = join_path(path, entry->d_name);
+    if (is_locked_path(options, child_path)) {
+      clean_subtree = 0;
+      free(child_path);
+      continue;
+    }
     if (lstat(child_path, &entry_stat) < 0) {
       free(child_path);
       closedir(directory);
@@ -317,11 +344,11 @@ static void add_scoped_path(int ruleset_fd, const char *workspace,
                             const struct options *options,
                             uint64_t scoped_file_access,
                             uint64_t scoped_dir_access,
-                            uint64_t dirty_dir_access) {
+                            uint64_t dirty_dir_access, int writing) {
   char resolved[PATH_MAX];
   struct stat path_stat;
 
-  resolve_scoped_path(workspace, relative_path, options, resolved);
+  resolve_scoped_path(workspace, relative_path, options, writing, resolved);
   if (lstat(resolved, &path_stat) < 0) {
     fail("lstat scoped workspace path");
   }
@@ -337,7 +364,50 @@ static void add_scoped_path(int ruleset_fd, const char *workspace,
   fail_message("scoped workspace path must be a regular file or directory");
 }
 
-static void add_runtime_rules(int ruleset_fd, int network_enabled, int candidate_mode) {
+/* Runtime grants must obey the same sensitive names and explicit path locks.
+ * No broad runtime rule may accidentally reopen a protected descendant. */
+static void add_runtime_path(int ruleset_fd, const char *path, uint64_t access,
+                             const struct options *options) {
+  char canonical[PATH_MAX];
+  struct stat info;
+  size_t index;
+  if (realpath(path, canonical) == NULL) {
+    if (errno == ENOENT) return;
+    fail(path);
+  }
+  if (is_locked_path(options, canonical) || relative_path_contains_protected_name(options, canonical)) return;
+  if (lstat(canonical, &info) < 0) fail(canonical);
+  /* devpts creates numeric slave devices after launch. They need the existing
+   * directory-level PTY grant; unlike ordinary directories it cannot contain
+   * arbitrary named files. Explicit device locks still take precedence. */
+  if (strcmp(canonical, "/dev/pts") == 0) {
+    int device_locked = is_protected_name(options, "ptmx");
+    for (index = 0; index < options->protected_path_count; index++) {
+      if (is_inside(canonical, options->protected_paths[index])) device_locked = 1;
+    }
+    for (index = 0; index < options->protected_name_count; index++) {
+      const char *name = options->protected_names[index];
+      if (*name && strspn(name, "0123456789") == strlen(name) && is_protected_name(options, name)) device_locked = 1;
+    }
+    for (index = 0; index < options->protected_prefix_count; index++) {
+      const char *prefix = options->protected_prefixes[index];
+      if (*prefix && strspn(prefix, "0123456789") == strlen(prefix)) device_locked = 1;
+    }
+    if (!device_locked) {
+      landlock_add_path_rule(ruleset_fd, canonical, access, 1);
+      return;
+    }
+  }
+  if (S_ISDIR(info.st_mode)) {
+    add_scoped_tree(ruleset_fd, canonical, options,
+      access & (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE),
+      access, LANDLOCK_ACCESS_FS_READ_DIR);
+  } else {
+    landlock_add_path_rule(ruleset_fd, canonical, access, 1);
+  }
+}
+
+static void add_runtime_rules(int ruleset_fd, int network_enabled, int candidate_mode, const struct options *options) {
   static const char *const readonly_directories[] = {
       "/bin",          "/sbin",          "/lib",       "/lib64",
       "/usr/bin",      "/usr/sbin",      "/usr/lib",   "/usr/lib64",
@@ -371,44 +441,40 @@ static void add_runtime_rules(int ruleset_fd, int network_enabled, int candidate
   for (index = 0;
        index < sizeof(readonly_directories) / sizeof(readonly_directories[0]);
        index++) {
-    landlock_add_path_rule(ruleset_fd, readonly_directories[index],
-                           readonly_dir_access, 0);
+    add_runtime_path(ruleset_fd, readonly_directories[index], readonly_dir_access, options);
   }
 
   for (index = 0; index < sizeof(readonly_files) / sizeof(readonly_files[0]);
        index++) {
-    landlock_add_path_rule(ruleset_fd, readonly_files[index],
-                           LANDLOCK_ACCESS_FS_READ_FILE, 0);
+    add_runtime_path(ruleset_fd, readonly_files[index], LANDLOCK_ACCESS_FS_READ_FILE, options);
   }
 
   for (index = 0; index < sizeof(device_files) / sizeof(device_files[0]);
        index++) {
     if (candidate_mode && strcmp(device_files[index], "/dev/ptmx") == 0) continue;
-    landlock_add_path_rule(ruleset_fd, device_files[index],
+    add_runtime_path(ruleset_fd, device_files[index],
                            LANDLOCK_ACCESS_FS_READ_FILE |
                                LANDLOCK_ACCESS_FS_WRITE_FILE,
-                           0);
+                           options);
   }
 
   if (!candidate_mode) {
-    landlock_add_path_rule(ruleset_fd, "/dev/pts",
+    add_runtime_path(ruleset_fd, "/dev/pts",
                            readonly_dir_access |
                                LANDLOCK_ACCESS_FS_WRITE_FILE,
-                           0);
+                           options);
   }
 
   if (network_enabled) {
     for (index = 0;
          index < sizeof(network_files) / sizeof(network_files[0]); index++) {
-      landlock_add_path_rule(ruleset_fd, network_files[index],
-                             LANDLOCK_ACCESS_FS_READ_FILE, 0);
+      add_runtime_path(ruleset_fd, network_files[index], LANDLOCK_ACCESS_FS_READ_FILE, options);
     }
     for (index = 0;
          index < sizeof(network_directories) /
                      sizeof(network_directories[0]);
          index++) {
-      landlock_add_path_rule(ruleset_fd, network_directories[index],
-                             readonly_dir_access, 0);
+      add_runtime_path(ruleset_fd, network_directories[index], readonly_dir_access, options);
     }
   }
 }
@@ -470,15 +536,15 @@ static void install_landlock(const char *workspace, const char *tmp,
     fail("landlock_create_ruleset");
   }
 
-  add_runtime_rules(ruleset_fd, network_enabled, options->candidate_mode);
+  add_runtime_rules(ruleset_fd, network_enabled, options->candidate_mode, options);
   for (index = 0; index < options->read_path_count; index++) {
     add_scoped_path(ruleset_fd, workspace, options->read_paths[index], options,
                     readonly_file_access, readonly_dir_access,
-                    LANDLOCK_ACCESS_FS_READ_DIR);
+                    LANDLOCK_ACCESS_FS_READ_DIR, 0);
   }
   for (index = 0; index < options->write_path_count; index++) {
     add_scoped_path(ruleset_fd, workspace, options->write_paths[index], options,
-                    writeonly_file_access, writeonly_dir_access, 0);
+                    writeonly_file_access, writeonly_dir_access, 0, 1);
   }
   landlock_add_path_rule(ruleset_fd, tmp, mutable_dir_access, 1);
 
@@ -832,6 +898,15 @@ static void parse_options(int argc, char **argv, struct options *options) {
 
     if (strcmp(argv[index], "--workspace") == 0) {
       options->workspace = argv[++index];
+    } else if (strcmp(argv[index], "--access-mode") == 0) {
+      const char *value = argv[++index];
+      if (strcmp(value, "host-read") == 0) options->host_read = 1;
+      else if (strcmp(value, "host-write") == 0) options->host_read = options->host_write = 1;
+      else fail_message("invalid filesystem access mode");
+    } else if (strcmp(argv[index], "--protect-path") == 0) {
+      const char *value = argv[++index];
+      if (value[0] != '/') fail_message("protected paths must be absolute");
+      add_scoped_path_item(options->protected_paths, &options->protected_path_count, value, "invalid protected path");
     } else if (strcmp(argv[index], "--read-path") == 0) {
       add_scoped_path_item(options->read_paths, &options->read_path_count,
                            argv[++index], "invalid read path scope");
@@ -889,7 +964,6 @@ static void parse_options(int argc, char **argv, struct options *options) {
   if (options->workspace == NULL || options->cwd == NULL ||
       options->tmp == NULL || options->cpu_seconds == 0 ||
       !options->network_set ||
-      options->protected_name_count == 0 ||
       options->max_processes == 0 || options->max_open_files == 0 ||
       options->max_file_size_bytes == 0 || options->max_memory_bytes == 0 ||
       options->command_index == 0 || options->command_index >= argc) {
@@ -927,8 +1001,10 @@ static void resolve_and_validate_paths(struct options *options,
   }
 
   if (!is_inside(workspace, cwd)) {
-    fail_message("cwd is outside workspace");
+    if (!options->host_read) fail_message("cwd is outside workspace");
   }
+  if (options->host_read && (is_locked_path(options, cwd) || relative_path_contains_protected_name(options, cwd))) fail_message("cwd is protected");
+  if (options->candidate_mode && (options->host_read || options->host_write)) fail_message("candidate access must stay workspace scoped");
 }
 
 static void clean_environment(const char *tmp) {

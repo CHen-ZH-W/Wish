@@ -12,6 +12,8 @@ import type { WorkflowAttempt, WorkflowRun, WorkflowStore } from "./types.js";
 /** A complete Run and its event prefix are committed in one CAS, never separately. */
 export function snapshotWorkflow(value: unknown): WorkflowRun {
   const run = value as WorkflowRun;
+  const fields = new Set(["schemaVersion", "id", "revision", "key", "kind", "owner", "graph", "approvedPlanDigest", "model", "modelsConfiguration", "permissionProfile", "availableTools", "allowedCapabilities", "budget", "status", "steps", "createdAt", "updatedAt", "circuitFailures", "failureDigest", "events"]);
+  if (run && Object.keys(run).some(key => !fields.has(key))) throw new Error("Unsupported Workflow state fields");
   if (!run || run.schemaVersion !== 1 || typeof run.key !== "string" || !run.key.trim() || run.id !== `wf-${fingerprint(run.key)}` ||
       !Number.isSafeInteger(run.revision) || run.revision < 1 || !["task-graph", "subagent"].includes(run.kind) ||
       !["running", "completed", "failed", "blocked", "cancelled", "interrupted"].includes(run.status) ||
@@ -20,7 +22,7 @@ export function snapshotWorkflow(value: unknown): WorkflowRun {
       ![run.owner.parentAgentId, run.owner.parentSessionId, run.owner.parentRunId, run.owner.workspaceRoot].every(Boolean) ||
       !Number.isFinite(Date.parse(run.createdAt)) || !Number.isFinite(Date.parse(run.updatedAt)) ||
       !Number.isSafeInteger(run.circuitFailures) || run.circuitFailures < 0 ||
-      !run.budget || ![run.budget.maxTotalAttempts, run.budget.maxAttemptsPerStep, run.budget.maxCallsPerEdge, run.budget.circuitThreshold].every(v => Number.isSafeInteger(v) && v > 0 && v <= 10000) ||
+      !run.budget || Object.entries(run.budget).some(([key, v]) => !["maxTotalAttempts", "maxAttemptsPerStep", "maxCallsPerEdge", "circuitThreshold"].includes(key) || !Number.isSafeInteger(v) || v < 1 || v > 10000) ||
       !Array.isArray(run.steps) || !Array.isArray(run.events) || run.events.length !== run.revision) throw new Error("Invalid Workflow state");
   const specs = normalizeTasks(run.steps.map(step => step.task));
   const ids = new Set<string>();
@@ -29,7 +31,8 @@ export function snapshotWorkflow(value: unknown): WorkflowRun {
     const attempts = step.attempts.map((attempt: WorkflowAttempt, ordinal: number) => {
       if (typeof attempt.id !== "string" || !attempt.id || ids.has(attempt.id) || attempt.ordinal !== ordinal + 1 ||
           attempt.idempotencyKey !== `${run.id}/${step.task.id}/${ordinal + 1}` || typeof attempt.strategy !== "string" || !attempt.strategy.trim() ||
-          typeof attempt.edge !== "string" || !attempt.edge || !Number.isFinite(Date.parse(attempt.startedAt)) || !Number.isFinite(Date.parse(attempt.deadline)) ||
+          typeof attempt.edge !== "string" || !attempt.edge || !Number.isFinite(Date.parse(attempt.startedAt)) || (attempt.deadline !== undefined && !Number.isFinite(Date.parse(attempt.deadline))) ||
+          (attempt.stoppedAt !== undefined && !Number.isFinite(Date.parse(attempt.stoppedAt))) ||
           !["prepared", "dispatched", "running", "completed", "failed", "cancelled", "interrupted"].includes(attempt.status) ||
           !["resumable", "retry-safe", "needs-reconciliation", "terminal-failed"].includes(attempt.recoveryPolicy) ||
           (attempt.disposition !== undefined && !["resumable", "retry-safe", "needs-reconciliation", "terminal-failed"].includes(attempt.disposition)) ||

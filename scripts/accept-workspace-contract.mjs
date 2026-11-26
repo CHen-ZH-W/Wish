@@ -139,6 +139,7 @@ test("Workspace Snapshot validation takes immutable ownership", () => {
       root: "/workspace",
       identity: "git-repository:fixture",
     },
+    repositoryStatus: "verified",
   };
   const snapshot = snapshotWorkspace(source);
   source.instructions[0].content = "mutated";
@@ -146,6 +147,7 @@ test("Workspace Snapshot validation takes immutable ownership", () => {
 
   assert.equal(snapshot.instructions[0].content, "Follow the rules.");
   assert.equal(snapshot.repository.root, "/workspace");
+  assert.equal(snapshot.repositoryStatus, "verified");
   assert.equal(Object.isFrozen(snapshot), true);
   assert.equal(Object.isFrozen(snapshot.instructions), true);
   assert.equal(Object.isFrozen(snapshot.instructions[0]), true);
@@ -154,4 +156,8 @@ test("Workspace Snapshot validation takes immutable ownership", () => {
     ...source,
     instructions: [source.instructions[0], source.instructions[0]],
   }), /Duplicate Workspace instruction id/u);
+  assert.throws(() => snapshotWorkspace({ ...source, repositoryStatus: "unavailable" }), /repository status/u);
+  assert.throws(() => snapshotWorkspace({ ...source, repository: undefined }), /repository status/u);
+  const unknown = snapshotWorkspace({ ...source, repository: undefined, repositoryStatus: "unavailable" });
+  assert.equal(unknown.repositoryStatus, "unavailable");
 });

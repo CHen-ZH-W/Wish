@@ -144,6 +144,22 @@ test("propagates abort without producing partial instruction or state items", ()
   );
 });
 
+test("repository metadata states its verification outcome without enlarging the task boundary", () => {
+  const provider = new StateContextProvider();
+  const workspace = { ...contextInput().workspace, cwd: "/parent/project", repositoryStatus: "verified",
+    repository: { kind: "git", root: "/parent", identity: "git:parent" } };
+  const content = provider.provide(contextInput({ workspace }))[0].message.content;
+  const state = JSON.parse(content.slice(content.indexOf("\n{")));
+  assert.equal(state.workspace.root, "/parent/project");
+  assert.equal(state.workspace.repository.root, "/parent");
+  assert.equal(state.workspace.repositoryStatus, "verified");
+  assert.match(content, /does not expand write permissions/u);
+  const { repository, ...unavailable } = workspace;
+  const unknown = provider.provide(contextInput({ workspace: { ...unavailable, repositoryStatus: "unavailable" } }))[0].message.content;
+  assert.match(unknown, /"repositoryStatus": "unavailable"/u);
+  assert.doesNotMatch(unknown, /"kind": "git"/u);
+});
+
 test("keeps model instructions separate and projects workspace plus state before the current user", async () => {
   const providers = [
     new InstructionsContextProvider(),

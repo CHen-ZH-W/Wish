@@ -488,6 +488,24 @@ test("an awaited child result keeps the UserTurn open and enters its next Step",
   assert.equal(completion.snapshot.userTurns[0].steps.length, 2);
 });
 
+test("explicit steering wakes a child wait without releasing holds or completing the UserTurn", async () => {
+  const services = deterministicServices(), entered = deferred(), answered = deferred();
+  let hold, steps = 0;
+  const runtime = new Runtime({ ...services, stepPipeline: { async execute(input) {
+    steps++;
+    if (steps === 1) { hold = runtime.deferUserTurnCompletion(input.snapshot.run.runId, "child work"); entered.resolve(); return { status: "completed", result: "awaiting child work" }; }
+    if (steps === 2) { assert.deepEqual(input.snapshot.steering.map(message => message.text), ["What is the progress?"]); answered.resolve(); return { status: "completed", result: "work is continuing" }; }
+    assert.deepEqual(input.snapshot.steering.map(message => message.text), ["child complete"]); return { status: "completed", result: "final verified result" };
+  } } });
+  const agent = new Agent({ id: "coding-agent" }, runtime), handle = agent.startRun({ scope: "conversation:responsive-child-wait", payload: "task" });
+  await entered.promise; await flushWork();
+  assert.equal(agent.control(handle.runId, { type: "steer", text: "What is the progress?", source: "wish-webui" }).accepted, true);
+  await answered.promise; await flushWork();
+  assert.equal(steps, 2); assert.equal(runtime.activeRuns()[0].snapshot.userTurns[0].status, "running");
+  assert.equal(runtime.resume("coding-agent", handle.runId, { payload: "child complete", text: "child complete", source: "wish-subagent-result", withinUserTurn: true }).accepted, true);
+  hold.release(); assert.equal((await handle.completion).result, "final verified result"); assert.equal(steps, 3);
+});
+
 test("parallel child holds release only after both results, and cancellation breaks the wait", async () => {
   const services = deterministicServices();
   const entered = deferred();

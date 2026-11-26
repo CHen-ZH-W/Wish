@@ -13,6 +13,9 @@ FileSystem、Git、LSP、Memory 和 Skills 共享。
 - `revision` 表达本次捕获的工作区事实版本，可以随 instructions、repository facts 或
   其他已声明事实改变。
 - `instructions` 是经过读取、验证、排序并取得快照的事实；Context 不扫描它们的来源。
+- `repository` 只在仓库身份已确认时提供。Local Provider 的 `repositoryStatus` 区分
+  `verified`、`not-found`（未识别到有效仓库）和 `unavailable`（未能完成核验）；旧 Provider
+  可以省略此字段，缺失本身不证明目录没有仓库、文件或提交。
 - Snapshot 及其嵌套值必须由 Provider 冻结。AgentLoop 在一个 Step 只解析一次；Tools
   获得完整 Snapshot，Context 从该 Snapshot 投影同一 fingerprint、revision、repository
   与 instructions，不允许各自重新扫描。
@@ -27,22 +30,31 @@ Workspace 不承担以下职责：
 - 持久化用户登记的项目列表；项目登记属于独立 Registry 能力。
 - 读写任意工作区文件；这是 FileSystem 能力的职责。
 - 决定某次操作是否允许；这是 Policy 的职责。
-- 执行 Shell 或 Git 命令。
+- 执行模型请求的 Shell 或 Git 操作；Local Provider 的只读 Git 身份探测只用于解析事实。
 - 保存 Session、Tool Result、Trace 或其他 Wish 内部状态。
 
 Provider 必须把路径输入错误映射为稳定的 `WorkspaceErrorCode`。取消继续使用平台原生
 `AbortError`，不伪装成 Workspace 故障。
 
-## Local Provider
+## 本地 Provider
 
 `LocalWorkspace` 以 `launch.cwd` 为相对路径基准，拒绝空白、首尾空格和 null byte，
 然后依次执行 `realpath`、目录类型检查及读/进入权限检查。canonical root 决定
 `fingerprint`，所以同一目录的不同符号链接写法共享身份；`requestedRoot` 只用于诊断。
 
-Provider 从 execution root 向上寻找第一个 repository marker，默认是 `.git`，不执行
-Git 命令。找到 repository 后，以 repository root 为 instruction root；否则只读取
+Provider 从 execution root 向上寻找第一个 repository marker，默认是 `.git`。marker 只表示
+候选位置；Provider 从 execution root 运行只读 `git rev-parse --show-toplevel`，验证 Git
+返回的规范根目录与候选位置相符，支持无提交仓库与 `.git` 为文件的 worktree。
+探测不经过 Shell，清除继承的 `GIT_*` 重定向和命令配置，保留取消信号，最多等待 5 秒。
+空 marker 不产生仓库身份；Git 缺失、无法访问、探测超时或结果不一致时保留工作区并报告
+`unavailable`，不会把未完成核验当作没有仓库。禁用全部 markers 时也不宣称仓库不存在。
+只有验证成功的 repository 才作为 instruction root；否则只读取
 execution root。指令目录按 instruction root 到 execution root 排序，每层再按
 `AGENTS.md`、`AGENTS.local.md` 的配置顺序读取，因此更靠近当前目录的事实排在后面。
+
+所属仓库可以位于 execution root 的父目录，但不会扩大用户选定的任务工作区或写入权限。
+普通文件的跨工作区读取由 Filesystem 的敏感规则与单次 Grant 控制。Context 同时提供选定根目录、仓库核验结果与这条边界，工具观察与仓库元数据冲突时
+要求在工作区范围内重新核验；仓库身份不能代替文件、跟踪状态或提交历史的具体证据。
 
 每个 instruction 都携带稳定 ID、来源路径、内容 digest 和明确的 `developer`
 authority。符号链接目标逃出 instruction root、读取失败、非法 UTF-8 或超过限制都会
@@ -52,7 +64,7 @@ fail closed；空文件被忽略。默认单文件上限是 64 KiB，一次 Snap
 Local Provider 的 Loader Config 为：
 
 - `instructionFiles`：目录内候选文件名，必须是无路径分隔符的 leaf name；
-- `repositoryMarkers`：向上识别 repository 的 marker leaf name；
+- `repositoryMarkers`：向上查找候选 repository 的 marker leaf name，仍需 Git 验证；
 - `maxInstructionFileBytes`：单文件字节上限；
 - `maxInstructionBytes`：一次解析的总字节上限。
 

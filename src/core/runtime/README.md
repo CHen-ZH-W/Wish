@@ -91,6 +91,8 @@ Core 不认识插件名称、Cordis、HMR 或 Registry。
 - 依赖子 Agent 结果的委派使用 `deferUserTurnCompletion()`：当前 Step 提交后，Runtime 在下一
   Step 前等待该 UserTurn 的所有结果 hold 释放；结果通过 `withinUserTurn` 进入 next-step inbox，
   以 `inputSource=continuation` 持久化，不新开 UserTurn。普通 completion hold 仍只阻止 Run 结束。
+  显式 steer 会唤醒结果等待并进入下一 Step，让用户在子任务运行期间提问或调整方向；回答后仍保留原 hold，
+  不会提前结束 UserTurn。仅到达部分内部结果时仍沿用等待语义，不为每次唤醒创建空 Step。
   取消 Run 会唤醒等待，按原取消原因结束。结果等待不改变子 Agent 的资源所有权。
   Host 内部结果每条最多注入 16 KiB；超过时模型收到截断提示，可用领域工具读取完整结果。
   预留的内部 next-step 结果不受普通 steering 队列计数和总字节限制，以免多个结果阻塞释放。
@@ -167,15 +169,18 @@ UserTurn 边界策略；Fiber 释放时注销只影响未来调用。组合器�
 
 `runtime-lifecycle-journal` Provider 注入选中的 `storageBackend`，要求 Journal 支持
 原子 batch 与 `fsync` durability，并持有 Backend lease 直到自身关闭。默认使用全局
-namespace `runtime/lifecycle`，因此重启后无需枚举 namespace 即可发现中断 Run；当前代价是
-Journal 尚未做 compaction/retention。Provider 初始化、更新或 Backend 重建时都会重新通过
+namespace `runtime/lifecycle`，因此重启后无需枚举 namespace 即可发现中断 Run。
+默认部署的 `runtime-history-session-feature` 在会话删除及历史补扫时调用领域回收：只移除
+已结束且没有待核对 Tool 的完整 Run，活跃 Run 和未核对副作用保留。File Journal 通过原子
+checkpoint 压缩物理数据，并保持其他 Run 的游标与幂等身份；业务判定仍属于 Runtime。
+Provider 初始化、更新或 Backend 重建时都会重新通过
 启动扫描；Provider 或 Backend 消失时 AgentLoop、Runtime 和 Application 会沿 Cordis
 依赖图转为 PENDING。File Journal 已关闭的 namespace handle 不会跨 Provider generation
 复用。
 
 Config 拥有 `generationDrainTimeoutMs`。稳定依赖缺失时保持 PENDING。
 单独 AgentLoop 换代不会销毁 Runtime；缺席时拒绝新 Run 和 Step，而非提供无权限降级执行。
-受控实现切换必须先通过 composition 的 Step barrier，详见 [执行切换](../../composition/README.md#execution-replacement)。
+受控实现切换必须先通过 composition 的 Step barrier，详见 [执行切换](../../composition/README.md#执行实现替换)。
 Runtime 自身更新／关闭或稳定依赖消失仍依次释放 `runEngine → agents → application → surface`。旧代先永久关闭
 新 Run 准入，再向每个仍活动的 Run 发送一次显式 abort，并等待它们原有的 completion；
 只有旧代进入 `retired` 后，Cordis 才能激活新 consumer。它不会创建、重试或重放 Run/Tool。

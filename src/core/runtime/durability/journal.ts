@@ -407,6 +407,32 @@ export class JournalRuntimeLifecycleAuthority
     });
   }
 
+  purgeSession(sessionId: string): Promise<void> {
+    requireIdentifier(sessionId, "Runtime lifecycle Session id");
+    return this.sweepDeletedSessions(async scope => scope === sessionId);
+  }
+
+  /** Reclaim whole finished Runs only. An unresolved side effect keeps its entire
+   * evidence chain even after its Session has been deleted. */
+  sweepDeletedSessions(wasDeleted: (scope: string) => Promise<boolean>): Promise<void> {
+    return this.serial(async () => {
+      const loaded = await this.load();
+      const state = buildLifecycleState(loaded, this.options.backendId);
+      const removed = new Set<string>();
+      for (const run of state.runs.values()) {
+        if (!run.terminal) continue;
+        const turns = [...run.turns.values()], steps = turns.flatMap(turn => [...turn.steps.values()]);
+        if (turns.some(turn => !turn.terminal) || steps.some(step => !step.terminal || [...step.tools.values()].some(tool =>
+          !tool.terminal || tool.terminalEvent?.recoveryDisposition === "needs-reconciliation" && !tool.reconciliation))) continue;
+        if (await wasDeleted(run.scope)) removed.add(run.runId);
+      }
+      if (!removed.size) return;
+      if (!this.options.journal.compact) throw new Error("Runtime lifecycle Journal does not support reclamation");
+      await this.options.journal.compact(entry => !removed.has(decodeEvent(entry.value, this.options.backendId).runId));
+      for (const [key, bytes] of this.encodedEvents) if (removed.has(decodeEvent(bytes, this.options.backendId).runId)) this.encodedEvents.delete(key);
+    });
+  }
+
   resolveReconciliation(
     request: ResolveRuntimeReconciliationRequest,
   ): Promise<RuntimeReconciliationCommit> {

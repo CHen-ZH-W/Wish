@@ -230,6 +230,35 @@ export class BlobToolResultArchive implements ToolResultArchive {
           precondition: { kind: "revision", revision: stored.revision } });
       });
     }
+    // A crash between writing a Blob and its index must not make it immortal.
+    for (const item of await this.blobRecords()) {
+      if (item.record.sessionId === owner) {
+        if (!this.blob.delete) throw new Error("Tool Result Blob deletion is unavailable");
+        await this.blob.delete({ reference: item.reference });
+      }
+    }
+  }
+
+  async sessionIds(): Promise<readonly string[]> {
+    if (!this.kv.list) throw new Error("Tool Result index listing is unavailable for cleanup");
+    const ids = new Set<string>();
+    for (const entry of await this.kv.list({ namespace: INDEX_NAMESPACE })) {
+      const stored = await this.kv.get({ namespace: INDEX_NAMESPACE, key: entry.key });
+      if (stored) ids.add(validateIndex(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(stored.value)), this.backendContext()).identity.sessionId);
+    }
+    for (const item of await this.blobRecords()) ids.add(item.record.sessionId);
+    return [...ids];
+  }
+
+  private async blobRecords() {
+    const records = [];
+    for (const reference of await this.blob.list?.(BLOB_NAMESPACE) ?? []) {
+      const bytes = await this.blob.get({ reference });
+      if (!bytes) continue;
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      records.push({ reference, record: validateBlobRecord(bytes, value.resultSha256, this.backendContext()) });
+    }
+    return records;
   }
 
   private async readLegacy(
@@ -720,6 +749,18 @@ export class BlobToolResultArchiveProvider extends ToolResultArchiveService {
       const dataDirectory = this.ctx.get("sessions")?.dataDirectory;
       if (dataDirectory) await rm(join(dataDirectory, "tool-results", `session-${sha256(sessionId)}`), { recursive: true, force: true });
     });
+  }
+
+  override sessionIds(): Promise<readonly string[]> {
+    return this.work.run(async () => {
+      const lease = this.ctx.storageBackend.acquire(this.backendId, { kv: { list: true }, blob: { contentAddressed: true } });
+      try { return await new BlobToolResultArchive({ storage: lease, backendId: this.backendId }).sessionIds(); }
+      finally { lease.release(); }
+    });
+  }
+
+  override async sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    for (const sessionId of await this.sessionIds()) if (await wasDeleted(sessionId)) await this.purgeSession(sessionId);
   }
 }
 

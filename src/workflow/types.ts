@@ -6,10 +6,10 @@ import type { ModelsConfiguration } from "../models/types.js";
 import type { CapabilityKind } from "../permissions/authorization.js";
 
 export interface WorkflowBudget {
-  readonly maxTotalAttempts: number;
-  readonly maxAttemptsPerStep: number;
-  readonly maxCallsPerEdge: number;
-  readonly circuitThreshold: number;
+  readonly maxTotalAttempts?: number;
+  readonly maxAttemptsPerStep?: number;
+  readonly maxCallsPerEdge?: number;
+  readonly circuitThreshold?: number;
 }
 export type WorkflowStatus = "running" | "completed" | "failed" | "blocked" | "cancelled" | "interrupted";
 export interface WorkflowAttempt {
@@ -23,8 +23,10 @@ export interface WorkflowAttempt {
   readonly disposition?: ToolRecoveryPolicy;
   readonly childId?: string;
   readonly startedAt: string;
-  readonly deadline: string;
+  readonly deadline?: string;
   readonly endedAt?: string;
+  /** Host observed that this Attempt's child resource has stopped or is absent. */
+  readonly stoppedAt?: string;
   readonly result?: string;
   readonly errorFingerprint?: string;
 }
@@ -95,6 +97,7 @@ export interface Workflow {
   beginAttempt(request: BeginAttemptRequest): Promise<WorkflowAttempt>;
   markDispatched(target: AttemptTarget): Promise<void>;
   bindChild(target: AttemptTarget, childId: string): Promise<void>;
+  recordStopped(target: AttemptTarget): Promise<void>;
   recoverChild(target: AttemptTarget, childId: string): Promise<void>;
   finishAttempt(target: AttemptTarget, status: "completed" | "failed" | "cancelled", result: string): Promise<void>;
   resumeAttempt(target: AttemptTarget): Promise<WorkflowAttempt>;

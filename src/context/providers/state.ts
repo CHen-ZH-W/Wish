@@ -24,6 +24,7 @@ export class StateContextProvider implements ContextProvider<ContextInput> {
     const state = Object.freeze({
       cwd: requireIdentifier(input.workspace.cwd, "Context cwd"),
       workspace: Object.freeze({
+        root: requireIdentifier(input.workspace.cwd, "Context workspace root"),
         fingerprint: requireIdentifier(
           input.workspace.fingerprint,
           "Context workspace fingerprint",
@@ -32,6 +33,7 @@ export class StateContextProvider implements ContextProvider<ContextInput> {
           input.workspace.revision,
           "Context workspace revision",
         ),
+        ...(input.workspace.repositoryStatus === undefined ? {} : { repositoryStatus: input.workspace.repositoryStatus }),
         ...(input.workspace.repository === undefined
           ? {}
           : {
@@ -75,7 +77,9 @@ export class StateContextProvider implements ContextProvider<ContextInput> {
       }),
     });
     const content = [
-      "Current execution state for this Step follows. Prefer it over stale history:",
+      "Current execution state for this Step follows. Run and Step identities describe the current execution.",
+      "workspace.root is the selected task location and default write boundary. Ordinary files outside it may be read by explicit path, subject to sensitive path locks and tool grants. repository.root describes repository membership only and does not expand write permissions.",
+      "Repository checks report verified, not-found (no valid repository identified), or unavailable (not established). Missing repository metadata is not proof that files, commits or a project are absent. If tool observations conflict with repository metadata, report the discrepancy and verify within the workspace before asserting a repository fact.",
       JSON.stringify(state, null, 2),
     ].join("\n");
     throwIfAborted(signal);

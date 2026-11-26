@@ -1,5 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {} from "../../../apps/webui/client/plugins.js";
 import type { SessionFeatureView } from "../../../apps/session-features.js";
 import { useLanguage, useText } from "../../../apps/webui/client/i18n.js";
@@ -13,7 +13,12 @@ function GoalConversationCard({ model, sessionId }: { readonly model: FeaturesCl
   const goal = parseGoalView(view?.data);
   const [confirm, setConfirm] = useState<{ readonly view: SessionFeatureView; readonly action: string; readonly label: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { setConfirm(null); setError(null); }, [sessionId, goal?.id]);
+  const identity = useRef({ sessionId, goalId: goal?.id });
+  useEffect(() => {
+    if (identity.current.sessionId === sessionId && identity.current.goalId === goal?.id) return;
+    identity.current = { sessionId, goalId: goal?.id };
+    setConfirm(null); setError(null);
+  }, [sessionId, goal?.id]);
   if (!view || !goal) return null;
   const stale = confirm !== null && JSON.stringify(confirm.view.token) !== JSON.stringify(view.token);
   const phase = phaseLabel(goal.phase, language);
@@ -27,7 +32,7 @@ function GoalConversationCard({ model, sessionId }: { readonly model: FeaturesCl
   return <section className="conversation-card goal-card" aria-labelledby={`goal-card-title-${sessionId}`}>
     <header><h2 id={`goal-card-title-${sessionId}`}>Goal</h2><span className="goal-phase" data-phase={goal.phase}>{phase}</span></header>
     <p className="goal-objective">{goal.objective}</p>
-    <dl><div><dt>{t("轮次", "Rounds")}</dt><dd>{goal.roundsStarted}<span aria-hidden="true"> / </span>{goal.maxGoalRounds}</dd></div><div><dt>{t("自动继续", "Auto continue")}</dt><dd>{activation}</dd></div></dl>
+    <dl><div><dt>{t("已执行轮次", "Rounds started")}</dt><dd>{goal.roundsStarted}{goal.maxGoalRounds === undefined ? null : <> / {goal.maxGoalRounds}</>}</dd></div><div><dt>{t("自动继续", "Auto continue")}</dt><dd>{activation}</dd></div></dl>
     {goal.blockedReason ? <p className="goal-blocked"><strong>{t("阻塞原因", "Blocked")}</strong><span>{goal.blockedReason.message}</span></p> : null}
     <ErrorNotice text={error} />
     {view.actions.length ? <div className="goal-card-actions">{view.actions.map(action => { const label = language === "en-US" ? action.labelEn ?? action.label : action.label; return <button key={action.name} className={action.name === "clear" ? "goal-card-clear" : undefined} disabled={!state.available || state.pending} onClick={() => { setConfirm({ view, action: action.name, label }); setError(null); }}>{label}</button>; })}</div> : null}
@@ -43,7 +48,7 @@ function phaseLabel(phase: GoalPhase, language: "zh-CN" | "en-US"): string {
 function parseGoalView(value: unknown): GoalView | undefined {
   if (!value || typeof value !== "object") return undefined;
   const goal = value as Partial<GoalView>;
-  if (goal.schemaVersion !== 1 || typeof goal.id !== "string" || typeof goal.objective !== "string" || !["active", "paused", "blocked", "complete"].includes(goal.phase ?? "") || !["armed", "disarmed"].includes(goal.activation ?? "") || !Number.isSafeInteger(goal.revision) || !Number.isSafeInteger(goal.roundsStarted) || !Number.isSafeInteger(goal.maxGoalRounds)) return undefined;
+  if (goal.schemaVersion !== 1 || typeof goal.id !== "string" || typeof goal.objective !== "string" || !["active", "paused", "blocked", "complete"].includes(goal.phase ?? "") || !["armed", "disarmed"].includes(goal.activation ?? "") || !Number.isSafeInteger(goal.revision) || !Number.isSafeInteger(goal.roundsStarted) || (goal.maxGoalRounds !== undefined && !Number.isSafeInteger(goal.maxGoalRounds))) return undefined;
   if (goal.blockedReason !== undefined && (typeof goal.blockedReason.code !== "string" || typeof goal.blockedReason.message !== "string")) return undefined;
   return goal as GoalView;
 }

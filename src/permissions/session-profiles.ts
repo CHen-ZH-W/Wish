@@ -72,7 +72,7 @@ const domainSpec: DomainSpec<string, SessionPermissionProfileSelection> = Object
 export class DomainSessionPermissionProfileStore implements SessionPermissionProfileStore {
   private readonly domain: StorageDomain<string, SessionPermissionProfileSelection>;
 
-  constructor(storage: StorageBackendResolver, backendId: string) {
+  constructor(private readonly storage: StorageBackendResolver, private readonly backendId: string) {
     this.domain = new StorageDomain({ storage, backendId, spec: domainSpec });
   }
 
@@ -97,6 +97,15 @@ export class DomainSessionPermissionProfileStore implements SessionPermissionPro
   }
   async delete(sessionId: string, revision: string, signal?: AbortSignal): Promise<void> {
     await this.domain.resolve(sessionId).delete({ kind: "revision", revision }, signal);
+  }
+  async sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    const kv = this.storage.resolve(this.backendId, "kv");
+    if (!kv.list) throw new Error("Session permissions store cannot enumerate cleanup owners");
+    for (const entry of await kv.list({ namespace: domainSpec.id })) {
+      if (!await wasDeleted(entry.key)) continue;
+      const current = await this.get(entry.key);
+      if (current) await this.delete(entry.key, current.revision);
+    }
   }
 }
 
@@ -200,6 +209,15 @@ export class SessionPermissions extends Service {
   private readonly work: PluginWorkOwner;
   private readonly settingsScope: SettingsScope | undefined;
 
+  sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    return this.work.run(async () => {
+      const storage = this.ctx.storageBackend;
+      const lease = storage.acquire(storage.id, { kv: { list: true } });
+      try { await new DomainSessionPermissionProfileStore(lease, lease.id).sweepDeletedSessions(wasDeleted); }
+      finally { lease.release(); }
+    });
+  }
+
   constructor(ctx: Context) {
     super(ctx, "sessionPermissions");
     this.work = new PluginWorkOwner(ctx, { code: "session_permissions", codeReload: true });
@@ -216,7 +234,7 @@ export class SessionPermissions extends Service {
       fields: [{
         key: "default-profile",
         label: "新会话默认权限",
-        description: "只影响之后创建的会话；完全访问会关闭工作区隔离，并暴露宿主文件、网络和环境变量。",
+        description: "只影响之后创建的会话；完全访问允许工作区外写入，敏感路径仍受保护。",
         type: "enum",
         options: available.map((profile) => Object.freeze({ value: profile, label: permissionProfileLabel(profile) })),
         default: deploymentDefault,
@@ -243,9 +261,6 @@ export class SessionPermissions extends Service {
 }
 
 export function availablePermissionProfiles(policy: ShellPolicy): readonly PermissionProfile[] {
-  if (policy.backend === "host") {
-    return Object.freeze(policy.automaticPermissionProfiles.includes("full-access") ? ["full-access"] : []);
-  }
   const profiles: PermissionProfile[] = ["read-only", "approval-required"];
   if (policy.automaticPermissionProfiles.includes("workspace-write") && policy.filesystem === "path-scoped") {
     profiles.push("workspace-write");
@@ -261,7 +276,7 @@ function permissionProfileLabel(profile: PermissionProfile): string {
     case "read-only": return "只读";
     case "approval-required": return "需要审批";
     case "workspace-write": return "工作区可写";
-    case "full-access": return "完全访问（无隔离）";
+    case "full-access": return "完全访问（保留敏感保护）";
   }
 }
 

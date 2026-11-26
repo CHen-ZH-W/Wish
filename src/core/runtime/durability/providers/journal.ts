@@ -210,6 +210,14 @@ export class JournalRuntimeLifecycleProvider
     return this.work.close();
   }
 
+  override purgeSession(sessionId: string): Promise<void> {
+    return this.work.run(() => this.authority.purgeSession(sessionId));
+  }
+
+  override sweepDeletedSessions(wasDeleted: (scope: string) => Promise<boolean>): Promise<void> {
+    return this.work.run(() => this.authority.sweepDeletedSessions(wasDeleted));
+  }
+
   private closeAuthority(): Promise<void> {
     return this.closePromise ??= this.authority.close().finally(() => {
       this.lease.release();

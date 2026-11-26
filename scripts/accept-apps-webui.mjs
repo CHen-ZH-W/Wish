@@ -321,7 +321,9 @@ test("WebUI static assets build a CSP-compatible responsive application shell", 
   const runtimeScripts = [script, ...sharedScripts].join("\n");
 
   assert.match(html, /id="wish-root"/u);
-  assert.match(html, /<main class="wish-boot" aria-label="Wish"><span class="wish-boot-mark"/u, "the document paints a clean initial surface before React starts");
+  assert.match(html, /<main class="wish-boot" aria-label="Wish" aria-busy="true">/u, "the document exposes its initial loading state before React starts");
+  assert.match(html, /<span class="wish-loading-spinner" aria-hidden="true"><\/span>/u);
+  assert.match(html, /<span class="sr-only" role="status">[^<]+<\/span>/u, "the initial spinner has an accessible status message");
   assert.match(html, /<html lang="zh-CN" data-theme="light" data-font-size="standard">/u);
   assert.match(html, /type="module" src="\/assets\/client\.js"/u);
   assert.match(html, /href="\/assets\/app\.css"/u);

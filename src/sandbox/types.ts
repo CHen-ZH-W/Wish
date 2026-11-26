@@ -10,7 +10,7 @@ export interface SandboxPolicyDescriptor {
   readonly filesystemPolicyVersion: string;
   readonly shellPolicyVersion: string;
   readonly shellBackend: ShellBackendKind;
-  readonly filesystem: "workspace-path-scoped";
+  readonly filesystem: "profile-path-scoped";
   readonly network: "none" | "all-or-none";
   readonly web: "grant-scoped-provider";
 }

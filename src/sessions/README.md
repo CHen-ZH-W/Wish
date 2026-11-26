@@ -88,11 +88,23 @@ Sessions 自己不负责调度。
 - `active | archived` 状态；
 - `createdAt`、`updatedAt`；
 - 只随 transcript 变化的 `historyRevision`；
-- 可选的最终展示标题 `title`。
+- 可选的最终展示标题 `title`、来源 `titleSource`（`fallback | model | manual`）和独立的标题版本 `titleRevision`。
 
 标题生成、失败重试和 UI 展示不属于 Sessions。`updateMetadata` 只提交调用方已经决定
 的最终值，而且不会改变 `historyRevision`，因此普通标题修改不会制造无意义的
 Compaction CAS 冲突。
+
+创建时有标题则 `titleRevision` 为 1，无标题为 0；省略 `titleSource` 的标题创建或修改
+按 `manual` 保存。旧记录缺失版本时读取为 0，已有标题缺失来源时读取为 `manual`。
+每次显式提交 `title`（包括相同文本、来源变化和 `null` 清除）都会递增标题版本；
+清除标题仍保存来源，调用方可据 `manual` 保留用户的固定标题意图。
+`titleSource` 不能脱离 `title` 单独提交。
+
+`updateMetadata` 可携带 `expectedTitleRevision`，Store 在同一会话串行事务内核对当前
+标题版本后提交；冲突抛出 `SessionTitleConflictError`，携带 `expectedTitleRevision`
+和 `actualTitleRevision`。读取标题、等待模型、再写回的调用方应保留读到的版本作为
+提交条件，防止旧结果覆盖较新的用户操作。这个条件只保护标题元数据，不替代历史 CAS；
+File Store 的原子性仍限于本进程的同一 Store 实例。
 
 `archive` 把会话设为只读；`restore` 恢复为活动状态，两者均保留历史及其 revision。
 `delete` 清理 Session 自己的元数据、历史和 checkpoint，其他领域的数据不属于此操作。
@@ -106,7 +118,7 @@ Compaction CAS 冲突。
 
 历史包含两类 append-only 事实。
 
-### Message Record
+### 消息记录
 
 `SessionMessageRecord` 保存：
 
@@ -126,7 +138,7 @@ Compaction CAS 冲突。
 Result receipt 使用 `schemaVersion + toolCallId + locator + hash`，作为 record 的结构
 元数据保存，不会混入 `ModelMessage.content`。
 
-### Checkpoint Record
+### 检查点记录
 
 `SessionCheckpointRecord` 保存：
 
@@ -138,7 +150,7 @@ Result receipt 使用 `schemaVersion + toolCallId + locator + hash`，作为 rec
 Sessions 只保存 Compaction 请求提交的 checkpoint，不选择 `oldEntries`、不生成摘要，
 也不汇总或展示费用。
 
-### History Snapshot
+### 历史快照
 
 `SessionHistorySnapshot` 只暴露：
 
@@ -153,7 +165,7 @@ Sessions 只保存 Compaction 请求提交的 checkpoint，不选择 `oldEntries
 
 每次写入都会先复制并冻结调用方数据，再进入 Store 的单 Session 串行事务。
 
-### Message append
+### 追加消息
 
 - 每次 append 必须包含非空 `idempotencyKey`。
 - 相同键和相同内容返回原有提交，不产生重复记录。
@@ -178,7 +190,7 @@ Run/UserTurn/Step provenance 不一致都会在写入前失败，整个 batch �
 持久历史仍可能包含旧实现或进程中断留下的不完整 Tool 单元。Sessions 读取时不会静默
 删除、补写或篡改这些事实；模型可见副本的确定性修复继续由 Context 负责。
 
-### Checkpoint append
+### 追加检查点
 
 checkpoint 写入必须携带规划时读取的 `expectedRevision`：
 
@@ -220,7 +232,7 @@ Compaction 预先猜测。
 
 Sessions 在 AgentLoop 两侧提供两个明确接缝。
 
-### Session-aware Input Renderer
+### 接入 Session 的输入渲染器
 
 `createSessionInputRenderer()` 装饰现有 `AgentLoopInputRenderer`：
 
@@ -231,7 +243,7 @@ Sessions 在 AgentLoop 两侧提供两个明确接缝。
 - Compaction 重投影再次调用 renderer 时只会命中幂等重放；
 - 返回 AgentLoop 的消息就是 Store 已提交的同一条规范消息。
 
-### Session Transcript Pipeline
+### 会话记录流水线
 
 `SessionTranscriptPipeline` 是包含 Compaction 恢复链的最外层 Step pipeline：
 

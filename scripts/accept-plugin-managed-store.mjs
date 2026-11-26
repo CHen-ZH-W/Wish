@@ -12,6 +12,26 @@ async function fixture(run) {
 const operation = (overrides = {}) => ({ id: "operation-one", kind: "disable", source: "management", requestId: "request-one",
   entryIds: ["include:feature"], fingerprint: "a".repeat(64), submittedRevision: "initial", phase: "queued", code: null,
   cancellable: true, ...overrides });
+
+test("restart repairs an old rejected operation that still owns an unresolved intent and preserves stop diagnostics", async () => fixture(async filename => {
+  const pending = { requestId: "request-one", revision: "initial", preference: "disabled",
+    selection: { instanceId: "old-root", entryIds: ["include:feature"] },
+    failure: { stage: "stop", operationId: "stop-one", code: "stop_cleanup_failed", runtime: "changed", cleanup: "failed" } };
+  await writeFile(filename, JSON.stringify({ schemaVersion: 2, revision: "saved", preferences: {}, pending, receipts: [],
+    operations: [operation({ phase: "rejected", code: "management_recovery_required", cancellable: false })] }));
+  const store = await ManagedPluginStore.open(filename);
+  try {
+    assert.deepEqual(store.snapshot().pending, pending);
+    assert.equal(store.snapshot().operations[0].phase, "recovery-required");
+    assert.equal(store.snapshot().operations[0].code, "stop_cleanup_failed");
+    const persisted = JSON.parse(await readFile(filename, "utf8"));
+    assert.equal(persisted.operations[0].phase, "recovery-required");
+    const invalid = structuredClone(pending);
+    invalid.failure.code = "private stack trace /secret/path";
+    await assert.rejects(store.commit(store.snapshot().revision, { preferences: {}, pending: invalid, receipts: [] }),
+      { code: "management_store_corrupt" });
+  } finally { await store.close(); }
+}));
 test("managed preferences are separate, durable, immutable and single-writer", async () => fixture(async filename => {
   const store = await ManagedPluginStore.open(filename);
   try {
@@ -150,6 +170,40 @@ test("schema v1 is upgraded in place without changing the configuration revision
     assert.equal(store.snapshot().revision, "legacy-revision");
     assert.deepEqual(store.snapshot().operations, []);
     assert.deepEqual(JSON.parse(await readFile(filename, "utf8")), store.snapshot());
+  } finally { await store.close(); }
+}));
+
+test("wide operation history stays reopenable while active and pending recovery records survive compaction", async () => fixture(async filename => {
+  let store = await ManagedPluginStore.open(filename);
+  const pending = { requestId: "recover-wide", revision: "initial", preference: "disabled",
+    selection: { instanceId: "old-root", entryIds: ["include:feature"] } };
+  const entryIds = Array.from({ length: 157 }, (_, index) => `include:feature-${index}-${"x".repeat(400)}`);
+  try {
+    await store.commit("initial", { preferences: {}, receipts: [], pending });
+    await store.recordOperation({ ...operation(), id: "pending-recovery", requestId: pending.requestId, entryIds,
+      phase: "recovery-required", code: "management_recovery_required", cancellable: false });
+    await store.recordOperation({ ...operation(), id: "active-wide", requestId: "active-wide", entryIds,
+      phase: "waiting-safe-point", code: null, cancellable: true });
+    for (let index = 0; index < 64; index++) {
+      await store.recordOperation({ ...operation(), id: `finished-${index}`, requestId: `finished-${index}`, entryIds,
+        phase: "succeeded", code: "management_saved", cancellable: false });
+    }
+    const preferences = Object.fromEntries(Array.from({ length: 100 }, (_, index) =>
+      [`include:feature-${index}`, { name: "p".repeat(500), preference: "enabled" }]));
+    await store.commit(store.snapshot().revision, { preferences, receipts: [], pending });
+    assert.ok(Buffer.byteLength(await readFile(filename, "utf8")) <= 1_048_576);
+    assert.ok(store.snapshot().operations.length < 66, "older completed history is removed before the file exceeds its readable size");
+    assert.equal(store.operation("finished-0"), undefined);
+    assert.equal(store.operation("finished-63").phase, "succeeded");
+    assert.equal(store.operation("pending-recovery").phase, "recovery-required");
+    assert.equal(store.operation("active-wide").phase, "waiting-safe-point");
+    const revision = store.snapshot().revision;
+    await store.close(); store = await ManagedPluginStore.open(filename);
+    assert.equal(store.snapshot().revision, revision);
+    assert.deepEqual(store.snapshot().pending, pending);
+    assert.deepEqual(store.snapshot().preferences, preferences);
+    assert.equal(store.operation("pending-recovery").phase, "recovery-required");
+    assert.equal(store.operation("active-wide").code, "plugin_change_interrupted");
   } finally { await store.close(); }
 }));
 

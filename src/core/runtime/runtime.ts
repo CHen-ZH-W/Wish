@@ -547,6 +547,7 @@ export class Runtime<
       });
       const receipt = record.stepInbox.enqueue(message);
       this.recordControlReceipt(record, "steer", receipt);
+      if (receipt.accepted) this.wakeRun(record);
       return queueReceipt(runId, "steer", receipt);
     }
 
@@ -805,10 +806,10 @@ export class Runtime<
 
     for (let ordinal = 1; ; ordinal += 1) {
       while (!record.cancellation.cancelled &&
-        [...record.userTurnHolds.values()].includes(turn.id)) {
+        [...record.userTurnHolds.values()].includes(turn.id) && !record.stepInbox.hasPendingSteering(turn.id)) {
         const signal = record.decisionSignal.promise;
         if (record.cancellation.cancelled ||
-          ![...record.userTurnHolds.values()].includes(turn.id)) break;
+          ![...record.userTurnHolds.values()].includes(turn.id) || record.stepInbox.hasPendingSteering(turn.id)) break;
         await signal;
       }
       if (record.cancellation.cancelled) {

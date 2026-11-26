@@ -69,7 +69,7 @@ export function createSkillSessionFeature(skills: Skills, workspaces: SkillSessi
 
 function presentSkill(skill: SkillSummary): SkillFeatureEntry {
   return Object.freeze({ packageId: skill.packageId, name: skill.name, description: skill.description,
-    source: skill.source, digest: skill.digest, modelInvocable: skill.modelInvocable });
+    source: skill.source, digest: skill.digest, modelInvocable: skill.modelInvocable, enabled: skill.enabled !== false });
 }
 
 export const SkillsSessionFeature = {

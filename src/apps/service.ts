@@ -54,10 +54,13 @@ export class Application extends Service {
   private readonly features = new SessionFeatureRegistry();
   private readonly work: PluginWorkOwner;
   private readonly closing = new AbortController();
+  private cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+  private cleanupPass: Promise<void> | undefined;
   registerSessionFeature(key: string, feature: SessionFeature): () => void {
     const unregister = this.features.register(key, feature);
     try { this.ctx.effect(() => unregister, `session-feature:${key}`); }
     catch (error) { unregister(); throw error; }
+    this.scheduleCleanup(1_000);
     return unregister;
   }
   static readonly inject = inject;
@@ -68,8 +71,48 @@ export class Application extends Service {
       code: "application",
       codeReload: true,
       replacement: "generation",
-      beforeDrain: () => this.closing.abort(new StepExecutionError("step_execution_unavailable")),
+      beforeDrain: () => {
+        clearTimeout(this.cleanupTimer);
+        this.closing.abort(new StepExecutionError("step_execution_unavailable"));
+      },
     });
+  }
+
+  /** Coalesced background maintenance, retried after plugin reload or failure.
+   * It never infers deletion from an absent/archived Session or another data root. */
+  sweepDeletedSessions(): Promise<void> {
+    if (this.cleanupPass) return this.cleanupPass;
+    const pass = this.work.run(async () => {
+      const protectedSessions = new Set((await this.ctx.runtimeLifecycle.recoverySnapshot()).pendingReconciliations.map(item => item.scope));
+      const checked = new Map<string, Promise<boolean>>();
+      const wasDeleted = (sessionId: string): Promise<boolean> => {
+        if (protectedSessions.has(sessionId) || this.closing.signal.aborted) return Promise.resolve(false);
+        let result = checked.get(sessionId);
+        if (!result) { result = this.ctx.sessions.manager.wasDeleted({ sessionId }); checked.set(sessionId, result); }
+        return result;
+      };
+      await this.features.forGraph(this.ctx.sessions.manager).sweepDeletedSessions?.(wasDeleted);
+      await this.ctx.models.sweepDeletedSessions(wasDeleted);
+      await this.ctx.get("sessionPermissions")?.sweepDeletedSessions(wasDeleted);
+    });
+    this.cleanupPass = pass;
+    void pass.finally(() => { if (this.cleanupPass === pass) this.cleanupPass = undefined; }).catch(() => {});
+    return pass;
+  }
+
+  private scheduleCleanup(delay: number): void {
+    if (this.closing.signal.aborted) return;
+    clearTimeout(this.cleanupTimer);
+    this.cleanupTimer = setTimeout(() => {
+      if (this.ctx.get("runEngine")?.lifecycleSnapshot().activeRuns) {
+        this.scheduleCleanup(30_000);
+        return;
+      }
+      void this.sweepDeletedSessions().catch(error => {
+        if (!this.closing.signal.aborted) this.ctx.logger.warn(`Session cleanup deferred; will retry: ${error instanceof Error ? error.message : String(error)}`);
+      }).finally(() => this.scheduleCleanup(5 * 60_000));
+    }, delay);
+    this.cleanupTimer.unref();
   }
 
   /** Resolve the current service graph plus optional surface overrides. */
@@ -154,7 +197,7 @@ export class Application extends Service {
       profile?.attachRuntime(() => resources.generation.retire({ reason: "Agent Profile owner released" }));
       const sessionPermissions = dynamicSessionPermissions(this.ctx);
       facade = new ApplicationFacade({
-        sessionFeatures: this.features,
+        sessionFeatures: this.features.forGraph(resources.sessions.manager),
         sessions: resources.sessions,
         models: resources.models,
         ...(sessionPermissions === undefined ? {} : { sessionPermissions }),

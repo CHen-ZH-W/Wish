@@ -19,6 +19,7 @@ export interface ConversationTurn {
   readonly requests: readonly LedgerBlock[];
   readonly answer?: LedgerBlock;
   readonly process: readonly LedgerBlock[];
+  readonly contributions?: readonly LedgerBlock[];
   readonly live: boolean;
   readonly failed: boolean;
   readonly stopped: boolean;
@@ -33,23 +34,25 @@ export function projectConversationTurns(turns: readonly LedgerTurn[], liveTurnI
     const failed = turn.blocks.some(block => block.status === "run.failed");
     const stopped = turn.blocks.some(block => block.status === "run.aborted");
     const live = turn.id === liveTurnId;
-    const answer = live || failed || stopped ? undefined : [...turn.blocks].reverse().find(block => block.kind === "assistant" && block.text.trim().length > 0);
+    const contributions = turn.blocks.filter(block => block.viewId !== undefined);
+    const answer = live || failed || stopped ? undefined : [...turn.blocks].reverse().find(block => !block.viewId && block.kind === "assistant" && block.text.trim().length > 0);
     const process: LedgerBlock[] = [];
     for (const block of turn.blocks) {
-      if (block.kind === "user" || block.kind === "checkpoint") continue;
+      if (block.viewId || block.kind === "user" || block.kind === "checkpoint") continue;
       if (block === answer) {
         if (block.reasoning) process.push(Object.freeze({ ...block, id: `${block.id}/reasoning`, text: "" }));
         continue;
       }
       process.push(block);
     }
-    if (!requests.length && !answer && process.every(block => block.kind === "checkpoint")) return [];
+    if (!requests.length && !answer && !contributions.length && process.every(block => block.kind === "checkpoint")) return [];
     return [Object.freeze({
       id: turn.id,
       title: turn.title,
       requests: Object.freeze(requests),
       ...(answer === undefined ? {} : { answer }),
       process: Object.freeze(process),
+      ...(contributions.length ? { contributions: Object.freeze(contributions) } : {}),
       live,
       failed,
       stopped,
@@ -155,13 +158,15 @@ export function projectLedger(history: SessionHistorySnapshot | null, events: re
   }
   for (const block of extensions) {
     if (blocks.has(block.id)) continue;
-    const turn = turns.get(block.turnId) ?? { id: block.turnId, title: t("会话内容", "Conversation content"), blocks: [] };
+    const turnId = continuationParents.get(block.turnId) ?? block.turnId;
+    if (orphanedContinuations.has(block.turnId)) continue;
+    const turn = turns.get(turnId) ?? { id: turnId, title: t("会话内容", "Conversation content"), blocks: [] };
     const stepIndex = block.anchor === "step-start" ? turn.blocks.findIndex(item => item.stepId === block.stepId) : -1;
     const index = block.anchor === "turn-start" ? 0 : stepIndex >= 0
       ? stepIndex
       : turn.blocks.findIndex(item => item.time.localeCompare(block.time) > 0);
     turn.blocks.splice(index < 0 ? turn.blocks.length : index, 0, block);
-    turns.set(block.turnId, turn);
+    turns.set(turnId, turn);
   }
   return Object.freeze([...turns.values()].map(turn => Object.freeze({ ...turn, blocks: Object.freeze(turn.blocks) })));
 }

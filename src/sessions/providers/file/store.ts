@@ -277,6 +277,8 @@ export class FileSessionStore implements SessionStore {
       const session = updateSessionMetadataSnapshot({
         session: state.document.session,
         title: normalized.title,
+        titleSource: normalized.titleSource,
+        expectedTitleRevision: normalized.expectedTitleRevision,
         updatedAt: this.timestamp(),
       });
       if (session !== state.document.session) {

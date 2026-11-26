@@ -56,8 +56,8 @@ profile 不会隐式继承这些普通配置。Provider 凭据仍由 Model Adapt
 可选功能可通过环境变量或受控管理面启用。默认 profile 可用 Wish 自有的
 `management.activation: user` 将“默认关闭、但允许用户打开”的 gate 委托给受控管理面；
 WebUI 只消费 Host 返回的启用权限，不按 Entry ID 猜测。支持 Memory Curation、它的
-Runtime/Workflow Evidence Consumer，以及 HTTP Web Fetch Provider/Tool。显式关闭 Memory、
-子进程隔离、缺失 SearXNG 地址等部署条件仍是硬约束，浏览器不能越过。详细语义见
+Runtime/Workflow Evidence Consumer，以及 HTTP Web Fetch 和 DeepSeek Search Provider/Tool。
+显式关闭 Memory、子进程隔离等部署条件仍是硬约束，浏览器不能越过。详细语义见
 [用户激活委托](plugin-control/README.md#用户激活委托)。
 
 同一个 Include/EntryTree 中的 `id` 必须全局唯一。配置应使用带能力或隔离域前缀的稳定
@@ -78,8 +78,8 @@ toolResultArchive <- Blob archive provider <- storageBackend
 toolOutputArtifacts <- Blob artifact provider <- storageBackend
 workspace <- local workspace provider
 skills <- local package provider <- launch home + Host Workspace cwd
-memory <- Journal library provider OR Host-pinned child snapshot provider
-memoryCuration <- optional scheduler <- memory + storageBackend
+memory <- Journal library provider (read-only shared access in child processes)
+memoryCuration <- scheduler + internal AgentLoop + file workspace <- memory + storageBackend + models + sessions
 filesystem <- local filesystem provider
 filesystemSearch <- local search provider <- filesystem policy generation
 shell <- Linux Native provider <- filesystem policy generation
@@ -137,18 +137,18 @@ Boot 不拥有具体 UI。业务 surface 缺席或 pending 时管理面仍可供
 - SessionPersistence：可替换 Session Store factory；Sessions：数据目录；
 - Storage：具名 Backend 注册；File Provider：Backend ID、显式存储根目录与 Journal torn-tail 策略；
 - RuntimeLifecycle：绑定的 Storage Backend ID；业务事件格式和恢复分类仍归 Runtime；
-- ModelAttemptLedger：绑定的 Storage Backend ID 与记账币种（默认 USD，
+- ModelAttemptLedger：绑定的 Storage Backend ID 与记账币种（默认 CNY，
   `WISH_MODEL_PRICING_CURRENCY` 可覆盖）；attempt、quote、cost
   事件格式及恢复语义仍归 Models/Pricing；
 - ToolResultArchive：绑定的 Storage Backend ID；
 - ToolOutputArtifacts：绑定的 Blob Backend ID；
 - Workspace：instruction 文件名、repository markers 与读取字节上限；
 - Skills：用户根目录、包数量／文件字节上限；Context Consumer：目录条数／字符预算；
-- Memory：Storage Backend 与共享库 ID；Child Snapshot：仅接受 Host 注入的执行身份与资源 manifest；
-- MemoryCuration：可由受控管理面启用，自动扫描、间隔、并发、尝试次数与超时仍来自部署配置；
+- Memory：Storage Backend 与共享库 ID；子进程仅接受 Host 注入的库读取授权、执行身份与资源 manifest；
+- MemoryCuration：可由受控管理面启用，提炼／整理模型、闲置筛选、来源保留窗口和文件目录来自部署配置；
 - Filesystem：文件大小上限与受保护目录/文件名称；
 - FilesystemSearch：最大扫描文件数与目录数；
-- Shell：native launcher、默认/最大 timeout；Host Provider 需要双重显式启用；
+- Shell：native launcher、默认/最大 timeout；
 - Tmux：可执行文件、socket、会话前缀与 capture 上限；
 - SubagentExecution：透明执行 Provider；SubagentLauncher：host-owned child App 入口；
 - Subagents Runtime：Storage Backend 与全局/每 Run 并发；持久记录不设数量上限；
@@ -156,7 +156,7 @@ Boot 不拥有具体 UI。业务 surface 缺席或 pending 时管理面仍可供
 - SandboxPolicy：当前 Filesystem/Shell generation 的审批前可执行性；
 - Permissions：默认 profile 与 policy version；
 - Todo：进程内 UserTurn 状态；Goal：Storage Backend 与默认轮次上限；
-  GoalRoundDriver：Runtime UserTurn continuation policy；
+  GoalRoundDriver：Runtime 的 UserTurn 延续策略；
 - Plan：Storage Backend；Coordinator：Storage Backend 与现有 Subagents capability；
 - Models：配置来源、默认模型、fallback 与重试次数；
 - ContextEngine / Compaction：各自的预算；
@@ -195,24 +195,25 @@ Todo 与 Goal 默认启用。Todo 的状态、Context、模型入口和 SessionF
 
 Tasks 与 Workflow 默认启用；`WISH_TASKS_ENABLED=0` / `WISH_WORKFLOW_ENABLED=0` 分别关闭
 能力，`WISH_TASK_TOOLS_ENABLED=0` / `WISH_WORKFLOW_TOOLS_ENABLED=0` 只隐藏相应模型入口。
-`WISH_WORKFLOW_MAX_CONCURRENT` 设置 Scheduler 并发上限。普通 `spawn_agent` 默认直接由
-Subagents 调度，不创建单步骤 Workflow；设置 `WISH_SUBAGENT_WORKFLOW_ENABLED=1` 才通过
-Workflow 调度。显式批准任务图仍使用 `workflow_start`。关闭调度前置能力后恢复独立
-Subagents Consumer，同名 Tool 不重复注册。
+`WISH_WORKFLOW_MAX_CONCURRENT` 设置 Scheduler 并发上限。`workflow-subagent-tools`
+由插件管理启停，默认启用，无需额外环境变量。适配器加载时，普通 `spawn_agent` 通过
+Workflow 调度；停用适配器或 Workflow Scheduler 后，新调用恢复直接使用 Subagents，
+基础工具 Consumer 保持不变，同名 Tool 不重复注册。显式批准任务图仍使用 `workflow_start`。
 Plan 的 `exit_plan_mode` 只提交评审，人工批准后才退出；Tasks、Workflow 状态和人工核对
 通过 Apps 的通用 Session Feature 接口展示。内部 child 禁用 Tasks/Workflow，保持独立数据目录。
 
 Boot 的内置插件名录位于 `plugin-catalog.ts`，并明确分成 Host/Runtime capability 与
 model Tool Consumer 两张表；`configuration.ts` 只解析配置文件来源，Loader 才拥有配置
 求值和重载。Web Provider 与 Tool 暴露也分别控制：`WISH_WEB_FETCH_ENABLED=1` 和
-`WISH_WEB_SEARCH_PROVIDER=searxng` 启用能力，而 `WISH_WEB_FETCH_TOOLS_ENABLED=0`、
+`WISH_WEB_SEARCH_PROVIDER=deepseek` 启用能力，搜索凭据使用 `WISH_DEEPSEEK_SEARCH_API_KEY`；
+`WISH_WEB_FETCH_TOOLS_ENABLED=0`、
 `WISH_WEB_SEARCH_TOOLS_ENABLED=0` 可只隐藏模型入口。
 
 ## Skills 与 Memory 的可选装配
 
-默认开启 Skills、Memory 能力、Context Consumer 和模型读取入口。只有候选提交
-`memory_write` 暴露给模型，采纳／拒绝仍属于人类 SessionFeature；Plan／Coordinator
-适配器只允许读取。以下开关彼此独立，值 `0` 表示禁用：
+默认开启 Skills、Memory 能力、Context Consumer 和模型读取入口。模型的写 Tool
+`memory_write` 记录用户明确要求的记忆变更笔记；后台流水线自动维护记忆和流程 Skills。
+Plan／Coordinator 适配器只允许读取。以下开关彼此独立，值 `0` 表示禁用：
 
 | 环境变量 | 禁用范围 |
 | --- | --- |
@@ -221,38 +222,47 @@ model Tool Consumer 两张表；`configuration.ts` 只解析配置文件来源�
 | `WISH_SKILLS_TOOLS_ENABLED` | list_skills、read_skill |
 | `WISH_SKILLS_SESSION_FEATURE_ENABLED` | 人类目录与正文查看面板 |
 | `WISH_MEMORY_ENABLED` | 整个 Memory 能力及其 Consumers |
-| `WISH_MEMORY_CONTEXT_ENABLED` | 有界记忆索引上下文 |
-| `WISH_MEMORY_TOOLS_ENABLED` | memory_search、memory_read、memory_write |
-| `WISH_MEMORY_WRITE_ENABLED` | 仅 memory_write 候选提交 |
-| `WISH_MEMORY_SESSION_FEATURE_ENABLED` | 人类候选审核面板 |
+| `WISH_MEMORY_CONTEXT_ENABLED` | 记忆摘要与渐进读取上下文 |
+| `WISH_MEMORY_TOOLS_ENABLED` | memory_search、memory_list、memory_read、memory_write |
+| `WISH_MEMORY_WRITE_ENABLED` | 仅 memory_write 追加笔记 |
 | `WISH_MEMORY_SUBAGENTS_ENABLED` | 父端知识快照委派和子候选回收 |
 
 Skills 默认用户根目录使用 `launch.homeDirectory/.wish/skills`，可用绝对路径
-`WISH_SKILLS_USER_ROOT` 覆盖；项目来源只有 Workspace 的 `.agents/skills`。
+`WISH_SKILLS_USER_ROOT` 覆盖；Skills 是 Wish 级能力，不扫描 Workspace 的 `.agents/skills`。
+Memory 生成的包通过 `memory-skills` 进入同一目录，用户启停状态存于 `skills/activation` KV Domain。
 `WISH_SKILLS_MAX_SKILLS`、`WISH_SKILLS_MAX_FILE_BYTES` 和
 `WISH_SKILLS_CONTEXT_MAX_ENTRIES`／`WISH_SKILLS_CONTEXT_MAX_CHARACTERS` 分别约束
 来源和目录投影。查看面板不激活 Skill，不执行 scripts，不把 manual-only 包自动
 变成模型可调用能力。
+WebUI `skills-webui-control` 提供无会话依赖的技能库与手动导入，默认范围取 WebUI
+启动工作区；它与 `skills-session-feature` 分别装配，关闭后者不会撤销技能库入口。
+导入落在本地 Provider 配置的用户根，不写入选中会话的项目目录。
 
 父端 Memory 使用当前 Storage Backend 的 Journal，库 ID 默认 `default`，由
-`WISH_MEMORY_LIBRARY_ID` 覆盖；不另建可同时独立修改的 Markdown 主库。复用
+`WISH_MEMORY_LIBRARY_ID` 覆盖。整理维护数据根下 `memories/<libraryId>` 的 Markdown 文件镜像；
+用户编辑在下一轮纳入自动整理，Journal 提交计划支持文件发布恢复。复用
 `WISH_DATA_DIR`／`WISH_STORAGE_FILE_ROOT` 时需遵守 File Backend 进程内单写边界，
 CLI 和 WebUI 不得作为两个写进程指向同一数据根。
 
 内部 child 由 Host 固定 identity、Session／Run、独立数据目录和资源 manifest。
-`WISH_CHILD_RESOURCES_FILE` 或 `WISH_CHILD_RESOURCES_DIGEST` 任意非空时只选择
-child-snapshot Provider，缺失、损坏、身份或 digest 不匹配会使启动失败，绝不退回
-可写主库。没有资源的 child 不启用 Memory；有资源的 child 只能读取委派快照并在
-Host 授权时提出候选。child 不加载人类审核、curation 或父端候选回收 Consumer。
+有 `wish.memory.library` 资源的 child 使用同一 `memory-storage` Provider 只读访问父级当前库，
+每次读取重新访问已提交文件与 Journal，不复制内容。缺失、损坏、身份或 digest 不匹配会使启动失败。
+没有资源的 child 不启用 Memory；child 不加载笔记 Tool、curation 或父端资源委派 Consumer。
 这些 `WISH_CHILD_*` 是内部协议字段，不是用户选择任意库路径的配置入口。
 
-整理 Scheduler 默认不加载。`WISH_MEMORY_CURATION_ENABLED=1` 才启用其持久任务
-能力及 Runtime 证据适配器；Workflow 证据适配器还要求 Workflow 启用。
-`WISH_MEMORY_AUTO_CURATION=1` 只在 Scheduler 已启用时启动自动补扫；单独设置它
-不启用整理。并发、尝试次数、超时和间隔分别由
-`WISH_MEMORY_CURATION_MAX_CONCURRENT`、`WISH_MEMORY_CURATION_MAX_ATTEMPTS`、
-`WISH_MEMORY_CURATION_TIMEOUT_MS`、`WISH_MEMORY_CURATION_INTERVAL_MS` 配置。
-整理完成只生成候选，不能代替验证证据或人工采纳。
+根应用默认加载整理 Scheduler、Runtime 证据和用户 Run 触发器，Workflow 证据还要求
+Workflow 启用。普通用户 Run 启动及完成后异步扫描其他闲置会话；后台先提炼原始记忆，
+再由内部 Agent 增量维护记忆文件、摘要和 Skills，不创建待审核候选，也不等待前台空闲。
+显式笔记、来源退出或文件编辑即使没有新会话也会进入整理。后续任务引用来源会更新
+使用时间；`WISH_MEMORY_MAX_UNUSED_DAYS` 默认 30，`WISH_MEMORY_DIRECTORY` 可指定文件目录。
+`WISH_MEMORY_AUTO_CURATION=0` 关闭自动唤醒，`WISH_MEMORY_CURATION_ENABLED=0`
+关闭整套整理能力；child 始终不加载。
+默认闲置窗口为 6 小时、最大年龄 10 天，通过 `WISH_MEMORY_CURATION_MIN_IDLE_MS`、
+`WISH_MEMORY_CURATION_MAX_AGE_MS` 修改。`WISH_MEMORY_CURATION_MODEL` 指定提炼模型，
+`WISH_MEMORY_CONSOLIDATION_MODEL` 可单独指定整理模型；未指定时沿用提炼模型／默认模型。
+流水线没有固定任务数、记忆条数、字符、输出 tokens、超时或尝试次数预算。
+一个库串行整理并原子提交，保留去重、版本校验、幂等恢复和取消排空。
+重启恢复或失败重试依赖后续用户活动，没有独立周期轮询。提炼和整理不代替实际验证证据。
 
 skills、memory、memoryCuration 与其余业务服务一样隔离在 app realm 内。
 Context 在新 Step 捕获当前 Consumer 集合，同一 Step 重投影固定集合；卸载则取消
@@ -268,10 +278,15 @@ CLI 的执行 Promise、Terminal 和 signal subscription，以及 WebUI Server �
 都由对应 Cordis fiber 的 effect 持有。依赖消失时 consumer 进入 `PENDING`；依赖恢复后以
 新的 service generation 激活。Root dispose 会回收信号监听、终端和 Server。
 
-随构建发布的默认 profile 在 WebUI 启动时默认开启代码 HMR，直接 `npm run webui` 即可；
+随构建发布的默认 profile 在 WebUI 启动时默认开启代码 HMR；`npm run webui`／`wish-webui`
+先在独立运行副本中构建，代码、配置、依赖与工作区构建分离，运行副本路径由入口输出。
+副本按内容摘要发布；相同内容核验后复用路径，修改过的副本保留而不复用。
+`npm run webui:dev` 明确使用工作区原地构建和运行。
 设置 `CORDIS_HMR=0` 显式关闭，`CORDIS_HMR=1` 显式开启。未设置变量时 CLI/子进程仍默认关闭；
 其他显式值不启用。自定义 profile 及已保存的停用偏好不被启动脚本强制覆盖。
-监听对象是 `dist/` 下实际加载的模块；修改 `src/` 仍需编译为实际加载的 JavaScript。
+监听对象是实际运行副本的 `dist/` 模块；修改工作区 `src/` 并构建不会自动发布到该副本。
+只有 `webui:dev` 的原地模式直接监听工作区构建。独立副本与外部 `CORDIS_CONFIG` 的范围见
+[WebUI 入口](../apps/README.md#独立管理面)。
 HMR 的 `base` 相对 profile 目录解析；把默认 profile 复制到别处时，应相应调整
 `base` / `root`，不要意外监视工作区之外的父目录。
 业务插件的稳定 `cordis:` 别名由 Loader 按需导入，并参与原生 HMR 模块图分析；
@@ -326,6 +341,9 @@ v1 只接受明确可信的进程内插件；未知代码由 [Candidates](../can
 原生 Group 保持挂载以便寻址和
 恢复子条目。API 的 `configuration` 区分监听、应用、拒绝与恢复状态，
 只提供已接受版本摘要和稳定诊断 code，不返回配置正文。
+旧代清理失败时，事务和配置状态均保持 `recovery-required`，不把部分关闭报告成未改变的拒绝。
+`pending.failure` 保存停止操作 ID、稳定错误码、运行态和清理结果，重启后仍可核对；
+诊断保存失败也不会解除隔离。旧格式中仍带 pending 的 rejected 操作在读取时归入恢复状态。
 
 managed 模式下，原生 `hmr/reload-batch` 在模块分析、缓存更新与导入前取得同一写锁，
 代码更新、文件配置与 WebUI 启停不能交叠。文件更新等待当前操作；并发 UI 启停返回 busy，

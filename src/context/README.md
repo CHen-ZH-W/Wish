@@ -19,6 +19,27 @@ Models adapter ──窗口与请求前计数─┘             │
 让它针对历史 `oldEntries` 生成 checkpoint，再重新投影一次。Context 不生成摘要、
 不修改 Session，也不把整个最终模型请求交给 Compaction。
 
+## WebUI 上下文占用
+
+独立的 `context-occupancy` Consumer 观察最终投影，并在 Storage Domain
+`context-occupancy` 中按 Session 保留最近 20 个计数快照。快照仅包含身份、计数和摘要
+hash，不保存提示词正文、Tool schema、响应正文或图片地址；删除 Session 会清理这些数据，
+Run 结束与页面刷新不会清空快照。
+
+展示优先使用请求前计数；没有计数时，使用同一模型及请求配置下的 Provider 输入用量为
+基准，加上后续投影与已提交输出的启发式增减。Wish 的 `usage.inputTokens` 已包含缓存
+输入，不再另加缓存读写。没有可用基准时，文本请求退回字符与结构开销估算；无法可靠
+计量的多模态内容、尚未重新投影的压缩结果或被拒绝的请求不产生确定占用。
+
+`context-occupancy-webui-control` 通过通用只读 control 暴露计量投影，独立浏览器模块向
+`sessionStatus` 贡献圆环、近似百分比与可展开的用量分项。分母是完整模型窗口；系统／
+工具／对话分项是启发式构成，不保证相加等于 Provider 校准后的总量。缺少快照或窗口
+时隐藏，不把未知显示成零。该计量不参与硬预算准入、压缩决策或会话累计用量统计。
+
+可运行 `npm run test:context-occupancy` 验证计量、持久化和客户端边界；
+`npm run test:context-occupancy:browser` 验证真实浏览器交互。浏览器脚本仅为占用数值
+提供固定响应，真实 Host 启动、control 注册及插件启停仍参与验收，不调用真实 Provider。
+
 ## 契约与目录
 
 Context 模块不会在超限时自行压缩。它的主要契约包括：
@@ -122,6 +143,12 @@ authority 必须明确为 `system` 或 `developer`。
 Provider 不扫描文件，也不读取 Session、Memory 或 Skill。显式数组顺序具有语义，
 不会按正文或文件名重新排序；重复 ID、空正文和不合法 authority 会 fail closed。
 
+`StateContextProvider` 保留 Workspace Provider 给出的仓库核验状态；`workspace.root`
+表示选定任务位置与默认写入边界，普通文件可按明确路径跨工作区读取，敏感锁和调用授权仍生效。
+`repository.root` 只表示已知仓库归属，不扩大写入权限。
+未能核验和未识别到有效仓库分别保留；工具观察与元数据冲突时应说明差异并在工作区内核验。
+System Prompt 历史消费者将实际接纳的动态状态独立留档，诊断时无需根据当前磁盘重建旧 Step。
+
 `StateContextProvider` 每次 `provide` 都重新读取当前输入，输出一条
 `developer/state/dynamic_tail` item，内容只包含：
 
@@ -144,7 +171,7 @@ tailChars      = 1024
 三个数作用于每一个 Tool Result，不是整段历史。完整结果必须先成功归档，再生成模型
 可见副本；归档失败时不得裁剪。
 
-## Tool Result archive-first admission
+## 工具结果归档与准入
 
 这项能力由两个明确接缝组成：
 
@@ -221,7 +248,7 @@ Core 当前保留 `ready + unknown`，由外部产品策略决定是否允许调
 - `LatestCheckpointHistoryPolicy`；
 - `ContextToolResultAdmissionPipeline`；
 - `ModelContextBudgetEvaluator`；
-- archive-first Tool Result renderer decorator。
+- 优先归档的工具结果渲染器装饰器。
 
 额外来源继续实现 Core `ContextProvider<ContextInput>`，由
 `additionalProviders` 注册；默认追加在内置 Provider 后，也可以通过完整、无重复的

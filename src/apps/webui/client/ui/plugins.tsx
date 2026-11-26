@@ -7,24 +7,29 @@ import type { ConnectionSnapshot } from "../connection.js";
 import { ErrorNotice, readableError, useSnapshot, type ReadableSnapshot } from "./primitives.js";
 import { useText } from "../i18n.js";
 
-const phases: Record<string, string> = { active: "运行中", pending: "等待依赖", absent: "未运行", disposed: "已退出", failed: "失败", loading: "启动中", unloading: "退出中" };
-const phasesEn: Record<string, string> = { active: "Running", pending: "Waiting for dependencies", absent: "Not running", disposed: "Stopped", failed: "Failed", loading: "Starting", unloading: "Stopping" };
+const phases: Record<string, string> = { active: "已加载", pending: "等待依赖", absent: "未加载", disposed: "已退出", failed: "失败", loading: "启动中", unloading: "退出中" };
+const phasesEn: Record<string, string> = { active: "Loaded", pending: "Waiting for dependencies", absent: "Not loaded", disposed: "Stopped", failed: "Failed", loading: "Starting", unloading: "Stopping" };
 const gates: Record<PluginEntryView["gate"], string> = { default: "部署默认状态", enabled: "部署显式启用", disabled: "部署或用户配置停用", conditional: "由部署条件决定（表达式不对浏览器公开）" };
 const gatesEn: Record<PluginEntryView["gate"], string> = { default: "Deployment default", enabled: "Explicitly enabled by deployment", disabled: "Disabled by deployment or user settings", conditional: "Determined by deployment conditions (expression not exposed to browser)" };
 const dispositions: Record<PluginStopDisposition, string> = { direct: "可直接停用", drain: "需要收尾", blocked: "当前阻止", maintenance: "需要维护", restart: "需要重启" };
 const dispositionsEn: Record<PluginStopDisposition, string> = { direct: "Can stop directly", drain: "Requires draining", blocked: "Currently blocked", maintenance: "Requires maintenance", restart: "Requires restart" };
 type ConfigurationPresentation = "enabled" | "disabled" | "conditional" | "readonly" | "incomplete" | "restart";
 type Translate = (zh: string, en: string) => string;
+const configurationOrder: Readonly<Record<ConfigurationPresentation, number>> = {
+  readonly: 0, restart: 1, incomplete: 2, conditional: 3, disabled: 4, enabled: 5,
+};
+const runtimeOrder: Readonly<Record<PluginEntryView["phase"], number>> = {
+  absent: 0, disposed: 1, failed: 2, unloading: 3, pending: 4, loading: 5, active: 6,
+};
 
 function displayName(name: string): string { return name.replace(/^cordis:/u, ""); }
-function configurationPresentation(entry: PluginEntryView, protocol: ManagedPluginProtocolView | undefined, savedPreference: PluginPreference | undefined, canEnable: boolean): ConfigurationPresentation {
+function configurationPresentation(entry: PluginEntryView, protocol: ManagedPluginProtocolView | undefined, savedPreference: PluginPreference | undefined): ConfigurationPresentation {
   if (entry.managementClass === "noncompliant") return "incomplete";
   if (entry.managementClass !== "managed") return "readonly";
   if (entry.phase === "active" && (protocol?.conformance ?? "incomplete") === "incomplete") return "incomplete";
   if (entry.phase === "active" && protocol?.stop === "restart") return "restart";
   if (savedPreference === "disabled") return "disabled";
-  if (entry.enabled === true) return "enabled";
-  return canEnable ? "disabled" : "conditional";
+  return "enabled";
 }
 function conditionTitle(entry: PluginEntryView, t: Translate): string {
   if (entry.enabled === null) return t("当前部署条件无法判断", "Deployment condition could not be determined");
@@ -84,10 +89,27 @@ export function PluginPage({ model, connection }: { model: PluginManagementModel
   const [preview, setPreview] = useState<PluginLifecycleCollection | null>(null), [checking, setChecking] = useState(false), [error, setError] = useState<string | null>(null);
   const data = state.data;
   const inspection = useRef<HTMLElement>(null);
+  const scrolledSelection = useRef<string | null>(null);
   const [expected, setExpected] = useState<{ revision: string; instanceId: string } | null>(null);
-  useEffect(() => { if (selected) inspection.current?.scrollIntoView({ block: "nearest" }); }, [selected]);
-  const entries = data?.inspection.entries.filter(entry => `${entry.id} ${entry.name}`.toLowerCase().includes(query.toLowerCase())) ?? [];
-  const chosen = entries.find(entry => entry.id === selected);
+  useEffect(() => {
+    if (scrolledSelection.current === selected) return;
+    scrolledSelection.current = selected;
+    if (selected) inspection.current?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
+  const protocols = new Map(data?.protocols.map(protocol => [protocol.entryId, protocol]));
+  const search = query.toLowerCase();
+  const entries = (data?.inspection.entries ?? [])
+    .filter(entry => `${entry.id} ${entry.name}`.toLowerCase().includes(search))
+    .map(entry => {
+      const protocol = protocols.get(entry.id);
+      const control = data?.controls[entry.id];
+      return { entry, protocol, control,
+        configuration: configurationPresentation(entry, protocol, data?.preferences[entry.id]?.preference) };
+    })
+    // Sort derived rows only; equal states retain the Host's entry order.
+    .sort((left, right) => configurationOrder[left.configuration] - configurationOrder[right.configuration] ||
+      runtimeOrder[left.entry.phase] - runtimeOrder[right.entry.phase]);
+  const chosen = entries.find(({ entry }) => entry.id === selected)?.entry;
   const stale = expected && (expected.revision !== data?.revision || expected.instanceId !== data?.inspection.instanceId);
 
   async function inspect(entry: PluginEntryView) {
@@ -122,12 +144,10 @@ export function PluginPage({ model, connection }: { model: PluginManagementModel
     {data && !data.writable ? <p className="notice warning">{t("当前配置不在可写管理范围内，或部署配置已在外部改变。仍可检查状态；请关闭 Wish、核对部署配置后重启。", "This configuration is read-only or deployment settings changed externally. You can still inspect status. Stop Wish, check the deployment configuration, then restart.")}</p> : null}
     {data?.status === "recovery-required" ? <section className="notice warning"><h2>{t("有一项操作需要恢复核对", "An action needs recovery review")}</h2><p>{t("没有自动重放启停操作。若本次进程发生了部分退出，请先关闭并重启 Wish；重启后的相关入口保持停用。", "Plugin actions were not replayed automatically. If this process partially stopped, restart Wish first; affected entries remain disabled after restart.")}</p><p><code>{data.pending?.selection.entryIds.join(", ")}</code></p><button disabled={state.pending || !status.online} onClick={() => { void model.recover().catch(cause => setError(readableError(cause.message))); }}>{t("确认保持停用并结束核对", "Keep disabled and finish review")}</button></section> : null}
     <label className="search-field">{t("筛选插件", "Filter plugins")}<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("按名称或 Entry ID 筛选", "Filter by name or Entry ID")} /></label>
+    <p className="muted">{t("系统启停约束同一 Wish 实例的 CLI 和子 Agent；本进程状态表示当前进程是否加载插件。", "System policy applies to this Wish instance's CLI and child agents. Process state shows whether this process has loaded the plugin.")}</p>
     <div className="plugin-list" role="table" aria-label={t("Host 插件列表", "Host plugin list")}>
-      <div className="plugin-row list-header" role="row"><span role="columnheader">{t("插件", "Plugin")}</span><span role="columnheader">{t("配置状态", "Configuration")}</span><span role="columnheader">{t("运行状态", "Runtime")}</span><span role="columnheader">{t("操作", "Action")}</span></div>
-      {entries.map(entry => {
-        const protocol = data?.protocols.find(item => item.entryId === entry.id);
-        const control = data?.controls[entry.id];
-        const configuration = configurationPresentation(entry, protocol, data?.preferences[entry.id]?.preference, control?.canEnable === true);
+      <div className="plugin-row list-header" role="row"><span role="columnheader">{t("插件", "Plugin")}</span><span role="columnheader">{t("系统启停", "System policy")}</span><span role="columnheader">{t("本进程状态", "Process state")}</span><span role="columnheader">{t("操作", "Action")}</span></div>
+      {entries.map(({ entry, protocol, control, configuration }) => {
         const readOnly = entry.managementClass !== "managed";
         const protocolBlocked = configuration === "incomplete" || configuration === "restart";
         const hostAllowsAction = configuration === "enabled" ? control?.canDisable === true : control?.canEnable === true;
@@ -138,7 +158,7 @@ export function PluginPage({ model, connection }: { model: PluginManagementModel
         const expanded = chosen?.id === entry.id;
         return <Fragment key={entry.id}><div className={expanded ? "plugin-row inspecting" : "plugin-row"} role="row" data-entry-id={entry.id}>
             <div role="cell"><strong>{displayName(entry.name)}</strong><code>{entry.id}</code>{entry.kind === "group" ? <small>{t("组合容器", "Group container")}</small> : note ? <small>{note}</small> : null}</div>
-            <div role="cell" className="configuration-cell"><button className={`configuration-toggle configuration-${configuration}`} disabled={toggleDisabled} aria-label={action} aria-pressed={readOnly ? undefined : entry.enabled === true} title={title} onClick={() => { if (!readOnly && !protocolBlocked) void change(entry, configuration === "enabled" ? "disabled" : "enabled"); }}>{configurationLabel(entry, configuration, t)}</button></div>
+            <div role="cell" className="configuration-cell"><button className={`configuration-toggle configuration-${configuration}`} disabled={toggleDisabled} aria-label={action} aria-pressed={readOnly ? undefined : configuration === "enabled"} title={title} onClick={() => { if (!readOnly && !protocolBlocked) void change(entry, configuration === "enabled" ? "disabled" : "enabled"); }}>{configurationLabel(entry, configuration, t)}</button></div>
             <span role="cell" className={`phase phase-${entry.phase}`}>{t(phases[entry.phase] ?? entry.phase, phasesEn[entry.phase] ?? entry.phase)}{entry.enabled === false ? t(" / gate 关闭", " / gate off") : ""}</span>
             <div role="cell"><button disabled={checking || state.pending || entry.kind === "group" || !status.online} onClick={() => { void inspect(entry); }} aria-label={t(`检查 ${entry.id}`, `Inspect ${entry.id}`)}>{t("检查", "Inspect")}</button></div>
           </div>{expanded ? <PluginInspection inspection={inspection} entry={entry} protocol={protocol} preview={preview} checking={checking} stale={!!stale} pending={state.pending}

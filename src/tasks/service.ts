@@ -7,6 +7,7 @@ export abstract class TasksService extends Service implements Tasks {
   abstract replace: Tasks["replace"];
   abstract freeze: Tasks["freeze"];
   abstract transition: Tasks["transition"];
+  abstract projectPending: Tasks["projectPending"];
   abstract close: Tasks["close"];
 }
 declare module "@deepseek-ai/cordis" { interface Context { tasks: TasksService } }

@@ -54,3 +54,15 @@ test("Memory rejects invalid content, cancellation and writes after closing", as
   await assert.rejects(memory.state(), /closed/);
   assert.throws(() => memory.propose(proposal()), /closed/);
 });
+
+test("automatic memory has no fixed document, keyword, evidence or content budget", async () => {
+  const memory = new MemoryRuntime(new InMemoryStateStore());
+  const body = { ...proposal(), content: "useful ".repeat(6000), keywords: Array.from({ length: 40 }, (_, i) => `word-${i}`),
+    evidence: Array.from({ length: 40 }, (_, i) => ({ ...proposal().evidence[0], id: `source-${i}` })) };
+  await memory.consolidate({ operationId: "many", actor: { kind: "curation", id: "memory-curation" }, reason: "durable material", expectedRevision: 0,
+    upserts: Array.from({ length: 1001 }, (_, i) => ({ ...body, id: `topic-${i}`, expectedVersion: 0 })), retirements: [] });
+  const state = await memory.state();
+  assert.equal(state.documents.length, 1001); assert.equal(state.documents[0].content.length, body.content.length);
+  assert.equal(state.documents[0].keywords.length, 40); assert.equal(state.documents[0].evidence.length, 40);
+  assert.equal(state.candidates.length, 0); await memory.close();
+});

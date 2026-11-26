@@ -10,10 +10,8 @@ import HttpWebFetch, {
   Config as HttpWebFetchConfigSchema,
   HttpWebFetchBackend,
 } from "../src/web/providers/http-fetch.js";
-import SearxngSearch, {
-  Config as SearxngSearchConfigSchema,
-  SearxngSearchBackend,
-} from "../src/web/providers/searxng-search.js";
+import ApiWebSearch from "../src/web/providers/search.js";
+import { DeepseekSearchBackend } from "../src/web/providers/deepseek-search.js";
 import {
   WebFetchTool,
   WebSearchTool,
@@ -42,14 +40,10 @@ const fetchPlugin: object = WebFetchTool;
 const searchPlugin: object = WebSearchTool;
 declare const fiber: Fiber;
 const providerFiber: Fiber = fiber.ctx.plugin(HttpWebFetch, config);
-const searchBackend: WebSearch = new SearxngSearchBackend({
-  baseUrl: "https://search.example/",
+const searchBackend: WebSearch = new DeepseekSearchBackend({
+  credential: () => "search-test-key",
 });
-const searchConfig = SearxngSearchConfigSchema({
-  baseUrl: "https://search.example/",
-  maxResults: 10,
-});
-const searchProviderFiber: Fiber = fiber.ctx.plugin(SearxngSearch, searchConfig);
+const searchProviderFiber: Fiber = fiber.ctx.plugin(ApiWebSearch);
 
 void fetchResult;
 void searchResult;

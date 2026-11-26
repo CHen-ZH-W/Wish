@@ -37,6 +37,11 @@ export interface Journal {
     signal?: AbortSignal,
   ): Promise<JournalCommit>;
   read(options?: JournalReadOptions): AsyncIterable<JournalEntry>;
+  /** Owner-authorized physical reclamation, serialized with append. Retained
+   * cursors, batch indexes and revisions never change; cursor high-water survives
+   * an empty result. Fully removed batches also release their idempotency keys.
+   * The owner must fence writes for removed identities before compacting. */
+  compact?(keep: (entry: JournalEntry) => boolean, signal?: AbortSignal): Promise<{ readonly removed: number }>;
   flush(): Promise<void>;
   close(): Promise<void>;
 }

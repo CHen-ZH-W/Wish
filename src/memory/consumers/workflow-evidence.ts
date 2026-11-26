@@ -8,5 +8,5 @@ export function apply(ctx: Context): void {
   const work = new PluginWorkOwner(ctx, { code: "memory_workflow_evidence", codeReload: true,
     close: async () => { await unregister?.(); } });
   const source = new WorkflowAttemptEvidenceSource(ctx.workflow.state);
-  unregister = ctx.memoryCuration.registerSource({ id: source.id, scan: signal => work.run(() => source.scan(signal)) });
+  unregister = ctx.memoryCuration.registerSource({ id: source.id, scan: (signal, context) => work.run(() => source.scan(signal, context)) });
 }

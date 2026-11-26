@@ -128,7 +128,7 @@ test("SandboxPolicy is deterministic, immutable, and validates direct paths", as
       },
     ));
     assert.equal(allowed.status, "allowed");
-    assert.deepEqual(allowed.effective.writePaths, ["new.txt"]);
+    assert.deepEqual(allowed.effective.writePaths, [join(root, "new.txt")]);
     assert.equal(Object.isFrozen(allowed.effective), true);
 
     const protectedPath = await first.sandbox.preflight(authorizationInput(
@@ -171,8 +171,8 @@ test("SandboxPolicy resolves exact native command, path, and network enforcement
     assert.equal(result.status, "allowed", result.reason);
     assert.equal(result.effective.shellBackend, "linux-native");
     assert.equal(result.effective.networkEnabled, true);
-    assert.deepEqual(result.effective.readPaths, ["input.txt"]);
-    assert.deepEqual(result.effective.writePaths, ["output"]);
+    assert.deepEqual(result.effective.readPaths, [join(root, "input.txt")]);
+    assert.deepEqual(result.effective.writePaths, [join(root, "output")]);
     assert.equal(result.effective.commands[0].command, command);
   } finally {
     await rm(root, { recursive: true, force: true });

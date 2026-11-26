@@ -113,7 +113,7 @@ test("entry guidance follows visible control Tools and its owner lifecycle", asy
   assert.deepEqual(visible.map(section => section.id), [
     "plan.entry", "todo.progress", "goal.entry", "coordinator.entry",
     "tasks.plan-graph", "workflow.status", "workflow.start", "workflow.retry",
-    "memory.retrieval", "memory.proposal",
+    "memory.retrieval", "memory.note",
   ]);
   assert.ok(visible.every(section => section.authority === "developer" && section.placement === "dynamic_tail"));
   assert.match(visible.find(section => section.id === "plan.entry").content, /deliver the findings directly in your response/u);

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -111,28 +111,24 @@ export class LinuxNativeShellBackend implements Shell {
     assertProcessArguments(processCapability, request);
     const cwd = await resolveCwd(
       request.cwd ?? processCapability.cwd ?? request.context.workspace.root,
-      request.context.workspace.root,
-      request.signal,
+      request, this.filesystem,
     );
     const timeoutSeconds = resolveTimeout(
       request.timeoutSeconds ?? processCapability.timeoutSeconds,
       this.options.defaultTimeoutSeconds,
       this.options.limits.maxTimeoutSeconds,
     );
-    const fullAccess = request.context.permissions.profile === "full-access";
-    const readPaths = fullAccess ? Object.freeze([]) : await preflightScopes(
+    const readPaths = await preflightScopes(
       request,
       this.filesystem,
       "filesystem.read",
     );
-    const writePaths = fullAccess ? Object.freeze([]) : await preflightScopes(
+    const writePaths = await preflightScopes(
       request,
       this.filesystem,
       "filesystem.write",
     );
-    const networkEnabled = fullAccess
-      ? true
-      : resolveCapabilityNetwork(request.capabilities);
+    const networkEnabled = resolveCapabilityNetwork(request.capabilities);
     throwIfAborted(request.signal);
     return Object.freeze({
       command,
@@ -233,14 +229,6 @@ export class LinuxNativeShellBackend implements Shell {
         "Shell command Spec belongs to another policy generation",
       );
     }
-    if (request.spec.context.permissions.profile === "full-access") {
-      return Object.freeze({
-        executable: "/bin/sh",
-        args: Object.freeze(["-lc", request.spec.command]),
-        cwd: request.spec.cwd,
-      });
-    }
-
     await assertLauncher(this.options.launcherPath);
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "wish-shell-terminal-"));
     const filesystemPolicy = this.filesystem.policy;
@@ -249,6 +237,7 @@ export class LinuxNativeShellBackend implements Shell {
       args: Object.freeze([
         "--workspace",
         request.spec.context.workspace.root,
+        "--access-mode", request.spec.context.permissions.profile === "full-access" ? "host-write" : "host-read",
         ...request.spec.readPaths.flatMap((path) => ["--read-path", path]),
         ...request.spec.writePaths.flatMap((path) => ["--write-path", path]),
         "--network",
@@ -265,6 +254,7 @@ export class LinuxNativeShellBackend implements Shell {
         ...filesystemPolicy.protectedNameExceptions.flatMap((name) =>
           ["--allow-protected-name", name]
         ),
+        ...filesystemPolicy.protectedPaths.flatMap(path => ["--protect-path", path]),
         "--cwd",
         request.spec.cwd,
         "--tmp",
@@ -379,7 +369,7 @@ function createPolicy(
     backend: "linux-native" as const,
     filesystem: "path-scoped" as const,
     network: "per-call" as const,
-    environment: "profile-scoped" as const,
+    environment: "clean" as const,
     automaticPermissionProfiles: ["workspace-write" as const, "full-access" as const],
     resourceLimits,
     filesystemPolicyVersion: filesystem.policy.version,
@@ -410,11 +400,6 @@ async function preflightScopes(
   }
   const resolvedPaths: string[] = [];
   for (const path of paths) {
-    if (isAbsolute(path)) {
-      throw new ShellPermissionDeniedError(
-        `Shell ${capability} scopes must be Workspace-relative: ${path}`,
-      );
-    }
     try {
       const resolvedPath = await filesystem.preflight({
         path,
@@ -423,7 +408,7 @@ async function preflightScopes(
         context: request.context,
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
-      resolvedPaths.push(resolvedPath.relativePath || ".");
+      resolvedPaths.push(resolvedPath.path);
     } catch (cause: unknown) {
       throw new ShellPermissionDeniedError(
         `Shell cannot enforce ${capability} scope ${JSON.stringify(path)}: ${errorMessage(cause)}`,
@@ -555,35 +540,13 @@ function assertProcessArguments(
 
 async function resolveCwd(
   input: string,
-  workspaceRoot: string,
-  signal: AbortSignal | undefined,
+  request: PreflightShellCommandRequest,
+  filesystem: Filesystem,
 ): Promise<string> {
-  throwIfAborted(signal);
-  const root = resolve(workspaceRoot);
-  const requested = isAbsolute(input) ? resolve(input) : resolve(root, input);
-  if (!isInside(root, requested)) {
-    throw new ShellPermissionDeniedError(`Shell cwd is outside Workspace: ${input}`);
-  }
-  let canonical: string;
-  try {
-    canonical = await realpath(requested);
-    const information = await stat(canonical);
-    if (!information.isDirectory()) {
-      throw new ShellInvalidInputError(`Shell cwd is not a directory: ${input}`);
-    }
-  } catch (cause: unknown) {
-    if (cause instanceof ShellInvalidInputError) throw cause;
-    throw new ShellInvalidInputError(
-      `Shell cwd is unavailable: ${input}: ${errorMessage(cause)}`,
-    );
-  }
-  throwIfAborted(signal);
-  if (canonical !== requested || !isInside(root, canonical)) {
-    throw new ShellPermissionDeniedError(
-      `Symbolic links and Workspace escapes are not allowed in Shell cwd: ${input}`,
-    );
-  }
-  return canonical;
+  const resolved = await filesystem.preflight({ path: input, access: "read", allowWorkspaceRoot: true,
+    context: request.context, ...(request.signal === undefined ? {} : { signal: request.signal }) });
+  if (resolved.kind !== "directory") throw new ShellInvalidInputError(`Shell cwd is not a directory: ${input}`);
+  return resolved.path;
 }
 
 function assertCapabilitiesWithinCeiling(
@@ -670,13 +633,6 @@ async function assertLauncher(path: string): Promise<void> {
       { cause },
     );
   }
-}
-
-function isInside(root: string, path: string): boolean {
-  const child = relative(root, path);
-  return child.length === 0 || (
-    child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child)
-  );
 }
 
 function positiveInteger(value: number, label: string): number {

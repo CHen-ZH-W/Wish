@@ -56,6 +56,21 @@ class FakeTmux {
   }
 }
 
+test("historical cleanup stops and purges only children of authoritatively deleted Sessions", async () => {
+  let sequence = 0;
+  const { backend, store, purged } = fixture({ id: () => `orphan-child-${++sequence}` });
+  try {
+    const deleted = await backend.spawn(spawnRequest);
+    const kept = await backend.spawn({ ...spawnRequest, parentSessionId: "retained-session", parentRunId: "retained-run" });
+    await backend.sweepDeletedSessions(async id => id === spawnRequest.parentSessionId);
+    assert.equal(await store.get(deleted.id), undefined);
+    assert.ok(await store.get(kept.id));
+    assert.deepEqual(purged.map(item => item.id), [deleted.id]);
+    await backend.sweepDeletedSessions(async id => id === spawnRequest.parentSessionId);
+    assert.equal(purged.length, 1);
+  } finally { await backend.close(); }
+});
+
 function fixture(options = {}) {
   const tmux = options.tmux ?? new FakeTmux();
   const store = options.store ?? new MemorySubagentRecordStore();

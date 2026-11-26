@@ -57,7 +57,7 @@ for (const target of ["scheduler", "subagents", "tmux", "storage", "batch", "cap
     booted = await bootstrap({ surface: "webui", cwd: directory, homeDirectory: directory,
       environment: { CORDIS_HMR: "1", WISH_DATA_DIR: join(directory, "data"), WISH_TMUX_SOCKET: socket,
         WISH_WEBUI_WORKSPACE_ROOT: directory, WISH_MEMORY_ENABLED: "0", WISH_SKILLS_ENABLED: "0",
-        WISH_PERMISSION_PROFILE: "full-access", WISH_SHELL_PROVIDER: "host", WISH_SHELL_HOST_ENABLED: "1", WISH_MODELS_JSON: JSON.stringify(configuration) },
+        WISH_PERMISSION_PROFILE: "full-access", WISH_MODELS_JSON: JSON.stringify(configuration) },
       management: managedWebUi({ directory: join(directory, "management"), port: 0 }) });
     const ctx = booted.surfaceContext, loader = booted.context.loader, pid = process.pid;
     booted.context.on("hmr/reload-prepare", (batch, _signal, next) => {

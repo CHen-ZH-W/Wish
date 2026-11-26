@@ -4,7 +4,7 @@
 
 ```text
 Shell Service Definition
-  <- Linux Native / Host Provider
+  <- Linux Native Provider
   <- Bash Consumer
 ```
 
@@ -20,13 +20,12 @@ Provider 通过 `preflight(request)` 固定并验证命令、cwd、timeout、文
 - `service.ts`：Cordis `shell` Service Definition。
 - `unavailable.ts`：standalone 图缺少 Provider 时的 fail-closed 实现。
 - `providers/linux-native.ts`：Landlock/seccomp Provider 及 Grant/Step 绑定。
-- `providers/host.ts`：显式启用的开发逃生口，不提供进程隔离。
 - `providers/process.ts`：共享的 timeout、abort 和进程组回收机制。
 - `consumers/model-tool.ts`：同步 Bash 模型 Consumer；它只依赖 Shell Definition，
-  不依赖 Linux Native 或 Host Provider。
+  不依赖具体 Provider 实现。
 - `native/wish-linux-sandbox.c`：在 exec 前安装 OS 级限制的 launcher。
 
-## Linux Native Provider
+## Linux 原生 Provider
 
 默认产品图使用 `shell-linux-native`。它要求 Linux Landlock ABI 3 或更高，并支持 x86_64
 和 aarch64。构建时 `npm run build:native` 使用 `CC`（默认 `cc`）生成 launcher。
@@ -35,9 +34,12 @@ Provider 通过 `preflight(request)` 固定并验证命令、cwd、timeout、文
 
 - 重新绑定 active Core Grant、Permission Snapshot、Workspace Snapshot、Filesystem 与
   Shell policy version；`process.exec` 必须精确包含当前命令。
-- 用同一个 Filesystem Provider 校验最多 128 个 workspace-relative read/write scope，
-  拒绝 Workspace 外路径、符号链接、缺失 scope 和受保护名称。
+- 用同一个 Filesystem Provider 分别校验最多 128 个 read/write scope。读取可使用工作区外的
+  绝对路径；非 `full-access` 写入限于工作区。拒绝符号链接、缺失 scope 和受保护路径。
+  Bash 的 `filesystem: "read"` / `"write"` 简写保留工作区范围；跨工作区操作使用
+  `filesystem: { read: ["/absolute/reference"], write: ["."] }` 明确声明路径，无需增加工具。
 - 用 Landlock 只开放声明的文件树、只读系统运行时目录和本次私有临时目录。
+  系统运行时授权也会排除保护规则覆盖的后代，不能覆盖已声明的敏感路径锁。
 - 默认仅允许 Unix-domain local IPC，并拒绝创建其他 socket；只有
   `network.connect hosts=["*"]` Grant 才为本次调用开放互联网 socket。当前网络粒度明确为
   all-or-none，不伪装成 hostname 级隔离。Unix socket 仍受 Landlock 路径 scope 限制。
@@ -77,14 +79,11 @@ launcher 会拆分普通子树；如果一个目录含有受保护的直属项�
   `enter_plan_mode` 和 `exit_plan_mode` 外，Tool 调用不因能力种类进入审批；
   路径、网络与进程执行仍须通过能力上限、SandboxPolicy 和 Native Provider 检查。
 - `approval-required`：只读自动放行，其他调用进入审批；进程执行必须使用 Native Provider。
-- `full-access`：显式退出 Landlock/seccomp 和审批，继承宿主环境，允许访问工作区外文件及
-  网络。默认 Native Provider 只为这一 profile 走无隔离分支；其他 profile 不受影响。
+- `full-access`：不进行权限审批，允许声明工作区外写入路径；保留敏感路径保护、调用范围、
+  Landlock/seccomp、干净环境和调用级网络授权。普通文件可读范围与其他档位相同。
 
-整张图固定使用 Host Shell 仍需要双重显式配置：
-
-```bash
-WISH_SHELL_PROVIDER=host WISH_SHELL_HOST_ENABLED=1 WISH_PERMISSION_PROFILE=full-access
-```
+所有权限档位统一使用 Linux Native Provider。模型不能通过选择 `full-access`
+清空部署设置的敏感路径保护规则。
 
 ## 验证
 

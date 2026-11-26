@@ -10,6 +10,6 @@ export function apply(ctx: Context): void {
     const work = new PluginWorkOwner(ctx, { code: "memory_runtime_evidence", codeReload: true,
       close: async () => { try { await unregister?.(); } finally { sessions.release(); } } });
     const source = new SessionRunEvidenceSource(sessions.manager, ctx.runtimeLifecycle);
-    unregister = ctx.memoryCuration.registerSource({ id: source.id, scan: signal => work.run(() => source.scan(signal)) });
+    unregister = ctx.memoryCuration.registerSource({ id: source.id, scan: (signal, context) => work.run(() => source.scan(signal, context)) });
   } catch (error) { sessions.release(); throw error; }
 }

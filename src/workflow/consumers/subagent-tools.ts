@@ -22,7 +22,7 @@ export default { name: "workflow-subagent-tools", inject: ["subagentToolDispatch
       const run = await ctx.workflowScheduler.children.submit({
         key: `child/${request.parentSessionId}/${request.parentRunId}/${grant.subject.id}`, kind: "subagent", owner: {
           parentAgentId: request.parentAgentId, parentSessionId: request.parentSessionId, parentRunId: request.parentRunId, workspaceRoot: request.workspaceRoot,
-        }, tasks: [{ id: "child", title: request.task, dependencies: [], execution: { role: request.role ?? "worker", readOnly: profile === "read-only", timeoutMs: 30 * 60_000 } }],
+        }, tasks: [{ id: "child", title: request.task, dependencies: [], execution: { role: request.role ?? "worker", readOnly: profile === "read-only" } }],
         permissionProfile: profile, availableTools,
         allowedCapabilities: scope.allowedCapabilities,
         ...(request.model ? { model: request.model } : {}), ...(request.modelsConfiguration ? { modelsConfiguration: request.modelsConfiguration } : {}),

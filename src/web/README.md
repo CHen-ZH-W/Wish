@@ -44,16 +44,30 @@ Tools Registry generation 改变；旧 Step 不会静默切到新 Provider。
 内置 Provider 只接受 HTTP/HTTPS，不发送 Cookie 或环境凭证，固定 DNS 解析出的公开
 地址，同源跳转逐跳重新解析，并拒绝私网、混合公私网解析、压缩响应和非文本内容。
 
-## 内置 SearXNG Search
+## 网页搜索
 
-设置 `WISH_WEB_SEARCH_PROVIDER=searxng` 并提供 `WISH_SEARXNG_BASE_URL`，会装载
-`web-search-searxng` Provider；对应 Tool 可用
-`WISH_WEB_SEARCH_TOOLS_ENABLED=0` 单独隐藏。Provider 调用 SearXNG 的 JSON
-Search API，由 SearXNG 聚合其配置的搜索引擎；搜索链路不需要第二个模型，也不会把主
-会话上下文发送给搜索服务。
+在「设置 → 网页搜索」填写 DeepSeek 搜索 API 密钥并启用。
+它使用独立 Search API，不要求主 Agent 使用 DeepSeek 模型，也不调用额外的聊天模型。
+请求只发送 query、结果数和 `need_content: false`，结果适配为统一的来源列表。
 
-可选设置包括 `WISH_SEARXNG_LANGUAGE`、`WISH_SEARXNG_CATEGORIES`、
-`WISH_SEARXNG_SAFE_SEARCH`（`0`/`1`/`2`），以及以 `WISH_SEARXNG_MAX_*` 和
-`WISH_SEARXNG_TIMEOUT_SECONDS` 表达的请求限制。实例必须启用 JSON 输出格式。Provider
-只访问配置的实例 endpoint、拒绝 redirect、不发送 Cookie，并且只接受有大小上限的
-JSON 响应。
+`web-search` 是稳定的搜索插件身份，具体服务商由 `web-search.provider` 配置选择；
+目前只支持 `deepseek`，设置页显示实际使用的 DeepSeek Search API。
+`providers/search.ts` 负责插件生命周期和服务商装配，`providers/deepseek-search.ts` 负责 DeepSeek 请求协议。
+
+`web-search-settings` 拥有配置命名空间，`web-search` 提供网络能力，
+`web-search-tool` 向 Agent 暴露统一工具。配置保存在独立 Settings 文档中，服务停用时
+仍然可以编辑。启用、停用使用受控插件操作；配置与启停偏好都在重启后恢复。
+DeepSeek 参数保存在 `web-search-deepseek` 命名空间；它是服务商配置，不是插件名。
+保存参数后下一次搜索使用新值；已经发出的请求继续完成，尚未执行的旧 Spec 在配置变化后
+被拒绝，不能沿用旧授权。已保存启用偏好但缺少密钥时显示「待配置」，不会阻止 WebUI
+启动；保存密钥后即可使用。未配置时调用工具返回配置缺失错误，不发起网络请求。
+
+密钥通过 Credentials 只写保存到 `WISH_DEEPSEEK_SEARCH_API_KEY` 引用，不写入 Settings，
+不回显，也不覆盖模型使用的密钥。请求发出前按引用读取；启动环境提供同名密钥时页面只读。
+地址固定为 DeepSeek 官方 Search API，禁止重定向；查询最多 128 个 Unicode 字符，结果
+最多 50 条，响应大小与超时可在设置中调整。错误不回传上游响应正文或密钥。
+CLI 可用 `WISH_WEB_SEARCH_PROVIDER=deepseek` 与 `WISH_DEEPSEEK_SEARCH_API_KEY` 启用。
+`WISH_WEB_SEARCH_TOOLS_ENABLED=0` 只隐藏模型工具入口；WebUI 保存的启停偏好覆盖默认值。
+
+验证：`node scripts/accept-web-search.mjs`、`node scripts/accept-web-search-settings.mjs`，
+浏览器验证为 `node scripts/accept-web-search-settings-browser.mjs`（均先 build）。

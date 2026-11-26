@@ -17,16 +17,25 @@ async function run(requestPath: string): Promise<void> {
     await writeFile(filename, text, { flag: "wx", mode: 0o600 });
   }
   let booted: Awaited<ReturnType<typeof bootstrap>> | undefined;
+  let activeApplication: import("../apps/types.js").WishApplication | undefined;
+  let activeRun: import("../apps/types.js").WishRunHandle | undefined;
+  let stopping = false;
   const stopOrphan = () => {
+    if (stopping) return; stopping = true;
     const kill = () => {
       if (process.platform !== "win32") process.kill(-process.pid, "SIGKILL");
       else process.exit(1);
     };
     // IPC closure also happens when the experiment Host is killed without teardown.
-    setTimeout(kill, 1_000);
-    void booted?.dispose().then(kill, kill);
+    setTimeout(kill, 2_000);
+    void (async () => {
+      if (activeRun) activeApplication?.controlRun(activeRun.runId, { type: "abort", source: "profile-task-owner", reason: "Profile task owner stopped" });
+      await activeRun?.completion;
+      await booted?.dispose();
+    })().then(kill, kill);
   };
   if (process.send) process.once("disconnect", stopOrphan);
+  process.once("SIGTERM", stopOrphan); process.once("SIGINT", stopOrphan);
   try {
     booted = await bootstrap({ surface: "cli", argv: ["--version"], cwd: workspace, homeDirectory: join(directory, "home"), configurationFile: join(directory, "cordis.json"),
       environment: { ...process.env, WISH_EXPERIMENT_WORKER: "1", WISH_AGENT_PROFILE: "", WISH_DATA_DIR: join(directory, "data") },
@@ -36,8 +45,10 @@ async function run(requestPath: string): Promise<void> {
     if (!profiles || !applicationService || !ledger) throw new Error("Experiment composition is incomplete");
     await profiles.importSnapshot(snapshot);
     const application = await applicationService.open({ agentProfile: snapshot.digest, dataDirectory: join(directory, "data"), maxRunSteps: Number(request.maxSteps) });
+    activeApplication = application;
     const session = await application.createSession({ workspaceRoot: workspace });
     const handle = await application.startRun({ sessionId: session.sessionId, inputSource: "continuation", payload: { text: testCase.prompt } });
+    activeRun = handle;
     const completion = await handle.completion;
     const history = await application.readSessionHistory({ sessionId: session.sessionId });
     const output = history.records.filter(item => item.kind === "message" && item.message.role === "assistant").map(item => item.kind === "message" ? item.message.content : "").at(-1) ?? "";
@@ -56,9 +67,11 @@ async function run(requestPath: string): Promise<void> {
     };
     await writeFile(join(directory, "result.json"), canonical(result), { mode: 0o600, flag: "wx" });
     await application.runGeneration?.retire();
+    activeRun = undefined;
   } finally {
     await booted?.dispose();
     process.removeListener("disconnect", stopOrphan);
+    process.removeListener("SIGTERM", stopOrphan); process.removeListener("SIGINT", stopOrphan);
     if (process.connected) process.disconnect();
   }
 }

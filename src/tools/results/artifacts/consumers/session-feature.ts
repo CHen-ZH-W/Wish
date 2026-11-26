@@ -10,6 +10,9 @@ export default {
       inspect: async () => undefined,
       act: async () => { throw new Error("Tool output artifacts are Session-owned"); },
       purgeSession: sessionId => ctx.toolOutputArtifacts.purgeSession(sessionId),
+      async sweepDeletedSessions(wasDeleted) {
+        await ctx.toolOutputArtifacts.sweepDeletedSessions?.(wasDeleted, await ctx.get("toolResultArchive")?.sessionIds?.() ?? []);
+      },
     }, { codeReload: true });
   },
 };

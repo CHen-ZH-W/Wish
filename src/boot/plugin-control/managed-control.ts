@@ -9,12 +9,12 @@ import { ManagedProfile, ManagedProfileError, ManagedProfileSource } from "./man
 import type { ManagedPluginIntent, ManagedPluginPreference, ManagedPluginProtocolView, ManagedPluginReceipt, ManagedPluginRequest,
   ManagedPluginActivationControl, ManagedPluginControlView, ManagedPluginSnapshot, ManagedPluginState } from "./managed-types.js";
 import type { PluginEntryView, PluginInspection, PluginInspectionSnapshot } from "./types.js";
-import type { PluginSelection, PluginSelectionImpact } from "./management-types.js";
+import type { PluginSelection, PluginSelectionImpact, PluginStopOperation } from "./management-types.js";
 import type { PluginDisableReservation } from "./stop-contract.js";
 import type { CodeReloadInspection, CodeReloadPermit } from "./code-reload.js";
 import { getOrInstallPluginChangeCoordinator, PluginChangeError, type PluginChangeCoordinator, type PluginChangeHandle,
   type PluginChangeOperationView, type PluginChangeScope } from "./change-coordinator.js";
-import { SafePluginChangeTransaction, type PluginChangeRestoration } from "./safe-change.js";
+import { SafePluginChangeTransaction, type PluginChangeRestoration, type PluginChangeFailure, type PluginChangeFailureOutcome } from "./safe-change.js";
 import { verifyPluginContracts } from "../../plugin-admission/runtime.js";
 
 export class PluginManagementError extends Error { constructor(readonly code: string) { super(code); } }
@@ -41,7 +41,12 @@ export class ManagedPluginControl {
   private readonly removeChanges: () => void;
   private readonly requests = new Map<string, { fingerprint: string; handle: PluginChangeHandle<ManagedPluginReceipt> }>();
   constructor(private readonly root: Context, private readonly inspection: PluginInspection, private readonly store: ManagedPluginStore) {
-    this.recoveryRequired = store.snapshot().pending !== null;
+    const pending = store.snapshot().pending;
+    this.recoveryRequired = pending !== null;
+    if (pending?.configuration) {
+      this.configurationPhase = "recovery-required";
+      this.configurationCode = pending.failure?.code ?? "management_recovery_required";
+    }
     this.changes = getOrInstallPluginChangeCoordinator(root);
     this.changes.attachJournal({ latest: () => this.store.snapshot().operations.at(-1) ?? null,
       record: operation => this.store.recordOperation(operation) });
@@ -234,7 +239,7 @@ export class ManagedPluginControl {
       if (this.recoveryRequired) {
         reported = code;
       } else if (staged && !(error instanceof ManagedPluginStoreError && error.code === "management_save_uncertain")) {
-        const outcome = await transaction.fail({ rejected: code, rolledBack: "management_configuration_rolled_back",
+        const outcome = await this.settleManagedFailure(transaction, requestId, { rejected: code, rolledBack: "management_configuration_rolled_back",
           recovery: "management_configuration_recovery_failed" });
         reported = outcome.code;
         this.recoveryRequired = outcome.phase === "recovery-required";
@@ -243,8 +248,15 @@ export class ManagedPluginControl {
       }
       // A verified compensation must reach the still-held Step boundary as a
       // known restoration. A pending/uncertain commit keeps its fence closed.
-      if (!this.recoveryRequired) staged = false;
-      if (!this.recoveryRequired) await this.root.get("pluginState")?.finish(false);
+      if (!this.recoveryRequired) {
+        try {
+          await this.root.get("pluginState")?.finish(false);
+          staged = false;
+        } catch (error) {
+          this.recoveryRequired = true;
+          reported = changeErrorCode(error, "management_configuration_recovery_failed");
+        }
+      }
       this.configurationPhase = this.recoveryRequired ? "recovery-required" : "rejected";
       this.configurationCode = reported;
       if (this.recoveryRequired) await scope.recovery(reported);
@@ -322,10 +334,15 @@ export class ManagedPluginControl {
           this.configurationStop = { instanceId, entryIds: Object.freeze(active.sort()) };
           await this.store.commit(before.revision, { preferences: before.preferences, receipts: before.receipts, pending: request });
           staged = true; this.emit();
+          await this.drainPolicyConsumers(request.selection.entryIds, scope.signal);
           if (JSON.stringify(observation) !== JSON.stringify(this.inspection.inspect())) throw new PluginManagementError("management_configuration_changed");
           if (active.length) {
             const operation = await this.stops.disableWithin(this.configurationStop, scope);
             if (operation.state.phase !== "succeeded") {
+              if (operation.state.phase === "failed") {
+                await this.retainStopFailure(request.requestId, operation);
+                throw new PluginManagementError(operation.state.code);
+              }
               if (operation.state.phase !== "rejected") throw new PluginManagementError("management_recovery_required");
               const state = this.store.snapshot();
               await this.store.commit(state.revision, { preferences: state.preferences, pending: null, receipts: [...state.receipts, {
@@ -493,18 +510,33 @@ export class ManagedPluginControl {
       staged = true; this.emit();
       let receipt: ManagedPluginReceipt;
       if (request.preference === "disabled") {
+        await this.drainPolicyConsumers(request.selection.entryIds, scope.signal);
         // Capture the committed generation before Stop removes its Fiber. The
         // restoration is armed only if Stop itself commits successfully.
         const restoration = this.preferenceRestoration(this.requireProfile(), before, request, fingerprint);
-        const operation = await this.stops.disableWithin(request.selection, scope);
-        if (operation.state.phase === "failed") {
-          this.recoveryRequired = true; this.emit();
-          throw new PluginManagementError("management_recovery_required");
+        const live = request.selection.entryIds.filter(id => !!this.requireProfile().owned(id).fiber);
+        const absent = request.selection.entryIds.filter(id => !live.includes(id));
+        if (live.length === 0) {
+          transaction.changed(restoration);
+          await scope.phase("staging");
+          await scope.phase("switching");
+          await this.requireProfile().apply(absent, "disabled");
+          await scope.phase("verifying");
+          receipt = { requestId: request.requestId, fingerprint, status: "succeeded", code: "management_saved" };
+        } else {
+          const operation = await this.stops.disableWithin({ ...request.selection, entryIds: live }, scope);
+          if (operation.state.phase === "failed") {
+            await this.retainStopFailure(request.requestId, operation);
+            throw new PluginManagementError("management_recovery_required");
+          }
+          const succeeded = operation.state.phase === "succeeded";
+          if (succeeded) {
+            transaction.changed(restoration);
+            if (absent.length) await this.requireProfile().apply(absent, "disabled");
+          }
+          receipt = { requestId: request.requestId, fingerprint, status: succeeded ? "succeeded" : "rejected",
+            code: succeeded ? "management_saved" : "code" in operation.state ? operation.state.code : "management_stop_incomplete", operationId: operation.id };
         }
-        const succeeded = operation.state.phase === "succeeded";
-        if (succeeded) transaction.changed(restoration);
-        receipt = { requestId: request.requestId, fingerprint, status: succeeded ? "succeeded" : "rejected",
-          code: succeeded ? "management_saved" : "code" in operation.state ? operation.state.code : "management_stop_incomplete", operationId: operation.id };
       } else {
         const profile = this.requireProfile();
         const runtimeBefore = this.runtimeCheckpoint(profile);
@@ -536,7 +568,7 @@ export class ManagedPluginControl {
         this.emit(); throw error;
       }
       if (staged && (error as { code?: string }).code !== "management_save_uncertain") {
-        const outcome = await transaction.fail({ rejected: code, rolledBack: "management_change_rolled_back",
+        const outcome = await this.settleManagedFailure(transaction, request.requestId, { rejected: code, rolledBack: "management_change_rolled_back",
           recovery: "management_recovery_failed" });
         this.recoveryRequired = outcome.phase === "recovery-required";
         if (this.recoveryRequired) await scope.recovery(outcome.code);
@@ -571,6 +603,14 @@ export class ManagedPluginControl {
       }
     }
   }
+
+  private async drainPolicyConsumers(entryIds: readonly string[], signal?: AbortSignal): Promise<void> {
+    try { await this.root.get("systemPluginPolicy")?.drain(entryIds, signal); }
+    catch (error) {
+      this.recoveryRequired = true;
+      throw new PluginManagementError(changeErrorCode(error, "system_plugin_policy_drain_failed"));
+    }
+  }
   /** After restart only: explicitly reconcile a pending intent by keeping its targets disabled. */
   async recoverDisabled(revision: string): Promise<void> {
     if (this.busy || this.changes.snapshot().active || this.changes.snapshot().queued.length || this.closed || !this.recoveryAvailable) {
@@ -589,13 +629,15 @@ export class ManagedPluginControl {
     }
     this.busy = true; this.emit();
     const run = (async () => {
+      await this.drainPolicyConsumers(pending.selection.entryIds, this.closing.signal);
       const preferences = { ...profile.source.preferences };
       for (const id of pending.selection.entryIds) {
         if (pending.configuration && !profile.source.has(id)) delete preferences[id];
         else if (pending.configuration && profile.source.original(id).group) delete preferences[id];
         else preferences[id] = { name: profile.source.original(id).name, preference: "disabled" as const };
       }
-      const receipt: ManagedPluginReceipt = { requestId: pending.requestId, fingerprint: managementFingerprint(pending), status: "failed", code: "management_recovered_disabled" };
+      const { failure: _failure, ...intent } = pending;
+      const receipt: ManagedPluginReceipt = { requestId: pending.requestId, fingerprint: managementFingerprint(intent), status: "failed", code: "management_recovered_disabled" };
       await this.store.commit(revision, { preferences, pending: null, receipts: [...state.receipts, receipt].slice(-100) });
       this.recoveryRequired = false;
       this.configurationPhase = "idle"; this.configurationCode = null;
@@ -719,7 +761,9 @@ export class ManagedPluginControl {
     const profile = this.requireProfile(), pending = this.store.snapshot().pending;
     const configuration = pending?.requestId === this.configurationRequest?.requestId && this.configurationStop &&
       managementFingerprint(this.configurationStop) === managementFingerprint(impact.selection);
-    const user = pending?.preference === "disabled" && managementFingerprint(pending.selection) === managementFingerprint(impact.selection);
+    const user = pending?.preference === "disabled" && pending.selection.instanceId === impact.selection.instanceId &&
+      impact.selection.entryIds.every(id => pending.selection.entryIds.includes(id)) &&
+      pending.selection.entryIds.every(id => impact.selection.entryIds.includes(id) || !profile.owned(id).fiber);
     if (!this.busy || !this.recoveryAvailable || !pending || (!configuration && !user)) throw new PluginManagementError("management_reservation_invalid");
     const entries = impact.gatedEntryIds.map(id => profile.owned(id));
     const options = entries.map(entry => JSON.stringify(entry.options));
@@ -747,6 +791,38 @@ export class ManagedPluginControl {
   private requireProfile(): ManagedProfile {
     if (!this.profile || !this.profile.healthy()) throw new PluginManagementError("management_configuration_changed");
     return this.profile;
+  }
+  private async retainStopFailure(requestId: string, operation: PluginStopOperation): Promise<void> {
+    if (operation.state.phase !== "failed") throw new PluginManagementError("management_recovery_missing");
+    // A partially closed owner cannot be treated as an unchanged rejection.
+    // Fence first, including when persisting its diagnostic subsequently fails.
+    this.recoveryRequired = true; this.emit();
+    const state = this.store.snapshot();
+    if (!state.pending || state.pending.requestId !== requestId) throw new PluginManagementError("management_recovery_missing");
+    const failure = { stage: "stop" as const, operationId: operation.id, code: operation.state.code,
+      runtime: operation.state.runtime, cleanup: operation.state.cleanup };
+    await this.store.commit(state.revision, { preferences: state.preferences, receipts: state.receipts,
+      pending: { ...state.pending, failure } });
+    this.emit();
+  }
+  private async settleManagedFailure(transaction: SafePluginChangeTransaction, requestId: string,
+    codes: PluginChangeFailure): Promise<PluginChangeFailureOutcome> {
+    const outcome = await transaction.fail(codes);
+    if (outcome.phase !== "rejected" || transaction.changedRuntime) return outcome;
+    // The intent precedes cleanup. A later observation/preflight rejection must
+    // settle that intent as well, or restart would quarantine an unchanged graph.
+    const state = this.store.snapshot();
+    if (!state.pending) return outcome;
+    try {
+      if (state.pending.requestId !== requestId) throw new PluginManagementError("management_recovery_missing");
+      const { failure: _failure, ...intent } = state.pending;
+      await this.store.commit(state.revision, { preferences: state.preferences, pending: null,
+        receipts: [...state.receipts, { requestId, fingerprint: managementFingerprint(intent),
+          status: "rejected" as const, code: outcome.code }].slice(-100) });
+      return outcome;
+    } catch (error) {
+      return { phase: "recovery-required", code: changeErrorCode(error, codes.recovery), restored: false };
+    }
   }
   private async atSafePoint<T>(affected: readonly number[], action: () => Promise<T>, uncertain = () => this.recoveryRequired, signal?: AbortSignal): Promise<T> {
     const coordinator = this.root.get("codeReload");
@@ -825,8 +901,8 @@ function projectPluginControls(
     else if (protocol?.codeUpdate === "mismatch") reason = "management_manifest_replacement_mismatch";
     else if (entry.enabled !== true) reason = enableAuthorized ? undefined : "management_enable_constrained";
     const canEnable = entry.managementClass === "managed" && entry.enabled !== true && enableAuthorized;
-    const canDisable = entry.managementClass === "managed" && entry.enabled === true &&
-      ((entry.phase === "active" && protocol?.conformance === "online") ||
+    const canDisable = entry.managementClass === "managed" && preferences[entry.id]?.preference !== "disabled" &&
+      (entry.phase === "absent" || (entry.phase === "active" && protocol?.conformance === "online") ||
         ((entry.phase === "pending" || entry.phase === "failed") && protocol?.conformance === "inactive"));
     const canReplace = entry.managementClass === "managed" && entry.phase === "active" && protocol?.conformance === "online";
     result[entry.id] = Object.freeze({
@@ -847,7 +923,7 @@ function parseRequest(value: ManagedPluginRequest): ManagedPluginRequest {
     value.selection.entryIds.length > 512 || value.selection.entryIds.some(item => !id(item)) || new Set(value.selection.entryIds).size !== value.selection.entryIds.length ||
     Object.keys(value).some(key => !["requestId", "revision", "preference", "selection"].includes(key)) ||
     Object.keys(value.selection).some(key => !["instanceId", "entryIds"].includes(key))) throw new PluginManagementError("management_invalid_request");
-  return Object.freeze({ ...value, selection: Object.freeze({ ...value.selection, entryIds: Object.freeze([...value.selection.entryIds]) }) });
+  return Object.freeze({ ...value, selection: Object.freeze({ ...value.selection, entryIds: Object.freeze([...value.selection.entryIds].sort()) }) });
 }
 
 function changeErrorCode(error: unknown, fallback: string): string {

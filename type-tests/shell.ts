@@ -4,8 +4,6 @@ import { Context } from "@deepseek-ai/cordis";
 import type { ToolAuthorizationGrant } from
   "../src/core/tools/authorization.js";
 import type { Filesystem } from "../src/filesystem/index.js";
-import HostShell, { HostShellBackend } from
-  "../src/shell/providers/host.js";
 import LinuxNativeShell, { LinuxNativeShellBackend } from
   "../src/shell/providers/linux-native.js";
 import type {
@@ -23,9 +21,7 @@ const root = new Context();
 const nativeFiber: Fiber = root.plugin(LinuxNativeShell, {
   maxProcesses: 64,
 });
-const hostFiber: Fiber = root.plugin(HostShell, { enabled: true });
 const native: Shell = new LinuxNativeShellBackend(filesystem);
-const host: Shell = new HostShellBackend(filesystem, { enabled: true });
 
 const preflight: Promise<ShellCommandPreflight> = native.preflight({
   command: "printf ok",
@@ -48,8 +44,6 @@ async function execute(shell: Shell): Promise<ShellExecutionResult> {
 }
 
 void nativeFiber;
-void hostFiber;
 void native;
-void host;
 void preflight;
 void execute;

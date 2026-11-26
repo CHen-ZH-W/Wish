@@ -36,6 +36,8 @@ export interface ProfilePlugin {
 
 /** Content-addressed resolved inputs; timestamps and mutable aliases are outside the digest. */
 export interface AgentProfileSnapshot {
+  /** Absent on legacy recipes; complete resource coverage is always explicit. */
+  readonly resources?: import("./resources.js").ProfileResources;
   /** Candidate snapshots are executable only by the confined experiment Provider. */
   readonly candidate?: { readonly sourceDigest: string; readonly artifactDigest: string };
   readonly schemaVersion: 1;

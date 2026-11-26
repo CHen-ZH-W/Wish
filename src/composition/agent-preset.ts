@@ -18,7 +18,7 @@ export interface AgentScopePreset {
     readonly keepRecentTokens?: number;
     readonly summaryMaxOutputTokens?: number;
   };
-  readonly memory?: "snapshot" | "none";
+  readonly memory?: "shared" | "none";
   readonly permissionProfile?: PermissionProfile;
   readonly allowedCapabilities?: readonly CapabilityKind[];
 }
@@ -82,7 +82,7 @@ export function snapshotAgentScopePreset(value: unknown): AgentScopePreset {
       ...(policy.summaryMaxOutputTokens === undefined ? {} : { summaryMaxOutputTokens: positive(policy.summaryMaxOutputTokens) }),
     });
   }
-  if (input.memory !== undefined && input.memory !== "snapshot" && input.memory !== "none") throw new TypeError("Invalid Agent Scope Memory mode");
+  if (input.memory !== undefined && input.memory !== "shared" && input.memory !== "none") throw new TypeError("Invalid Agent Scope Memory mode");
   if (input.permissionProfile !== undefined && !PERMISSION_PROFILES.includes(input.permissionProfile as PermissionProfile)) throw new TypeError("Invalid Agent Scope permission profile");
   let allowedCapabilities: readonly CapabilityKind[] | undefined;
   if (input.allowedCapabilities !== undefined) {
@@ -93,7 +93,7 @@ export function snapshotAgentScopePreset(value: unknown): AgentScopePreset {
     ...(localTools === undefined ? {} : { localTools }),
     ...(prompt === undefined ? {} : { prompt }),
     ...(compaction === undefined ? {} : { compaction }),
-    ...(input.memory === undefined ? {} : { memory: input.memory as "snapshot" | "none" }),
+    ...(input.memory === undefined ? {} : { memory: input.memory as "shared" | "none" }),
     ...(input.permissionProfile === undefined ? {} : { permissionProfile: input.permissionProfile as PermissionProfile }),
     ...(allowedCapabilities === undefined ? {} : { allowedCapabilities }),
   });

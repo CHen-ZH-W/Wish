@@ -14,6 +14,9 @@ export interface PluginWorkOwnerOptions {
   readonly busy?: "drain" | "blocked";
   /** Domain-owned long lived work can veto replacement without exposing its state. */
   readonly blocked?: () => string | undefined;
+  /** Pause domain-owned background dispatch synchronously before fencing calls.
+   * The returned release restores dispatch only if retirement is abandoned. */
+  readonly suspendAdmissions?: () => () => void;
   /** Signal cancellable waits owned by this module before awaiting its work. */
   readonly beforeDrain?: () => void;
   /** Releases resources after all accepted work settles. Failures remain observable. */
@@ -26,6 +29,7 @@ export class PluginWorkOwner {
   private fenced = false;
   private ready = true;
   private closing: Promise<void> | undefined;
+  private resumeDomain: (() => void) | undefined;
 
   constructor(private readonly ctx: Context, private readonly options: PluginWorkOwnerOptions) {
     const status = () => {
@@ -47,9 +51,11 @@ export class PluginWorkOwner {
         prepare: change => {
           const release = this.fence();
           return {
-            // The existing disable adapter starts owned cancellation in close().
-            // Replacement already had a distinct pre-apply drain contract.
-            drained: change.kind === "disable" || options.replacement === "generation"
+            // Controlled stop starts owned cancellation in close(), before it
+            // awaits admitted calls. Configuration changes use the same stop
+            // adapter; pre-draining here would strand cancellable owner waits.
+            // Code replacement retains its distinct pre-apply drain contract.
+            drained: change.kind === "disable" || change.kind === "reconfigure" || options.replacement === "generation"
               ? Promise.resolve()
               : this.drain(),
             deactivate: () => this.close(),
@@ -132,12 +138,18 @@ export class PluginWorkOwner {
     this.assertOpen();
     const blocked = this.options.blocked?.();
     if (blocked) throw new Error(blocked);
+    this.suspendDomain();
     this.fenced = true;
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      if (!this.closing) this.fenced = false;
+      if (!this.closing) {
+        const resume = this.resumeDomain;
+        this.resumeDomain = undefined;
+        this.fenced = false;
+        resume?.();
+      }
     };
   }
 
@@ -145,10 +157,17 @@ export class PluginWorkOwner {
     await Promise.allSettled([...this.pending]);
   }
 
+  private suspendDomain(): void {
+    this.resumeDomain ??= this.options.suspendAdmissions?.();
+  }
+
   /** Memoized cleanup: an error cannot turn a second close into false success. */
   close(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.suspendDomain();
     this.fenced = true;
-    return this.closing ??= Promise.resolve().then(() => this.options.beforeDrain?.())
+    this.resumeDomain = undefined;
+    return this.closing = Promise.resolve().then(() => this.options.beforeDrain?.())
       .then(() => this.drain()).then(() => this.options.close?.());
   }
 }

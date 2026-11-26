@@ -15,6 +15,8 @@ export interface NewSessionPermissionProfileSnapshot {
 /** Browser-only pre-Session choice, persisted before the first Run is sent. */
 export class NewSessionPermissionProfileClientModel extends SnapshotStore<NewSessionPermissionProfileSnapshot> {
   private readonly queue: RefreshQueue;
+  /** Pending reads are presentation signals, independent of operation authority. */
+  get readiness(): Pick<RefreshQueue, "getSnapshot" | "subscribe"> { return this.queue; }
   private readonly removers: Array<() => void> = [];
   private readonly timer: ReturnType<typeof setInterval>;
   private instanceId: string | null = null;

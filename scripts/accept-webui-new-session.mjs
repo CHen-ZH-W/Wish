@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NewSessionClientModel } from "../dist/apps/webui/client/model/new-session.js";
+import { SessionClientModel } from "../dist/apps/webui/client/model/session.js";
 import { SnapshotStore } from "../dist/apps/webui/client/model/store.js";
 import { UiSlots } from "../dist/apps/webui/client/slots.js";
 import { NewSession } from "../dist/apps/webui/client/ui/new-session.js";
@@ -65,6 +66,84 @@ test("centered new-session intent creates nothing until the first message is sub
   assert.equal(flow.getSnapshot().phase, "done");
   assert.equal(drafts.bySession.get("session-1").value, "");
   flow.close();
+});
+
+class GatedFirstMessageConnection extends SnapshotStore {
+  sessions = []; run = null; writes = []; streams = [];
+  blocked = new Promise(resolve => { this.markBlocked = resolve; });
+  gate = new Promise(resolve => { this.release = resolve; });
+  holdList = false;
+  constructor(blockAfter) { super({ online: true, businessAvailable: true, instanceId: "one" }); this.blockAfter = blockAfter; }
+  onInvalidation() { return () => {}; }
+  stream(path) {
+    const listeners = new Map();
+    const stream = { addEventListener(name, listener) { listeners.set(name, listener); }, close() {},
+      emit(name, value) { listeners.get(name)?.({ data: JSON.stringify(value) }); } };
+    this.streams.push({ path, stream });
+    return stream;
+  }
+  async request(path, body) {
+    if (body) {
+      this.writes.push({ path, body });
+      if (path === "/api/sessions") {
+        const session = { sessionId: "created", scope: body.workspaceRoot, status: "active", historyRevision: "v1" };
+        this.sessions = [session];
+        this.holdList = this.blockAfter === "create";
+        return { session };
+      }
+      if (path === "/api/sessions/created/runs") {
+        this.run = { runId: "first-run", sessionId: "created", status: "running" };
+        this.holdList ||= this.blockAfter === "send";
+        return { run: this.run };
+      }
+      throw new Error(`Unexpected write: ${path}`);
+    }
+    if (path === "/api/sessions") {
+      if (this.holdList) { this.markBlocked(); await this.gate; }
+      return { sessions: this.sessions };
+    }
+    if (path.endsWith("/history")) return { history: { sessionId: "created", historyRevision: "v1", records: [] } };
+    if (path.endsWith("/runs")) return { runs: this.run ? [this.run] : [] };
+    throw new Error(`Unexpected read: ${path}`);
+  }
+}
+
+test("successful creation sends its first message while the Session index refresh is blocked", async () => {
+  const connection = new GatedFirstMessageConnection("create"), drafts = draftHandoff();
+  const sessions = new SessionClientModel(connection), flow = new NewSessionClientModel(sessions, drafts);
+  let submitting;
+  try {
+    await sessions.refresh();
+    flow.start(); flow.chooseWorkspace("/work/project"); flow.setDraft("首条请求");
+    submitting = flow.submit();
+    await connection.blocked;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(connection.writes.map(write => write.path), ["/api/sessions", "/api/sessions/created/runs"],
+      "the first Run is sent before a background Session index read resolves");
+    assert.equal(sessions.run.getSnapshot().runId, "first-run");
+    assert.equal(sessions.getSnapshot().working, false);
+  } finally { connection.release(); await submitting; flow.close(); sessions.close(); }
+});
+
+test("an accepted first Run completes the intent and observes SSE while its index refresh is blocked", async () => {
+  const connection = new GatedFirstMessageConnection("send"), drafts = draftHandoff();
+  const sessions = new SessionClientModel(connection), flow = new NewSessionClientModel(sessions, drafts);
+  let submitting;
+  try {
+    await sessions.refresh();
+    flow.start(); flow.chooseWorkspace("/work/project"); flow.setDraft("首条请求");
+    submitting = flow.submit();
+    await connection.blocked;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(flow.getSnapshot().phase, "done", "the new-session view can leave sending before the background index resolves");
+    assert.equal(drafts.bySession.get("created").value, "", "a successful send clears only its accepted draft");
+    assert.equal(connection.streams.length, 1);
+    assert.match(connection.streams[0].path, /\/api\/runs\/first-run\/events\?after=0$/u);
+    connection.streams[0].stream.emit("stream.ready", {});
+    assert.equal(sessions.run.getSnapshot().connected, true);
+    await flow.submit();
+    assert.equal(connection.writes.length, 2, "repeated submit after acceptance creates no Session or Run");
+  } finally { connection.release(); await submitting; flow.close(); sessions.close(); }
 });
 
 test("a failed first send keeps the draft in its created Session and refuses duplicate creation", async () => {

@@ -12,6 +12,8 @@ import { bootstrap } from "../dist/boot/bootstrap.js";
 import { managedWebUi } from "../dist/apps/webui/host/composition.js";
 import { ManagedPluginStore } from "../dist/boot/plugin-control/managed-store.js";
 import { boot, base, source, models, definition, validation } from "./fixtures/candidates.mjs";
+import { freezeMemoryInitialState, profileResourceCoverage } from "../dist/agent-profiles/resources.js";
+import { content, hash } from "../dist/memory/validation.js";
 
 test("candidate source rejects traversal, dependency scripts and missing contract tests", () => {
   assert.equal(parseSource(source()).manifest.id, "fixture-candidate");
@@ -97,6 +99,7 @@ test("build, tests, lifecycle contract, benchmark, explicit promotion, restart a
     assert.equal(ctx.get("candidateFixture"), undefined);
 
     const candidateSnapshot = await ctx.get("agentProfiles").get(checked.snapshotDigest);
+    assert.equal(profileResourceCoverage(candidateSnapshot), "legacy-unfrozen", "an empty private runtime does not retroactively freeze a legacy snapshot");
     assert.equal(candidateSnapshot.candidate.artifactDigest, checked.artifactDigest);
     await assert.rejects(ctx.get("application").open({ agentProfile: checked.snapshotDigest }), { code: "profile_candidate_requires_sandbox" });
     const dataset = await ctx.get("experiments").registerDataset({ schemaVersion: 1, id: "regression", version: 1, cases: [{ id: "answer", prompt: "Reply A", files: {}, assertion: { kind: "exact", expected: "A" } }] });
@@ -225,6 +228,45 @@ test("running WebUI Host exposes candidate operations through the existing authe
     assert.equal((await host.pluginManagement.change({ requestId: "enable-candidate-management", revision: latest.revision, preference: "enabled", selection: { instanceId: latest.inspection.instanceId, entryIds: ["include:candidate-management"] } })).status, "succeeded");
     assert.equal((await (await post("list", {})).json())[0].digest, submitted.digest);
   } finally { await host?.dispose(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("candidate checks and repeated executions preserve frozen Memory and keep Host state unchanged", { timeout: 120_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-candidate-frozen-memory-")); let host;
+  let requests = 0;
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const input = JSON.parse(body), result = input.messages.findLast(message => message.role === "tool");
+    requests++;
+    const delta = result ? { content: JSON.stringify(result.content).includes("Use the archived initial state.") ? "A" : "memory-unavailable" }
+      : { tool_calls: [{ index: 0, id: "read-frozen-memory", type: "function", function: { name: "memory_read", arguments: JSON.stringify({ id: "fact", expectedVersion: 2 }) } }] };
+    response.setHeader("content-type", "text/event-stream");
+    response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: result ? "stop" : "tool_calls" }], usage: { prompt_tokens: 12, completion_tokens: 1, total_tokens: 13 } })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    host = await boot(directory, { WISH_MODELS_JSON: JSON.stringify(models(`http://127.0.0.1:${server.address().port}/v1`)) });
+    const ctx = host.surfaceContext, memoryService = ctx.get("memory"), profiles = ctx.get("agentProfiles"), application = ctx.get("application"), candidates = ctx.get("candidates"), experiments = ctx.get("experiments");
+    const hostMemory = await memoryService.state();
+    const fact = content({ title: "Frozen fact", content: "Use the archived initial state.", appliesTo: "fixture", keywords: [], evidence: [{ kind: "operator", id: "test", revision: "1", digest: "a".repeat(64) }] });
+    const memory = freezeMemoryInitialState({ schemaVersion: 1, libraryId: "frozen-memory", revision: 4, documents: [{ ...fact, id: "fact", version: 2, digest: hash(fact), status: "accepted", updatedAt: "2026-10-31T00:00:00.000Z" }] });
+    const profile = { ...definition("frozen-memory-base"), memory: "isolated", tools: ["memory_read"] };
+    await profiles.register(profile);
+    const snapshot = await profiles.capture(`${profile.id}@${profile.version}`, await application.resolve(), { resources: { cwd: directory, emptySkills: true, memory } });
+    const submitted = await candidates.submit(source());
+    const checked = await candidates.validate(validation(submitted.digest, snapshot, { ...profile, id: "frozen-memory-candidate" }));
+    assert.equal(checked.status, "passed", checked.error);
+    const captured = await profiles.get(checked.snapshotDigest);
+    assert.equal(profileResourceCoverage(captured), "complete");
+    assert.equal(captured.resources.memory.digest, memory.digest);
+    const dataset = await experiments.registerDataset({ schemaVersion: 1, id: "memory-reset", version: 1, cases: ["first", "second"].map(id => ({ id, prompt: "Read fact with memory_read, then reply A.", files: {}, assertion: { kind: "exact", expected: "A" } })) });
+    const evaluated = await candidates.evaluate({ validationId: checked.id, datasetDigest: dataset.digest, timeoutMs: 20_000, maxSteps: 3 });
+    assert.equal(evaluated.experiment.status, "completed", JSON.stringify(evaluated.experiment));
+    assert.equal(evaluated.experiment.metrics.candidate.successRate, 1, JSON.stringify(evaluated.experiment.results));
+    assert.equal(evaluated.experiment.metrics.baseline.successRate, 1, JSON.stringify(evaluated.experiment.results));
+    assert.equal(requests, 8, "only the two paired cases and their Memory tool follow-ups request the model");
+    assert.deepEqual(await memoryService.state(), hostMemory, "candidate execution never changes Host Memory");
+  } finally { await host?.dispose(); await new Promise(resolve => server.close(resolve)); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("actual sandbox denies Host secrets, outside writes, sockets, signals and child escapes", { timeout: 60_000 }, async () => {

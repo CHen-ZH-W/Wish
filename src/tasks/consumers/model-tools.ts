@@ -18,7 +18,7 @@ function definitions(tasks: Tasks, names: readonly TaskToolName[], plan?: Plan):
         type: "object", properties: { id: { type: "string" }, title: { type: "string" }, description: { type: "string" },
           dependencies: { type: "array", items: { type: "string" } }, execution: { type: "object", properties: {
             role: { type: "string" }, readOnly: { type: "boolean" }, timeoutMs: { type: "integer", minimum: 1, maximum: 86400000 },
-          }, required: ["role", "readOnly", "timeoutMs"], additionalProperties: false } }, required: ["id", "title", "dependencies", "execution"], additionalProperties: false,
+          }, required: ["role", "readOnly"], additionalProperties: false } }, required: ["id", "title", "dependencies", "execution"], additionalProperties: false,
       } } }, required: ["expectedVersion", "tasks"], additionalProperties: false,
     }), executionMode: "sequential" as const, recoveryPolicy: name === "tasks_read" ? "retry-safe" as const : "needs-reconciliation" as const,
     parse(input) {

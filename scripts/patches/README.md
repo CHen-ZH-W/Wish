@@ -1,44 +1,43 @@
-# Cordis HMR coordination patch
+# Cordis HMR 协调补丁
 
-Wish applies this patch to `@deepseek-ai/cordis-plugin-hmr@1.0.17` (MIT).
-The installed package retains its license.
+Wish 将此补丁应用到 `@deepseek-ai/cordis-plugin-hmr@1.0.17`（MIT）。
+安装后的依赖包保留原许可证。
 
-Cordis owns module resolution, dependency analysis, ESM/CJS cache invalidation and
-Loader ownership. The patch provides an awaitable `hmr/reload-prepare` middleware before disposal,
-structured failure/restart notifications, serialized change batches, awaited cleanup/activation,
-and a post-drain deadline. `hmr/reload` remains a success notification after activation.
-`hmr/reload-batch` wraps analysis/cache/import/prepare/apply so a Host can serialize the entire
-batch with configuration writes. It is distinct from the inner Step-safety prepare middleware.
-`watchConfig: false` disables only automatic Loader Include refresh, not explicit `registerConfig()`.
+Cordis 负责模块解析、依赖分析、ESM/CJS 缓存失效和 Loader 所有权。
+补丁在卸载前提供可等待的 `hmr/reload-prepare` 中间件，并提供结构化的失败/重启通知、
+串行变更批次、可等待的清理与激活，以及排空后的截止时间。
+`hmr/reload` 仍然是在激活成功后发出的通知。
+`hmr/reload-batch` 包裹分析、缓存、导入、准备和应用过程，使 Host 可以将整个批次与配置写入串行化；
+它与内部保证 Step 安全的准备中间件是两个层次。
+`watchConfig: false` 只关闭 Loader Include 的自动刷新，不影响显式 `registerConfig()`。
 
-Registry deletion must happen before waiting on captured `Fiber.await()` calls. Direct Fiber
-disposal can be interpreted as a user disable by Loader; calling a public effect disposer twice
-does not join the first call's cleanup. On a deterministic candidate activation failure, HMR
-disposes and joins candidate Fibers, restores the retained ESM/CJS namespace and plugin callback,
-then verifies a newly instantiated old generation before reporting `restored`. A deadline, unknown
-cleanup result, or failed restoration still halts subsequent batches and requires explicit recovery.
+必须先从 Registry 删除条目，再等待已捕获的 `Fiber.await()`。
+直接卸载 Fiber 可能被 Loader 解释为用户停用；两次调用公开的 effect 清理函数，
+不会让第二次调用等待第一次清理完成。
+候选激活发生确定性失败时，HMR 会卸载并等待候选 Fiber，恢复保留的 ESM/CJS 命名空间和插件回调，
+随后验证重新实例化的旧代，才报告 `restored`。
+超过截止时间、清理结果未知或恢复失败时，仍会停止后续批次，并要求显式恢复。
 
-The Host middleware must honor the provided shutdown signal. Middleware must await `next()`
-exactly once or throw to veto. Replacement modules must keep top-level imports free of domain
-side effects: imports happen before preparation. A deadline cannot undo an initializer's external
-effects; uncertain results require explicit recovery. Cordis 4.0.2 logs disposer exceptions
-internally rather than rethrowing them from `Fiber.await()`. Consequently this adapter only admits
-explicitly reviewed Step-local owners; it is not a general resource/state migration guarantee.
+Host 中间件必须响应传入的关闭信号，并且恰好一次等待 `next()`，或者抛出异常否决变更。
+替换模块的顶层导入不能产生领域副作用，因为导入发生在准备阶段之前。
+截止时间无法撤销初始化器已产生的外部副作用；结果不确定时需要显式恢复。
+Cordis 4.0.2 会在内部记录清理函数异常，而不会通过 `Fiber.await()` 再次抛出。
+因此，该适配器只接纳经过显式审核的 Step 局部 Owner，不提供通用的资源或状态迁移保证。
 
-`apply-cordis-hmr-patch.mjs` uses the existing `diff` dependency, validates all target hashes before
-writing, and is idempotent across clean or partially applied installs. No network or Git executable
-is needed at install time. `postinstall`, `prebuild`, and `pretypecheck` invoke it. Keep the patch's
-coordination marker intact: Boot refuses to start without `Hmr.coordinationVersion === 5`, even
-when dependencies were installed with lifecycle scripts disabled. Package versions and target
-hashes are pinned; an unknown version or modified target is rejected. Source, runtime and type
-patches form one artifact. The installer also recognizes the exact hashes of the supported
-older patch and upgrades them to the current artifact.
+`apply-cordis-hmr-patch.mjs` 使用已有的 `diff` 依赖，在写入前验证所有目标哈希，
+并支持在干净安装或部分已应用补丁的安装上幂等执行。安装时不需要网络或 Git 可执行文件。
+`postinstall`、`prebuild` 和 `pretypecheck` 都会调用它。
+必须保留补丁的协调版本标记：即使安装依赖时禁用了生命周期脚本，
+Boot 也会在 `Hmr.coordinationVersion === 5` 不满足时拒绝启动。
+包版本和目标哈希都已固定；未知版本或被修改的目标会被拒绝。
+源码、运行时和类型补丁作为同一产物维护。
+安装器也能识别受支持旧补丁的确切哈希，并将其升级到当前产物。
 
-HMR compares loaded-module content snapshots before classifying full or partial reloads and
-ignores unchanged compiler output. Actual add/unlink changes reach normal import/error handling.
+HMR 在区分完整或局部重载前比较已加载模块的内容快照，忽略内容未变化的编译输出。
+实际的文件新增或删除仍进入正常的导入和错误处理流程。
 
-`npm run test:code-reload` covers a reconstructed clean dependency install,
-idempotence/drift checks, native watcher races/failures and real Wish bootstrap/Run integration.
-Managed WebUI uses the batch hook for its existing configuration/persistence transaction and
-forces automatic config watching off; its Root exact-config watcher remains independent. Run
-`npm run test:managed-code-reload` for real HTTP, Run continuity, disabled preferences and recovery.
+`npm run test:code-reload` 覆盖重建的干净依赖安装、幂等性和偏移检查、
+原生文件监听的竞态与失败，以及真实 Wish 启动/Run 集成。
+受管理 WebUI 通过批次钩子接入已有的配置/持久化事务，并强制关闭自动配置监听；
+其 Root 精确配置监听器仍然独立运行。
+运行 `npm run test:managed-code-reload` 验证真实 HTTP、Run 连续性、停用偏好和恢复。

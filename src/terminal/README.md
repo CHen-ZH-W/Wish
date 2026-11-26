@@ -1,11 +1,29 @@
-# User Terminal
+# 用户终端（User Terminal）
 
-`UserTerminalService` owns user-created interactive PTYs: Session binding, create/list/input/resize/close, recovery screens, and browser-safe views. It is a user-facing Host terminal with the Wish process user's operating-system authority. It is separate from the Agent Shell permission profiles and does not use tmux.
+`UserTerminalService` 管理用户创建的交互式伪终端（PTY），包括 Session 绑定、创建、列表、输入、
+调整尺寸、关闭、恢复画面和供浏览器使用的视图。它以运行 Wish 的操作系统用户身份执行，
+是面向用户的 Host 终端，独立于 Agent Shell 的权限配置，不使用 tmux。
 
-`HostUserTerminalRuntime` discovers executable Host shells, inherits the Host process environment, and starts the selected shell in the Session workspace. Bash is launched with a small temporary `--rcfile` that sources the real `~/.bashrc`; this preserves the user's prompt, aliases, PATH, Conda initialization, and active environment. Other supported shells start in ordinary interactive mode. The WebUI labels this authority as `host-user` instead of implying a workspace sandbox.
+`HostUserTerminalRuntime` 发现 Host 上可执行的 Shell，继承 Host 进程环境，
+并在 Session 工作区中启动用户选择的 Shell。Bash 通过一个临时 `--rcfile` 加载真实的 `~/.bashrc`，
+以保留用户的提示符、别名、PATH、Conda 初始化和当前环境；其他受支持的 Shell 使用普通交互模式。
+WebUI 将这种权限标记为 `host-user`，不会将其表示为工作区沙箱。
 
-Retained terminals are bounded per Session (four by default). A Session cannot be archived or deleted until its user terminals are explicitly closed.
+每个 Session 保留的终端数量有上限，默认是 4 个。用户必须显式关闭所有用户终端，
+才能归档或删除该 Session。
 
-The browser lazily loads xterm only after the Terminal seat opens. The Provider feeds every PTY output chunk through a bounded headless xterm screen before publishing the ordered chunk over SSE. A new attachment first receives one serialized full-screen snapshot and then live output, so reconnecting never depends on process replay or a blank client reset. Keystrokes and PTY resize operations are serialized against the current attachment identity; roster polling carries no screen text. Closing or losing a browser attachment leaves the direct Shell alive. A second view may observe it, but only the newest attachment has input control. The client preserves program-supplied OSC/ANSI colors across Wish theme changes and restores cursor blinking after every snapshot reset.
+浏览器在打开终端面板后才按需加载 xterm。Provider 先将每个 PTY 输出块送入容量受限的
+无界面 xterm 屏幕，再按顺序通过 SSE 发布。新的浏览器连接先取得序列化的完整屏幕快照，
+之后接收实时输出，因此重连无需重放进程，也无需先清空客户端画面。
+按键和 PTY 尺寸变更按当前连接身份串行处理；终端列表轮询不携带屏幕文本。
+关闭或丢失浏览器连接会保留实际 Shell 进程。另一个视图可以观察同一终端，
+但只有最新连接具有输入控制权。客户端在 Wish 主题切换时保留程序输出的 OSC/ANSI 颜色，
+并在每次快照重置后恢复光标闪烁。
 
-The existing Agent Shell remains capability-checked and sandboxed according to its Permission profile. The tmux Session feature remains a separate observer/controller for Agent and task processes; neither is in the User Terminal launch path.
+离开页面时，会暂停连接、输入、光标闪烁和视图观察器，同时保留终端模拟器及最后画面。
+返回时获取新连接，复用原模拟器并保留显示中的画面。真正移除视图时，即使它此前已隐藏，
+也会释放模拟器；这不会隐式关闭宿主终端进程。
+
+Agent Shell 继续按照其 Permission 配置执行能力检查和沙箱限制。
+tmux Session Feature 独立负责 Agent 和任务进程的观察与控制；
+这两条路径都不参与 User Terminal 的启动。

@@ -1,12 +1,12 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { registerManagedSessionFeature } from "../../apps/session-feature-owner.js";
 import type { SessionFeature } from "../../apps/session-features.js";
-import { activeAttempt } from "../transition.js";
+import { activeAttempt, hasUnconfirmedStops } from "../transition.js";
 import type { Workflow, WorkflowRun } from "../types.js";
 
 /** Archiving fences execution and uncertain effects, not an explicitly retryable idle ledger. */
 export function workflowBlocksSessionRemoval(run: WorkflowRun): boolean {
-  if (run.status === "running" || run.status === "interrupted") return true;
+  if (run.status === "running" || run.status === "interrupted" || hasUnconfirmedStops(run)) return true;
   return run.steps.some(step => step.attempts.some(attempt => activeAttempt(attempt) ||
     (attempt.status === "interrupted" && attempt.disposition !== "retry-safe" && attempt.disposition !== "terminal-failed")));
 }
@@ -15,6 +15,7 @@ type WorkflowSessionScheduler = {
   readonly lastError: string | undefined;
   tick(): Promise<void>;
   cancel(id: string, reason: string): Promise<void>;
+  purge?(id: string): Promise<void>;
 };
 
 export function createWorkflowSessionFeature(workflow: Pick<Workflow, "list" | "get" | "reconcile" | "remove">,
@@ -23,18 +24,31 @@ export function createWorkflowSessionFeature(workflow: Pick<Workflow, "list" | "
   const owned = async (sessionId: string) => (await workflow.list()).filter(run => run.owner.parentSessionId === sessionId);
   const purge = async (runs: readonly WorkflowRun[]) => {
     if (!runs.length) return;
-    const active = runs.filter(run => !["completed", "failed", "cancelled"].includes(run.status));
+    const active = runs.filter(run => !["completed", "failed", "cancelled"].includes(run.status) || hasUnconfirmedStops(run));
     const available = currentScheduler();
     if (active.length && !available) throw new Error("Workflow scheduler is unavailable; owned work cannot be stopped");
     if (available) {
       for (const run of active) await available.cancel(run.id, "Owner Run stopped or Session deleted");
       await available.tick();
     }
-    for (const run of runs) await workflow.remove(run.id);
+    for (const run of runs) {
+      if (available?.purge) await available.purge(run.id);
+      else {
+        await workflow.remove(run.id);
+      }
+    }
   };
   return {
     purgeOrder: 10,
-    async purgeRun(sessionId, runId) { await purge((await owned(sessionId)).filter(run => run.owner.parentRunId === runId)); },
+    async sweepDeletedSessions(wasDeleted) {
+      for (const sessionId of new Set((await workflow.list()).map(run => run.owner.parentSessionId))) {
+        if (await wasDeleted(sessionId)) await purge(await owned(sessionId));
+      }
+    },
+    async purgeRun(sessionId, runId) {
+      const runs = (await owned(sessionId)).filter(run => run.owner.parentRunId === runId);
+      await purge(runs);
+    },
     async purgeSession(sessionId) { await purge(await owned(sessionId)); },
     async beforeRemoval(sessionId, operation) {
       const runs = await owned(sessionId);
@@ -42,7 +56,7 @@ export function createWorkflowSessionFeature(workflow: Pick<Workflow, "list" | "
         // Deleting the owner is an explicit request to end its background work.
         // Keep the ledger until purgeSession has confirmed quiescence and removed it.
         const active = runs.filter(workflowBlocksSessionRemoval);
-        const needsScheduler = runs.some(run => !["completed", "failed", "cancelled"].includes(run.status));
+        const needsScheduler = runs.some(run => !["completed", "failed", "cancelled"].includes(run.status) || hasUnconfirmedStops(run));
         const available = needsScheduler ? currentScheduler() : undefined;
         if (needsScheduler && !available) throw new Error("Workflow scheduler is unavailable; owned work cannot be stopped");
         for (const run of active) await available!.cancel(run.id, "Owner Session deleted");

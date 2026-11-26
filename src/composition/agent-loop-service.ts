@@ -642,6 +642,7 @@ function contextWorkspaceFacts(
     cwd: workspace.root,
     fingerprint: workspace.fingerprint,
     revision: workspace.revision,
+    ...(workspace.repositoryStatus === undefined ? {} : { repositoryStatus: workspace.repositoryStatus }),
     instructions: Object.freeze(workspace.instructions.map((instruction) =>
       Object.freeze({
         id: instruction.id,

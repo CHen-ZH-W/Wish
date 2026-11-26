@@ -34,7 +34,7 @@ test("the default Memory dependency closure stops, rejects old calls, and restor
     assert.notEqual(restored, memory);
     assert.equal((await restored.state()).candidates.length, 1);
     assert.equal((await restored.propose(proposal)).id, saved.id);
-    for (const name of ["memory_search", "memory_read", "memory_write"]) {
+    for (const name of ["memory_search", "memory_read", "memory_list", "memory_write"]) {
       assert.equal(ctx.get("tools").registry.list().filter(tool => tool.name === name).length, 1);
     }
   } finally { await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }

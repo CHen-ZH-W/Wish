@@ -15,6 +15,7 @@ import type { RegisteredSystemPromptSection } from "../system-prompt/types.js";
 import type {
   WorkspaceFingerprint,
   WorkspaceRepository,
+  WorkspaceRepositoryStatus,
   WorkspaceRevision,
 } from "../workspace/index.js";
 
@@ -37,6 +38,7 @@ export interface ContextWorkspaceFacts {
   readonly revision: WorkspaceRevision;
   readonly instructions: readonly ContextWorkspaceInstruction[];
   readonly repository?: WorkspaceRepository;
+  readonly repositoryStatus?: WorkspaceRepositoryStatus;
 }
 
 /** Runtime facts captured with the active immutable Step snapshot. */

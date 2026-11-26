@@ -12,7 +12,8 @@ const attempt = async <T>(promise: Promise<T>): Promise<Attempt<T>> => promise.t
   value => ({ ok: true as const, value }),
   error => ({ ok: false as const, error }),
 );
-function useAttempt<T>(result: Attempt<T> | null, fallback: () => Promise<T>): Promise<T> {
+async function useAttempt<T>(pending: Promise<Attempt<T>> | null, fallback: () => Promise<T>): Promise<T> {
+  const result = await pending;
   if (result === null) return fallback();
   return result.ok ? Promise.resolve(result.value) : Promise.reject(result.error);
 }
@@ -24,7 +25,8 @@ function sameSessions(left: readonly Session[], right: readonly Session[]): bool
     return item.schemaVersion === other.schemaVersion && item.sessionId === other.sessionId &&
       item.agentId === other.agentId && item.scope === other.scope && item.status === other.status &&
       item.createdAt === other.createdAt && item.updatedAt === other.updatedAt &&
-      item.historyRevision === other.historyRevision && item.title === other.title;
+      item.historyRevision === other.historyRevision && item.title === other.title &&
+      item.titleSource === other.titleSource && item.titleRevision === other.titleRevision;
   });
 }
 
@@ -51,6 +53,9 @@ export interface SessionClientSnapshot {
 export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
   readonly run: RunClientModel;
   private readonly queue: RefreshQueue;
+  private readonly metadataQueue: RefreshQueue;
+  /** Pending reads are presentation signals, independent of operation authority. */
+  get readiness(): Pick<RefreshQueue, "getSnapshot" | "subscribe" | "whenSettled"> { return this.queue; }
   private readonly removeConnection: () => void;
   private readonly removeInvalidation: () => void;
   private readonly timer: ReturnType<typeof setInterval>;
@@ -62,6 +67,12 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
   constructor(private readonly connection: ClientConnection) {
     super({ filter: "active", creating: false, sessions: [], selectedId: null, history: null, runs: [], loading: true, working: false, available: false, error: null });
     this.run = new RunClientModel(connection, () => { void this.refresh(); });
+    this.metadataQueue = new RefreshQueue(async current => {
+      if (!this.getSnapshot().available) return;
+      const version = this.mutationVersion;
+      const { sessions } = await connection.request<{ sessions: readonly Session[] }>("/api/sessions");
+      if (current() && version === this.mutationVersion && !this.getSnapshot().working) this.replaceSessions(sessions);
+    });
     this.queue = new RefreshQueue(async current => {
       if (!this.getSnapshot().available) return;
       const version = this.mutationVersion;
@@ -74,17 +85,16 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
         const initialSession = initial.sessions.find(item => item.sessionId === initialSelectedId);
         const initialHistoryCurrent = initialHistory !== null && initialHistory.historyRevision === initialSession?.historyRevision;
         const initialPath = initialSelectedId ? `/api/sessions/${encodeURIComponent(initialSelectedId)}` : null;
-        const [list, prefetchedHistory, prefetchedRuns] = await Promise.all([
-          connection.request<{ sessions: readonly Session[] }>("/api/sessions"),
-          initialPath && !initialHistoryCurrent
-            ? attempt(connection.request<{ history: SessionHistorySnapshot }>(`${initialPath}/history`).then(result => result.history))
-            : Promise.resolve(null),
-          initialPath
-            ? attempt(connection.request<{ runs: readonly WishWebRunView[] }>(`${initialPath}/runs`).then(result => result.runs))
-            : Promise.resolve(null),
-        ]);
+        const prefetchedHistory = initialPath && !initialHistoryCurrent
+          ? attempt(connection.request<{ history: SessionHistorySnapshot }>(`${initialPath}/history`).then(result => result.history))
+          : null;
+        const prefetchedRuns = initialPath
+          ? attempt(connection.request<{ runs: readonly WishWebRunView[] }>(`${initialPath}/runs`).then(result => result.runs))
+          : null;
+        // Title metadata is independently usable; a slow history/Run read must
+        // not hold an already received list behind the conversation refresh.
+        await this.metadataQueue.whenSettled();
         if (!fresh()) return;
-        this.replaceSessions(list.sessions, this.getSnapshot().selectedId, this.getSnapshot().creating);
         const selectedId = this.getSnapshot().selectedId;
         if (!selectedId) { this.publish({ ...this.getSnapshot(), loading: false, history: null, runs: [], error: null }); return; }
         const path = `/api/sessions/${encodeURIComponent(selectedId)}`;
@@ -126,9 +136,16 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
       if (changed && available) void this.refresh();
     };
     this.removeConnection = connection.subscribe(update); this.removeInvalidation = connection.onInvalidation(() => { void this.refresh(); });
-    this.timer = setInterval(() => { void this.refresh(); }, 3000); update();
+    this.timer = setInterval(() => {
+      if (this.metadataQueue.getSnapshot()) return;
+      if (this.queue.getSnapshot()) void this.metadataQueue.request().catch(() => {});
+      else void this.refresh();
+    }, 3000); update();
   }
-  refresh = (): Promise<void> => this.queue.request();
+  refresh = (): Promise<void> => {
+    void this.metadataQueue.request().catch(() => {});
+    return this.queue.request();
+  };
   /** Browser-only list scope; this never archives, restores or stops a Host Run. */
   browse = (filter: SessionStatus): void => {
     const state = this.getSnapshot();
@@ -163,7 +180,7 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
     let createdId: string | null = null;
     await this.mutate(async current => { const { session } = await this.connection.request<{ session: Session }>("/api/sessions", { workspaceRoot: root });
       if (!current()) return;
-      this.replaceSessions([...this.getSnapshot().sessions, session], session.sessionId, false); createdId = session.sessionId; });
+      this.replaceSessions([...this.getSnapshot().sessions, session], session.sessionId, false); createdId = session.sessionId; }, "background");
     if (!createdId) throw new Error("连接状态已变化，请检查会话列表后重试");
     return createdId;
   };
@@ -229,7 +246,7 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
         const accepted = await this.connection.request<WishWebRunAccepted>(`/api/sessions/${encodeURIComponent(selectedId)}/runs`, { text });
         if (this.getSnapshot().selectedId === selectedId) { this.publish({ ...this.getSnapshot(), runs: [...this.getSnapshot().runs, accepted.run] }); this.run.observe(accepted.run.runId); }
       }
-    });
+    }, "background");
   };
   abort = async (): Promise<void> => {
     const run = this.getSnapshot().runs.find(item => item.status === "running"); if (!run) return;
@@ -249,13 +266,20 @@ export class SessionClientModel extends SnapshotStore<SessionClientSnapshot> {
       throw new Error("连接状态已变化，请刷新后核对运行是否结束");
     });
   };
-  close(): void { this.closed = true; clearInterval(this.timer); this.removeConnection(); this.removeInvalidation(); this.queue.close(); this.run.close(); }
-  private async mutate(action: (current: () => boolean) => Promise<void>): Promise<void> {
+  close(): void { this.closed = true; clearInterval(this.timer); this.removeConnection(); this.removeInvalidation(); this.metadataQueue.close(); this.queue.close(); this.run.close(); }
+  private async mutate(action: (current: () => boolean) => Promise<void>, refresh: "wait" | "background" = "wait"): Promise<void> {
     if (this.closed || !this.getSnapshot().available || this.getSnapshot().working) throw new Error("会话当前不可操作，请检查连接和插件状态");
     this.mutationVersion++;
     const generation = this.generation;
     this.publish({ ...this.getSnapshot(), working: true, error: null });
-    try { await action(() => !this.closed && generation === this.generation); }
-    finally { if (!this.closed) { this.publish({ ...this.getSnapshot(), working: false }); await this.refresh(); } }
+    let succeeded = false;
+    try { await action(() => !this.closed && generation === this.generation); succeeded = true; }
+    finally {
+      if (!this.closed) {
+        this.publish({ ...this.getSnapshot(), working: false });
+        if (succeeded && refresh === "background") void this.refresh();
+        else await this.refresh();
+      }
+    }
   }
 }

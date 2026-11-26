@@ -5,6 +5,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import s from "@deepseek-ai/schemastery";
 import { PluginWorkOwner } from "../../boot/plugin-control/work-owner.js";
 import type { FilesystemPolicy } from "../../filesystem/types.js";
+import { isProtectedFilesystemPath } from "../../filesystem/path-policy.js";
 import { WorkspaceFilesService } from "../service.js";
 import type { WorkspaceBinaryFileView, WorkspaceDirectoryView, WorkspaceTextFileView } from "../types.js";
 
@@ -45,7 +46,7 @@ export class LocalWorkspaceFiles extends WorkspaceFilesService {
       const raw = await readdir(target.absolute, { withFileTypes: true });
       if (!inside(workspace.root, await realpath(target.absolute))) throw new WorkspaceFilesError("path_escape", "Workspace directory changed outside the Session workspace");
       signal?.throwIfAborted();
-      const visible = raw.filter(entry => !protectedName(entry.name, this.ctx.filesystem.policy) && (entry.isFile() || entry.isDirectory()));
+      const visible = raw.filter(entry => !isProtectedFilesystemPath(join(target.absolute, entry.name), this.ctx.filesystem.policy) && (entry.isFile() || entry.isDirectory()));
       visible.sort((left, right) => Number(right.isDirectory()) - Number(left.isDirectory()) || left.name.localeCompare(right.name));
       const selected = visible.slice(0, this.maxEntries);
       const entries = await Promise.all(selected.map(async entry => {
@@ -129,6 +130,7 @@ async function resolveVisiblePath(root: string, input: string, policy: Filesyste
   }
   const absolute = resolve(root, normalized);
   if (!inside(root, absolute)) throw new WorkspaceFilesError("path_escape", "Workspace file path escapes the Session workspace");
+  if (isProtectedFilesystemPath(absolute, policy)) throw new WorkspaceFilesError("protected_path", "Protected workspace paths are not exposed in Files");
   const relativePath = relative(root, absolute) || ".";
   const parts = relativePath === "." ? [] : relativePath.split(sep);
   let current = root;

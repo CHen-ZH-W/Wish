@@ -66,7 +66,17 @@ Index: src/index.ts
 @@ -266,1 +302,1 @@
 -        this.stashed.add(url)
 +        this.queued.add(url)
-@@ -326,0 +363,17 @@
+@@ -294,0 +331,9 @@
++    // Modules can be imported after startup. Seed their on-disk baseline from
++    // the completed watch scan too, so identical compiler output stays idle.
++    for (const [directory, names] of Object.entries(this.watcher.getWatched())) {
++      for (const name of names) {
++        const filename = resolve(watchBaseDir, directory, name), url = pathToFileURL(filename).href
++        if (this.contents.has(url)) continue
++        try { this.contents.set(url, createHash('sha256').update(readFileSync(filename)).digest('hex')) } catch {}
++      }
++    }
+@@ -326,0 +372,17 @@
 +  private flushChanges() {
 +    if (this.codeTask || this.halted || this.closing.signal.aborted) return
 +    this.codeTask = (async () => {
@@ -84,12 +94,12 @@ Index: src/index.ts
 +    return this.codeTask
 +  }
 +
-@@ -404,0 +458,1 @@
+@@ -404,0 +467,1 @@
 +    const reloadDependencies: Set<string>[] = []
-@@ -437,1 +491,1 @@
+@@ -437,1 +500,1 @@
 -      dependencies.forEach(dep => this.accepted.add(dep))
 +      reloadDependencies.push(new Set(dependencies))
-@@ -444,0 +499,7 @@
+@@ -444,0 +508,7 @@
 +    // Select every reload root against the original change set. Expanding the
 +    // cache-clear set while selecting makes later, unrelated plugins match a
 +    // dependency that merely happens to be shared with an earlier root.
@@ -97,9 +107,9 @@ Index: src/index.ts
 +      dependencies.forEach(dep => this.accepted.add(dep))
 +    }
 +
-@@ -498,0 +560,1 @@
+@@ -498,0 +569,1 @@
 +      this.ctx.emit('hmr/reload-failed', e instanceof Error ? e : new Error(String(e)), 'import')
-@@ -502,9 +564,5 @@
+@@ -502,9 +573,5 @@
 -    const reload = (plugin: any, runtime: Plugin.Runtime) => {
 -      if (!runtime) return
 -      for (const oldFiber of runtime.fibers) {
@@ -114,7 +124,7 @@ Index: src/index.ts
 +      [...runtime?.fibers ?? []].map(fiber => ({ plugin, filename, fiber, uid: fiber.uid, config: fiber._config,
 +        configVersion: JSON.stringify(fiber._config) })))
 +    let started = false, timedOut = false, restored = false
-@@ -512,9 +570,7 @@
+@@ -512,9 +579,7 @@
 -      for (const [plugin, { filename, runtime }] of reloads) {
 -        if (!runtime) continue
 -        const path = relative(this.baseDir, fileURLToPath(filename))
@@ -131,7 +141,7 @@ Index: src/index.ts
 +          if (fiber.uid !== uid || JSON.stringify(fiber._config) !== configVersion || fiber.state !== ACTIVE || fiber.entry?.disabled) {
 +            throw new Error('HMR target changed before disposal')
 +          }
-@@ -522,8 +578,32 @@
+@@ -522,8 +587,32 @@
 -
 -        try {
 -          reload(attempts[filename], runtime)
@@ -172,7 +182,7 @@ Index: src/index.ts
 +        await this.ctx.loader.await()
 +        for (const fiber of fibers) {
 +          if (fiber.state !== ACTIVE) throw new Error('HMR replacement did not activate')
-@@ -531,11 +611,1 @@
+@@ -531,11 +620,1 @@
 -      }
 -    } catch {
 -      // Rollback: restore caches and re-register old plugins
@@ -185,7 +195,7 @@ Index: src/index.ts
 -        } catch (err) {
 -          this.ctx.logger.warn(err)
 +        signal.throwIfAborted()
-@@ -543,1 +613,43 @@
+@@ -543,1 +622,43 @@
 -      }
 +        try {
 +          await Promise.race([apply(), deadline])
@@ -230,14 +240,14 @@ Index: src/index.ts
 +      if (started) this.halted = true
 +      this.ctx.logger.warn(error)
 +      this.ctx.emit('hmr/reload-failed', error, started ? 'apply' : 'prepare')
-@@ -546,0 +659,1 @@
+@@ -546,0 +668,1 @@
 +    if (restored) return
-@@ -557,0 +671,4 @@
+@@ -557,0 +680,4 @@
 +    /** Post-drain cleanup/activation deadline. Expiry fences HMR, never replays effects. */
 +    reloadTimeout?: number
 +    /** Disable automatic Include refresh; explicit registerConfig remains supported. */
 +    watchConfig?: boolean
-@@ -569,0 +687,2 @@
+@@ -569,0 +696,2 @@
 +    reloadTimeout: z.natural().min(1).role('ms').default(30_000),
 +    watchConfig: z.boolean().default(true),
 Index: lib/index.js
@@ -381,7 +391,7 @@ Index: lib/index.js
 +      depth += 1;
 +    }
 +  }
-@@ -79,357 +81,488 @@
+@@ -79,357 +81,497 @@
 -	config;
 -	static inject = ["loader", "timer"];
 -	baseDir;
@@ -942,6 +952,15 @@ Index: lib/index.js
 +      }
 +    });
 +    await ready.promise;
++    // Modules can be imported after startup. Seed their on-disk baseline from
++    // the completed watch scan too, so identical compiler output stays idle.
++    for (const [directory, names] of Object.entries(this.watcher.getWatched())) {
++      for (const name of names) {
++        const filename = resolve(watchBaseDir, directory, name), url = pathToFileURL(filename).href;
++        if (this.contents.has(url)) continue;
++        try { this.contents.set(url, createHash("sha256").update(readFileSync(filename)).digest("hex")); } catch {}
++      }
++    }
 +  }
 +  refreshConfig(key, filename, refresh) {
 +    const state = this.configRefreshes.get(key) ?? { dirty: false };
@@ -1227,7 +1246,7 @@ Index: lib/index.js
 +    this.ctx.emit("hmr/reload", reloads);
 +    this.stashed = /* @__PURE__ */ new Set();
 +  }
-@@ -437,12 +570,14 @@
+@@ -437,12 +579,14 @@
 -(function(Hmr) {
 -	Hmr.Config = z.object({
 -		base: z.string(),
@@ -1254,7 +1273,7 @@ Index: lib/index.js
 +    reloadTimeout: z.natural().min(1).role("ms").default(3e4),
 +    watchConfig: z.boolean().default(true)
 +  });
-@@ -450,3 +585,4 @@
+@@ -450,3 +594,4 @@
 -var types_default = Hmr;
 -//#endregion
 -export { types_default as default };

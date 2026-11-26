@@ -47,6 +47,16 @@ export class TaskRuntime implements Tasks {
     });
   }
   async close(): Promise<void> { this.closed = true; await this.tail; await this.store.close(); }
+  projectPending(ref: TaskGraphRef, taskId: string, status: "pending" | "blocked" | "cancelled", controlId: string, result?: string): Promise<TaskGraph> {
+    if (!controlId.trim()) throw new Error("Task projection requires its control identity");
+    return this.change(ref, graph => {
+      const task = graph.tasks.find(item => item.id === taskId);
+      if (graph.state !== "frozen" || !task || task.attemptId || task.status === "completed" || task.status === "running" || task.status === "failed" || task.status === "cancelled" && status !== "cancelled") throw new Error("Task already has execution facts");
+      if (task.status === status && task.result === result) return graph;
+      const { result: _oldResult, ...rest } = task;
+      return Object.freeze({ ...graph, tasks: Object.freeze(graph.tasks.map(item => item === task ? Object.freeze({ ...rest, status, controlId, ...(result === undefined ? {} : { result }) }) : item)) });
+    });
+  }
   private change(ref: TaskGraphRef, fn: (graph: TaskGraph) => TaskGraph): Promise<TaskGraph> {
     return this.serial(async () => {
       const current = await this.store.get(ref.sessionId);

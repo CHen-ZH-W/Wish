@@ -7,12 +7,12 @@ export interface GoalRuntimeOptions { readonly store: GoalStateStore; readonly d
 export class GoalRuntime implements Goal {
   private readonly armed = new Map<string, string>();
   private readonly tails = new Map<string, Promise<void>>();
-  private readonly defaultMaxGoalRounds: number;
+  private readonly defaultMaxGoalRounds: number | undefined;
   private readonly now: () => Date;
   private readonly id: () => string;
   private closed = false;
   constructor(private readonly options: GoalRuntimeOptions) {
-    this.defaultMaxGoalRounds = positive(options.defaultMaxGoalRounds ?? 8, "defaultMaxGoalRounds");
+    this.defaultMaxGoalRounds = options.defaultMaxGoalRounds === undefined ? undefined : positive(options.defaultMaxGoalRounds, "defaultMaxGoalRounds");
     this.now = options.now ?? (() => new Date());
     this.id = options.id ?? randomUUID;
   }
@@ -23,27 +23,29 @@ export class GoalRuntime implements Goal {
   }
   create(request: CreateGoalRequest): Promise<GoalView> {
     const sessionId = identifier(request.sessionId, "Goal Session id"); const objective = text(request.objective, "Goal objective");
-    const maxGoalRounds = positive(request.maxGoalRounds ?? this.defaultMaxGoalRounds, "Goal maxGoalRounds");
+    const bound = request.maxGoalRounds === null ? undefined : request.maxGoalRounds ?? this.defaultMaxGoalRounds;
+    const maxGoalRounds = bound === undefined ? undefined : positive(bound, "Goal maxGoalRounds");
     return this.serial(sessionId, async () => {
       const current = await this.options.store.get(sessionId, request.signal);
       if (current && current.phase !== "complete") throw new GoalConflictError("goal_already_exists", `Session ${sessionId} already has an unfinished Goal`);
       const timestamp = this.timestamp(); const state: GoalState = Object.freeze({ schemaVersion: 1, sessionId, version: (current?.version ?? 0) + 1,
-        id: identifier(this.id(), "Goal id"), revision: 1, objective, phase: "active", roundsStarted: 0, maxGoalRounds, createdAt: timestamp, updatedAt: timestamp });
+        id: identifier(this.id(), "Goal id"), revision: 1, objective, phase: "active", roundsStarted: 0, ...(maxGoalRounds === undefined ? {} : { maxGoalRounds }), createdAt: timestamp, updatedAt: timestamp });
       await this.options.store.put(state, current?.version, request.signal); this.armed.set(sessionId, state.id); return this.view(state);
     });
   }
   edit(request: EditGoalRequest): Promise<GoalView> {
     if (request.objective === undefined && request.maxGoalRounds === undefined) throw new GoalError("goal_invalid_input", "Goal edit requires objective or maxGoalRounds");
     return this.mutate(request, current => {
-      const maxGoalRounds = request.maxGoalRounds === undefined ? current.maxGoalRounds : positive(request.maxGoalRounds, "Goal maxGoalRounds");
-      if (maxGoalRounds < current.roundsStarted) throw new GoalConflictError("goal_round_limit", "Goal round cap cannot be below roundsStarted");
-      return { ...current, ...(request.objective === undefined ? {} : { objective: text(request.objective, "Goal objective") }), maxGoalRounds };
+      const maxGoalRounds = request.maxGoalRounds === undefined ? current.maxGoalRounds : request.maxGoalRounds === null ? undefined : positive(request.maxGoalRounds, "Goal maxGoalRounds");
+      if (maxGoalRounds !== undefined && maxGoalRounds < current.roundsStarted) throw new GoalConflictError("goal_round_limit", "Goal round cap cannot be below roundsStarted");
+      const { maxGoalRounds: _oldBound, ...rest } = current;
+      return { ...rest, ...(request.objective === undefined ? {} : { objective: text(request.objective, "Goal objective") }), ...(maxGoalRounds === undefined ? {} : { maxGoalRounds }) };
     });
   }
   pause(request: MutateGoalRequest): Promise<GoalView> { return this.transition(request, ["active"], "paused", true); }
   resume(request: MutateGoalRequest): Promise<GoalView> { return this.mutate(request, current => {
     if (current.phase === "complete") throw invalid("A completed Goal cannot resume");
-    if (current.roundsStarted >= current.maxGoalRounds) throw new GoalConflictError("goal_round_limit", "Goal round limit is exhausted");
+    if (current.maxGoalRounds !== undefined && current.roundsStarted >= current.maxGoalRounds) throw new GoalConflictError("goal_round_limit", "Goal round limit is exhausted");
     const { blockedReason: _blockedReason, ...rest } = current;
     return { ...rest, phase: "active" };
   }, true); }
@@ -58,7 +60,7 @@ export class GoalRuntime implements Goal {
   admitRound(request: MutateGoalRequest): Promise<GoalView> { const sessionId = identifier(request.sessionId, "Goal Session id"); return this.serial(sessionId, async () => {
     const current = await this.requireCurrent(sessionId, request.ref, request.signal);
     if (current.phase !== "active" || this.armed.get(sessionId) !== current.id) throw invalid("Goal is not active and armed");
-    if (current.roundsStarted >= current.maxGoalRounds) throw new GoalConflictError("goal_round_limit", "Goal round limit is exhausted");
+    if (current.maxGoalRounds !== undefined && current.roundsStarted >= current.maxGoalRounds) throw new GoalConflictError("goal_round_limit", "Goal round limit is exhausted");
     const next = Object.freeze({ ...current, version: current.version + 1, roundsStarted: current.roundsStarted + 1, updatedAt: this.timestamp() });
     await this.options.store.put(next, current.version, request.signal); return this.view(next);
   }); }

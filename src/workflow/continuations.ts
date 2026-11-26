@@ -1,5 +1,5 @@
 import type { RunContinuation } from "../core/runtime/continuation.js";
-import { activeAttempt } from "./transition.js";
+import { activeAttempt, hasUnconfirmedStops } from "./transition.js";
 import type { WorkflowRun } from "./types.js";
 
 /** Process-local parent relationships, independent of replaceable execution observers.
@@ -24,7 +24,7 @@ export class WorkflowContinuations {
       done = true; this.waiting.delete(key); signal?.removeEventListener("abort", release); hold.release();
     };
     this.waiting.set(key, { runId, release, deliver: run => {
-      if (done || run.status === "running" || run.steps.some(step => step.attempts.some(activeAttempt))) return;
+      if (done || run.status === "running" || hasUnconfirmedStops(run) || run.steps.some(step => step.attempts.some(activeAttempt))) return;
       // Resume before releasing the hold, otherwise the parent may finish in
       // between. A rejected queue does not silently discard the relationship.
       const receipt = continuation.resume({ source: "wish-workflow-result", reserveCapacity: true, withinUserTurn: true,

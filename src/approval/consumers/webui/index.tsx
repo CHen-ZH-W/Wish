@@ -1,6 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { useState } from "react";
-import type {} from "../../../apps/webui/client/plugins.js";
+import { bindPageReadiness } from "../../../apps/webui/client/plugins.js";
 import type { WishWebApproval } from "../../../apps/webui/types.js";
 import type { ApprovalRuleScope } from "../../../permissions/rules/types.js";
 import type { CapabilityRequirement } from "../../../permissions/authorization.js";
@@ -10,6 +10,7 @@ import { useText } from "../../../apps/webui/client/i18n.js";
 
 export const ApprovalClientUi = { name: "ui-approval", inject: ["wishSession", "wishConnection", "wishUiSlots"], apply(ctx: Context) {
   const model = new ApprovalClientModel(ctx.wishConnection, ctx.wishSession); ctx.effect(() => () => model.close());
+    ctx.effect(() => bindPageReadiness(ctx, "approvals", ["conversation", "archives"], model.readiness));
   ctx.effect(() => ctx.wishUiSlots.interaction({ id: "approval", View: () => <Approvals model={model} /> }));
 } };
 function Approvals({ model }: { model: ApprovalClientModel }) {

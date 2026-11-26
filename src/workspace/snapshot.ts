@@ -1,6 +1,7 @@
 import type {
   WorkspaceInstruction,
   WorkspaceRepository,
+  WorkspaceRepositoryStatus,
   WorkspaceSnapshot,
 } from "./types.js";
 
@@ -14,6 +15,7 @@ export function snapshotWorkspace(
   if (!Array.isArray(value.instructions)) {
     throw new Error("Workspace Snapshot instructions must be an array");
   }
+  const repositoryStatus = snapshotRepositoryStatus(value.repositoryStatus, value.repository);
   const ids = new Set<string>();
   const instructions = value.instructions.map((instruction) => {
     const copy = snapshotInstruction(instruction);
@@ -35,10 +37,23 @@ export function snapshotWorkspace(
     ),
     revision: requireText(value.revision, "Workspace revision"),
     instructions: Object.freeze(instructions),
+    ...(repositoryStatus === undefined ? {} : { repositoryStatus }),
     ...(value.repository === undefined
       ? {}
       : { repository: snapshotRepository(value.repository) }),
   });
+}
+
+export function snapshotRepositoryStatus(
+  status: WorkspaceRepositoryStatus | undefined,
+  repository: WorkspaceRepository | undefined,
+): WorkspaceRepositoryStatus | undefined {
+  if (status === undefined) return undefined;
+  if (!["verified", "not-found", "unavailable"].includes(status) ||
+    (status === "verified") !== (repository !== undefined)) {
+    throw new Error("Workspace repository status is inconsistent with its identity");
+  }
+  return status;
 }
 
 function snapshotInstruction(

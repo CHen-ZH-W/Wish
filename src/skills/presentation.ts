@@ -3,9 +3,10 @@ export interface SkillFeatureEntry {
   readonly packageId: string;
   readonly name: string;
   readonly description: string;
-  readonly source: "user" | "workspace";
+  readonly source: "user" | "workspace" | "memory";
   readonly digest: string;
   readonly modelInvocable: boolean;
+  readonly enabled?: boolean;
 }
 
 export interface SkillFeatureData {

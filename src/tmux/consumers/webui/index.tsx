@@ -1,3 +1,4 @@
+import { LoadingBoundary } from "../../../apps/webui/client/ui/loading-boundary.js";
 import type { Context } from "@deepseek-ai/cordis";
 import { useEffect, useRef, useState } from "react";
 import type {} from "../../../apps/webui/client/plugins.js";
@@ -74,16 +75,17 @@ function TmuxProcess({ model, view, sessionId, item, capture, captureDisabled, d
 }
 function TmuxSidebar({ model, sessionId, visible }: { model: FeaturesClientModel; sessionId: string; visible: boolean }) {
   const language = useLanguage(), t = useText(), state = useSnapshot(model);
+  const reading = useSnapshot(model.readiness);
   const current = state.sessionId === sessionId;
   const view = current ? state.views.find(item => item.key === "tmux") : undefined;
   const data = view?.data as TmuxObservationView | undefined;
   const observedAt = data?.kind === "tmux-observation" ? new Date(data.observedAt).toLocaleTimeString(language, { hour12: false }) : undefined;
   const status = state.pending ? t("正在刷新…", "Refreshing…") : observedAt ? data!.sessions.some(item => item.active) ? t(`自动同步 · ${observedAt}`, `Live · ${observedAt}`) : t(`已更新 · ${observedAt}`, `Updated · ${observedAt}`) : t("tmux 状态", "tmux status");
-  return <section className="tmux-sidebar-view">
+  return <LoadingBoundary identity={sessionId} pending={reading && !view && !state.error}><section className="tmux-sidebar-view">
     <header className="tmux-sidebar-toolbar"><p role="status" title={status}>{status}</p><button type="button" disabled={state.pending} aria-label={state.pending ? t("正在刷新 tmux 列表", "Refreshing tmux list") : t("刷新 tmux 列表", "Refresh tmux list")} title={state.pending ? t("同步中…", "Syncing…") : t("刷新", "Refresh")} onClick={() => { void model.refresh(); }}><RefreshIcon /></button></header>
     <ErrorNotice text={state.error ? readableError(state.error) : null} />
     {!current && state.pending ? <p className="list-empty" role="status">{t("正在读取 tmux 状态…", "Loading tmux state…")}</p> : view ? <TmuxDocument key={`${sessionId}/${view.key}`} view={view} model={model} sessionId={sessionId} visible={visible} /> : <p className="list-empty">{t("当前没有 tmux 观察入口。", "No tmux observation is available.")}</p>}
-  </section>;
+  </section></LoadingBoundary>;
 }
 function RefreshIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6v5h-5M4 18v-5h5M18.5 9A7 7 0 0 0 6 6.5L4 9m16 6-2 2.5A7 7 0 0 1 5.5 15" /></svg>; }
 function TrashIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>; }

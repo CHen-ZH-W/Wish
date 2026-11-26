@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   settingOptionLabel,
   settingOptionValue,
@@ -22,12 +22,12 @@ const composerEnglish: Record<string, { label: string; description?: string; opt
 const permissionsEnglish: Record<string, { label: string; description?: string; options?: Record<string, string> }> = {
   "default-profile": {
     label: "Default permission for new sessions",
-    description: "Only affects sessions created later. Full access disables workspace isolation and exposes Host files, network, and environment variables.",
+    description: "Only affects sessions created later. Full access permits writes outside the workspace while protecting sensitive paths.",
     options: {
       "read-only": "Read only",
       "approval-required": "Ask first",
       "workspace-write": "Workspace write",
-      "full-access": "Full access (no isolation)",
+      "full-access": "Full access (sensitive paths protected)",
     },
   },
 };
@@ -48,7 +48,7 @@ export function SettingsPage({ model, connection, title = "通用设置", descri
   </section>;
 }
 
-function SectionEditor({ view, writable, pending, save }: {
+export function SectionEditor({ view, writable, pending, save }: {
   view: SettingsView;
   writable: boolean;
   pending: boolean;
@@ -59,7 +59,8 @@ function SectionEditor({ view, writable, pending, save }: {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<"applying" | "applied" | "restart" | null>(null);
 
-  useEffect(() => { setDraft({ ...view.user }); }, [view.revision]);
+  const [revision, setRevision] = useState(view.revision);
+  if (revision !== view.revision) { setRevision(view.revision); setDraft({ ...view.user }); }
 
   async function commit(next: Record<string, SettingValue>) {
     setDraft(next);

@@ -26,7 +26,7 @@ import {
   type ModelPricingPolicyRegistration,
 } from "./pricing.js";
 import { canonicalModelSelection } from "./selection.js";
-import { LeasedSessionReasoningStore, SessionReasoningSelections, type SessionReasoningStore } from "./session-reasoning.js";
+import { DomainSessionReasoningStore, LeasedSessionReasoningStore, SessionReasoningSelections, type SessionReasoningStore } from "./session-reasoning.js";
 import type {
   ModelAdapterFactory,
   ModelEnvironment,
@@ -222,6 +222,16 @@ export class Models extends Service {
       });
     }
     return Object.freeze({ ...resources, sessionReasoning: new SessionReasoningSelections(resources.configuredModel, this.reasoningStore) });
+  }
+
+  sweepDeletedSessions(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void> {
+    return this.work.run(async () => {
+      const storage = this.ctx.get("storageBackend");
+      if (!storage) return;
+      const lease = storage.acquire(storage.id, { kv: { list: true } });
+      try { await new DomainSessionReasoningStore(lease, lease.id).sweepDeletedSessions(wasDeleted); }
+      finally { lease.release(); }
+    });
   }
 
   /** Register one Models-owned setting without making Settings know model semantics. */

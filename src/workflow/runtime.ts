@@ -25,7 +25,7 @@ export class WorkflowRuntime implements Workflow {
     if (!request.key.trim() || request.key.length > 4096) throw new Error("Invalid Workflow key");
     const tasks = normalizeTasks(request.tasks);
     const allowedCapabilities = snapshotChildCapabilities(request.allowedCapabilities ?? ["filesystem.read", "runtime.read"]);
-    const budget: WorkflowBudget = { maxTotalAttempts: 200, maxAttemptsPerStep: 2, maxCallsPerEdge: 2, circuitThreshold: 3, ...request.budget };
+    const budget: WorkflowBudget = { ...request.budget };
     for (const value of Object.values(budget)) if (!Number.isSafeInteger(value) || value < 1 || value > 10000) throw new Error("Invalid Workflow budget");
     return this.serial(async () => {
       const id = `wf-${fingerprint(request.key)}`;
@@ -67,16 +67,16 @@ export class WorkflowRuntime implements Workflow {
       if (previous?.status === "interrupted" && previous.disposition !== "retry-safe") throw new Error(`Interrupted Attempt requires ${previous.disposition === "resumable" ? "same-Attempt resume" : "reconciliation"}`);
       if (!step.task.dependencies.every((dep) => run.steps.some((s) => s.task.id === dep && s.status === "completed"))) throw new Error("Workflow dependencies unmet");
       const used = run.steps.reduce((total, s) => total + s.attempts.length, 0);
-      if (used >= run.budget.maxTotalAttempts || step.attempts.length >= run.budget.maxAttemptsPerStep) throw new Error("Workflow Attempt budget exhausted");
+      if ((run.budget.maxTotalAttempts !== undefined && used >= run.budget.maxTotalAttempts) || (run.budget.maxAttemptsPerStep !== undefined && step.attempts.length >= run.budget.maxAttemptsPerStep)) throw new Error("Workflow Attempt budget exhausted");
       const edge = request.edge ?? step.task.id;
-      if (step.attempts.filter((a) => a.edge === edge).length >= run.budget.maxCallsPerEdge) throw new Error("Workflow edge budget exhausted");
-      if (run.circuitFailures >= run.budget.circuitThreshold) throw new Error("Workflow circuit is open");
+      if (run.budget.maxCallsPerEdge !== undefined && step.attempts.filter((a) => a.edge === edge).length >= run.budget.maxCallsPerEdge) throw new Error("Workflow edge budget exhausted");
+      if (run.budget.circuitThreshold !== undefined && run.circuitFailures >= run.budget.circuitThreshold) throw new Error("Workflow circuit is open");
       if (previous?.errorFingerprint && step.attempts.some((a) => a.errorFingerprint === previous.errorFingerprint && a.strategy === request.strategy)) throw new Error("Repeated error and strategy blocked");
       const timestamp = this.timestamp();
       created = { id: randomUUID(), ordinal: step.attempts.length + 1, status: "prepared",
         idempotencyKey: `${run.id}/${step.task.id}/${step.attempts.length + 1}`, strategy: request.strategy, edge,
         recoveryPolicy: request.recoveryPolicy ?? "needs-reconciliation", startedAt: timestamp,
-        deadline: new Date(this.now().getTime() + step.task.execution.timeoutMs).toISOString(),
+        ...(step.task.execution.timeoutMs === undefined ? {} : { deadline: new Date(this.now().getTime() + step.task.execution.timeoutMs).toISOString() }),
       };
       return replaceStep(run, step.task.id, (s) => ({ ...s, status: "running", attempts: [...s.attempts, created] }));
     }).then(() => Object.freeze(created));
@@ -92,6 +92,14 @@ export class WorkflowRuntime implements Workflow {
       if (attempt.childId === childId) return attempt;
       if (attempt.status !== "dispatched" || attempt.childId) throw new Error("Attempt binding conflict");
       return { ...attempt, status: "running", childId };
+    });
+  }
+  async recordStopped(target: AttemptTarget): Promise<void> {
+    await this.change(target.runId, "attempt.child-stopped", target.stepId, target.attemptId, run => {
+      const step = run.steps.find(item => item.task.id === target.stepId), attempt = step?.attempts.find(item => item.id === target.attemptId);
+      if (!step || !attempt) throw new Error("Unknown child stop identity");
+      if (attempt.stoppedAt) return run;
+      return { ...run, steps: run.steps.map(item => item === step ? { ...item, attempts: item.attempts.map(candidate => candidate === attempt ? { ...candidate, stoppedAt: this.timestamp() } : candidate) } : item) };
     });
   }
   async finishAttempt(target: AttemptTarget, status: "completed" | "failed" | "cancelled", result: string): Promise<void> {

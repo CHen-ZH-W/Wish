@@ -1,10 +1,9 @@
 # Apps
 
-Application exposes an optional execution-profile port, implemented by
-[Agent Profiles](../agent-profiles/README.md). A bound profile fixes model, Prompt,
-Tool/permission ceilings and strategy settings for its lifetime, persists admission
-before starting each Run, and rejects silent runtime changes. CLI management and
-[experiment execution](../experiments/README.md) remain separate consumers.
+Application 提供可选的执行配置端口，由 [Agent Profiles](../agent-profiles/README.md) 实现。
+绑定的方案在其生命周期内固定模型、Prompt、工具/权限上限和策略设置，
+在每个 Run 启动前持久化准入记录，并拒绝运行时的静默变更。
+CLI 管理和[实验执行](../experiments/README.md) 分别由独立 Consumer 提供。
 
 `src/apps/` 是 Wish 的 transport、Application service 与公开门面层。产品提供 CLI 和
 WebUI 两个 surface；进程启动与依赖图由 `src/boot/bootstrap.ts` 和 `cordis.yml` 统一拥有。
@@ -49,6 +48,12 @@ Cordis Application service -> ApplicationFacade
 CLI | WebUI -> WishApplication
 ```
 
+Session Features 的 `runStarted` 在 Runtime 接纳成功后收到首条输入及可信来源；可选的标题
+Consumer 在此保存兜底并安排后台生成，失败不拒绝主 Run。`metadataUpdated` 只观察已提交
+的元数据，观察失败不能回滚写入。注册可绑定具体 Session graph，Application 的其他数据根
+不会调用该图的钩子；有持久工作责任的模块卸载后保留清理保护，可选观察模块可显式释放。
+标题模块的配置和恢复语义见[会话标题](../session-title/README.md)。
+
 Step pipeline 的包装顺序固定为：
 
 ```text
@@ -65,6 +70,11 @@ Application 负责 Session 操作、模型选择校验和公开 DTO 适配，不
 `launch`、`approval` 与 `application`；WebUI 另外注入 `approvalRules` 用于规则管理。
 surface 只收集用户的审批与有效期选择，是否需要审批和是否允许复用由 Permissions 决定。
 
+`cli`、`candidate-cli` 和 `agent-profile-cli` 默认随 CLI 入口加载，也允许在 WebUI 的插件
+管理中启用、停用及保存偏好。CLI 命令 Consumer 加载时注册 `cli/command` 处理器；
+`cli` 仅在 CLI 启动时接管终端、执行启动参数并提交进程完成结果，在 WebUI 中加载时保持
+空闲。因此启用这些插件不会自行启动命令、读取 WebUI 进程的标准输入或结束 WebUI。
+
 可选业务模块通过 `SessionFeature` 接口贡献当前 Session 的状态投影、带版本凭证的人工操作，
 以及普通用户消息到达前的通知。Application 只注册和转发，不拥有 Todo、Goal、Plan、Tasks
 或 Workflow 状态。CLI `/review` 与 WebUI 的 Session Features HTTP 接口共享此契约；Plan 审批与 Workflow
@@ -73,6 +83,13 @@ WebUI 提供 `GET /api/sessions/:id/features` 与
 `POST /api/sessions/:id/features/:key`；后者必须携带显示过的 `action`、`token`，必要时携带
 `feedback`。接口先检查 Session 所有权，过期版本按冲突拒绝。普通新消息及 steer/follow-up
 会通知业务模块，使尚未批准的 Plan Review 可以继续多轮规划。
+
+不依赖 Session 的业务页面可注册默认范围 Control。`GET /api/controls/:key/default`
+检查状态，`POST /api/queries/:key/default` 执行有界只读查询，
+`POST /api/controls/:key/default` 提交人工修改。Host 将 WebUI 规范化后的启动工作区作为
+独立 scope 传给 Control，HTTP 层不解释领域 payload。Control 注册和进行中操作由其插件
+Owner 管理；POST 沿用同源、管理令牌及 JSON 大小校验。Skills 技能库通过此契约独立浏览
+和导入，不伪造 Session 或复用会话选择状态。
 
 每次 `Application.open()` 都创建一个拥有 Session Handle 的 RunGeneration。退役顺序是停止
 新 Run、请求取消并等待已有 Run 终态、最后释放 Session Handle。CLI/WebUI 的关闭流程负责
@@ -211,7 +228,7 @@ wish recovery resolve --resolution-id <id> --run-id <id> --user-turn-id <id> \
 # 主会话工作台、独立插件管理与 Settings；已有密钥环境时直接 npm run webui
 DEEPSEEK_API_KEY=... npm run webui
 WISH_MODELS_CONFIG=./models.json npm run webui
-# 构建或安装后也可运行 wish-webui
+# 也可通过 wish-webui 创建独立运行副本并启动
 ```
 
 默认监听 `127.0.0.1:8790`。HTTP 接口如下：
@@ -250,6 +267,21 @@ Run ID，并通过 Application 的窄 Recovery Port 管理结论，不直接写 
 ### 独立管理面
 
 `npm run webui` 和 `wish-webui` 固定启动 React + Browser Cordis 外壳，不需要版本开关。
+入口先在 `<WISH_DATA_DIR 或 ~/.wish>/releases` 创建独立源码、配置、依赖和构建副本，
+构建成功后按完整副本的内容摘要发布为 `webui-<摘要>`，再从该目录启动并输出路径；
+`WISH_WEBUI_RUNTIME_DIR` 可覆盖其父目录。相同内容经过核验后复用路径，避免重启改变
+持久 AgentProfile 的产物身份；已被 HMR 修改的副本保留，另建干净副本。
+工作区中的构建和测试不会覆盖当前副本的代码、依赖或静态资源。Linux 启动器在启动和退出时
+自动回收旧副本，默认保留最近两个版本；`WISH_WEBUI_RELEASE_KEEP` 可设置为不小于 2 的整数。
+当前启动的版本、仍由进程使用的版本、持久 AgentProfile 快照或管理配置引用的版本额外保留。
+发布和回收使用 OS 文件锁串行化，进程退出会释放锁；无法确认引用时记录原因并推迟回收。
+其他平台保留发布副本，不猜测进程归属。
+构建失败或构建子进程被中断时，启动器清理本次未发布目录；依赖使用副本内的相对链接，
+外部依赖链接拒绝启动。
+自定义 `CORDIS_CONFIG` 仍按原规则使用外部配置，不属于副本隔离范围。
+已有 AgentProfile 仍绑定捕获时的部署路径和产物。从工作区原地部署迁到独立副本，或改变插件
+布局后，需要为新部署重新捕获 Profile；启动器不会改写已有快照或放宽产物校验。
+`npm run webui:dev` 保留原地构建和运行，适合明确需要让工作区构建直接触发 HMR 的开发环境。
 `/` 与 `/index.html` 指向同一界面，没有旧版回退。Root 拥有监听器、静态资源、管理 API、Settings
 和进程信号；业务 WebUI 插件只注册业务 handler。业务插件停用后管理面仍可用，业务请求
 返回 `business_unavailable`，不以隐藏前端代替 Host 停用。
@@ -261,11 +293,18 @@ Run ID，并通过 Application 的窄 Recovery Port 管理结论，不直接写 
 不必再设置 `CORDIS_HMR=1`；`CORDIS_HMR=0 npm run webui` 可显式关闭。仅明确声明的
 Step-local 所有者允许替换，持久化回执成功后才继续下一 Step，失败走独立管理恢复入口。
 管理 API/SSE 同步 `codeReload` 状态；这不等于浏览器加载了新版 UI 代码。
+普通入口保留 profile 的 HMR 默认值和显式 `CORDIS_HMR`，代码监听对象属于启动输出的运行副本。
+需要在线更新时，将完整候选产物交给受控管理发布路径，或明确更新该副本的部署配置；
+运行目录隔离不改变插件准入、收尾和失败恢复协议。
 目前不支持运行时更换监听端口或任意状态所有者热替换。
 配置更新的在线范围及失败恢复见 [受控配置](../boot/plugin-control/README.md#配置文件重载)。
 Root 监听端口由 `WISH_WEBUI_PORT` 指定，默认 8790；业务插件行的端口不重配置 Root。
 
 管理文件根为 `WISH_MANAGEMENT_DATA_DIR`，否则为 `<WISH_DATA_DIR 或 ~/.wish>/management`。
+普通 CLI 默认只读该目录中的插件启停策略和部署 overlay，可以与 WebUI 管理进程同时运行。
+`WISH_PLUGIN_POLICY_DIR` 显式指定所属策略目录；子 Agent 由父 Host 设置这个值，独立的
+`WISH_DATA_DIR` 不会让它丢失父级停用决定。`WISH_MANAGED_CLI=1` 用于需要管理写权限的
+独立 CLI Host，仍遵守同一管理目录只有一个写入进程的限制。
 `settings.json`、`credentials.json` 与 `plugins.json` 独立于业务 Storage；三者分别保存模块
 设置、只写凭据和启停偏好／待核对意图／回执。凭据文件为 0600，启动环境值优先且从网页只读。
 部署 YAML 与 `!!js` 表达式不由网页改写。当前 Settings 先注册立即生效的 `webui-appearance`
@@ -323,9 +362,16 @@ Runtime 待核对记录保留，可在删除会话后通过 CLI 核对。
 模块不在检查覆盖范围内，部署时应保留有关模块的检查入口。
 删除清理 Session 元数据、聊天历史、checkpoint，以及 Plan、Tasks、Goal、Todo、
 Coordinator、Workflow、子 Agent 记录和临时文件、工具结果归档、当前版本的工具输出 Blob、
-会话设置与进程内观察状态。不联动删除项目文件、跨会话 Memory、Runtime／System Prompt／
-Model Attempt 等追加式审计日志或独立 tmux 进程。
+会话设置与进程内观察状态。默认部署还会物理回收该会话的 System Prompt 快照和已结束的
+Runtime 记录；尚未结束或存在未核对副作用的 Run 保留完整证据，核对完成后由后续补扫回收。
+不联动删除项目文件、跨会话 Memory、Model Attempt 计费日志或独立 tmux 进程。
+Application 在清理所有者装配后调度首次补扫，此后每五分钟重试。各模块通过
+`sweepDeletedSessions` 枚举自己的历史记录，以同一 Session 图的删除标记确认归属；
+归档、缺少标记的未知会话、待核对会话均保留。补扫覆盖 Workflow、子 Agent、工具归档
+（含写入 Blob 后尚未发布索引的残留）、工具输出、Prompt/Runtime 历史和会话设置。
+有前台 Run 时推迟后台补扫；并发补扫合并成一轮，失败会记录并重试，插件卸载会排空已接纳的清理工作。
 旧版本共享命名空间的工具输出 Blob 缺少 Session 所有权索引，无法安全地按会话删除。
+新工具输出先持久化所有权索引，即使调用中断、没有生成工具归档，仍可在删除后回收。
 持久层保留不可复用 ID 的空标记。
 模型选择、审批规则撤销和 Runtime 副作用人工核对的专用页面尚未接入；对应业务 API 保留。
 模型可通过 `WISH_MODEL` 等现有配置选择，Runtime 核对

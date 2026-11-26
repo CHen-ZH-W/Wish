@@ -23,11 +23,30 @@ export interface WebUiControlStreamEvent {
   readonly id?: string;
 }
 
+/** Host-selected default workspace; independent of any selected Session. */
+export interface WebUiDefaultScope {
+  readonly workspaceRoot: string;
+}
+
 /** Bounded domain adapter: no raw request/response access and no arbitrary routes. */
 export interface WebUiControl {
   inspectDefault?(
     application: WishApplication,
     signal: AbortSignal,
+    scope: WebUiDefaultScope,
+  ): Promise<unknown> | unknown;
+  /** Read-only default-scope query with a bounded owner-defined body. */
+  queryDefault?(
+    application: WishApplication,
+    body: Readonly<Record<string, unknown>>,
+    signal: AbortSignal,
+    scope: WebUiDefaultScope,
+  ): Promise<unknown> | unknown;
+  updateDefault?(
+    application: WishApplication,
+    body: Readonly<Record<string, unknown>>,
+    signal: AbortSignal,
+    scope: WebUiDefaultScope,
   ): Promise<unknown> | unknown;
   inspectSession?(
     application: WishApplication,
@@ -66,7 +85,7 @@ export class WebUiControlRegistry implements WebUiControlResolver {
   register(key: string, control: WebUiControl): () => void {
     const id = controlKey(key);
     if (this.controls.has(id)) throw new Error(`WebUI control already registered: ${id}`);
-    if (!control.inspectDefault && !control.inspectSession && !control.querySession && !control.updateSession && !control.streamSession) {
+    if (!control.inspectDefault && !control.queryDefault && !control.updateDefault && !control.inspectSession && !control.querySession && !control.updateSession && !control.streamSession) {
       throw new Error(`WebUI control has no operations: ${id}`);
     }
     this.controls.set(id, control);
@@ -113,7 +132,13 @@ export function registerManagedWebUiControl(
   });
   unregister = ctx.webUiControls.register(key, {
     ...(control.inspectDefault ? {
-      inspectDefault: (application, signal) => work.run(() => control.inspectDefault!(application, signal)),
+      inspectDefault: (application, signal, scope) => work.run(() => control.inspectDefault!(application, signal, scope)),
+    } : {}),
+    ...(control.queryDefault ? {
+      queryDefault: (application, body, signal, scope) => work.run(() => control.queryDefault!(application, body, signal, scope)),
+    } : {}),
+    ...(control.updateDefault ? {
+      updateDefault: (application, body, signal, scope) => work.run(() => control.updateDefault!(application, body, signal, scope)),
     } : {}),
     ...(control.inspectSession ? {
       inspectSession: (application, sessionId, signal) => work.run(() => control.inspectSession!(application, sessionId, signal)),

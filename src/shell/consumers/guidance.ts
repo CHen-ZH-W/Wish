@@ -15,6 +15,7 @@ export const BashToolGuidance = {
         "Use bash for operations that genuinely require shell execution.",
         "Bash runs synchronously; do not detach unmanaged background processes.",
         "Declare the least permissions required by the whole command, and investigate nonzero exits, timeouts, or aborted execution before continuing.",
+        "Reads may include ordinary files outside the workspace: declare their absolute paths in permissions.filesystem.read. Directory scopes include descendants except sensitive paths. Writes outside the workspace require full-access and an explicit write path. Full-access still enforces the declared paths, sensitive locks and a clean environment.",
         "When a check's failure matters, do not let a later command or pipeline hide its exit status; check the relevant status explicitly.",
       ].join("\n"),
     });

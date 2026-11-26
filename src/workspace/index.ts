@@ -15,6 +15,7 @@ export type {
   WorkspaceFingerprint,
   WorkspaceInstruction,
   WorkspaceRepository,
+  WorkspaceRepositoryStatus,
   WorkspaceResolver,
   WorkspaceRevision,
   WorkspaceSnapshot,

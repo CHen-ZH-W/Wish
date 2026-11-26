@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -78,7 +78,10 @@ test("Local Filesystem policy is deterministic and deeply immutable", () => {
   assert.notEqual(first.policy.version, changed.policy.version);
   assert.equal(Object.isFrozen(first.policy), true);
   assert.equal(Object.isFrozen(first.policy.protectedDirectoryNames), true);
-  assert.deepEqual(first.policy.protectedDirectoryNames, [".git", ".wish"]);
+  assert.equal(first.policy.scope, "host-read-profile-write");
+  assert.equal(first.policy.protectedDirectoryNames.includes(".ssh"), true);
+  assert.equal(first.policy.protectedDirectoryNames.includes(".aws"), true);
+  assert.equal(Object.isFrozen(first.policy.protectedPaths), true);
   assert.equal(first.policy.protectedNameExceptions.includes(".env.example"), true);
 });
 
@@ -147,7 +150,7 @@ test("authorized reads, writes, parent creation, stat, and durability succeed", 
   }
 });
 
-test("workspace escapes, protected names, and symbolic links fail closed", async () => {
+test("protected names and symbolic links fail closed", async () => {
   const root = await mkdtemp(join(tmpdir(), "wish-filesystem-boundary-"));
   const outside = await mkdtemp(join(tmpdir(), "wish-filesystem-outside-"));
   const filesystem = new LocalFilesystemBackend();
@@ -158,7 +161,7 @@ test("workspace escapes, protected names, and symbolic links fail closed", async
     await symlink(outsideFile, join(root, "link.txt"));
     await symlink(outside, join(root, "linked-parent"));
 
-    for (const path of [outsideFile, join(root, ".env"), join(root, "link.txt")]) {
+    for (const path of [join(root, ".env"), join(root, "link.txt")]) {
       const result = await executeFilesystem({
         root,
         filesystem,
@@ -299,4 +302,56 @@ test("Cordis installs, replaces, and removes the Filesystem Provider", async () 
   } finally {
     await root.fiber.dispose();
   }
+});
+
+test("all profiles read ordinary outside files, while only full-access writes outside", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-filesystem-access-"));
+  const root = join(directory, "workspace"), outside = join(directory, "reference.txt");
+  const filesystem = new LocalFilesystemBackend();
+  try {
+    await mkdir(root); await writeFile(outside, "reference");
+    for (const profile of ["read-only", "approval-required", "workspace-write", "full-access"]) {
+      const context = basicToolContext(root, { filesystem, profile });
+      const read = await executeFilesystem({ root, filesystem, context, path: outside, grantPath: directory,
+        capability: "filesystem.read", operation: (context, grant) => filesystem.readFile({ path: outside, context, grant }) });
+      assert.equal(read.ok, true, `${profile}: ${JSON.stringify(read)}`);
+      assert.equal(Buffer.from(read.output).toString(), "reference");
+      const target = join(directory, profile, "output.txt");
+      const write = await executeFilesystem({ root, filesystem, context, path: target, capability: "filesystem.write",
+        operation: (context, grant) => filesystem.writeFile({ path: target, data: Buffer.from("written"), createParents: true, context, grant }) });
+      assert.equal(write.ok, profile === "full-access", `${profile}: ${JSON.stringify(write)}`);
+    }
+    assert.equal(await readFile(join(directory, "full-access/output.txt"), "utf8"), "written");
+    const path = join(root, "readonly.txt");
+    const denied = await executeFilesystem({ root, filesystem, context: basicToolContext(root, { filesystem, profile: "read-only" }), path,
+      capability: "filesystem.write", operation: (context, grant) => filesystem.writeFile({ path, data: Buffer.from("blocked"), context, grant }) });
+    assert.equal(denied.ok, false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("sensitive names and explicit path locks survive full-access and ancestor grants", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wish-filesystem-locks-"));
+  const root = join(directory, "workspace"), locked = join(directory, "private-notes.txt");
+  const filesystem = new LocalFilesystemBackend({ protectedPaths: [locked] });
+  try {
+    await mkdir(root); await mkdir(join(directory, ".ssh")); await mkdir(join(directory, ".aws"));
+    for (const path of [locked, join(directory, ".env"), join(directory, ".ssh/key"), join(directory, ".aws/credentials")]) {
+      await writeFile(path, "fixture-private");
+      for (const profile of ["read-only", "approval-required", "workspace-write", "full-access"]) {
+        const context = basicToolContext(root, { filesystem, profile });
+        const result = await executeFilesystem({ root, filesystem, context, path, grantPath: directory, capability: "filesystem.read",
+          operation: (context, grant) => filesystem.readFile({ path, context, grant }) });
+        assert.equal(result.ok, false); assert.match(result.error.message, /protected/u);
+      }
+      await assert.rejects(filesystem.preflight({ path, access: "write", allowWorkspaceRoot: true,
+        context: basicToolContext(root, { filesystem, profile: "full-access" }) }), /protected/u);
+    }
+    const example = join(directory, ".env.example"); await writeFile(example, "TEMPLATE=example");
+    const read = await executeFilesystem({ root, filesystem, path: example, capability: "filesystem.read",
+      operation: (context, grant) => filesystem.readFile({ path: example, context, grant }) });
+    assert.equal(read.ok, true);
+    const wrongGrant = await executeFilesystem({ root, filesystem, path: example, grantPath: root, capability: "filesystem.read",
+      operation: (context, grant) => filesystem.readFile({ path: example, context, grant }) });
+    assert.equal(wrongGrant.ok, false, "a broad readable boundary does not widen an individual grant");
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

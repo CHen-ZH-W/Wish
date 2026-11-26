@@ -170,7 +170,7 @@ test("WebUI management writes and native config reload share the real Skills lif
   } finally { await booted?.dispose(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("WebUI activates and stops default-off Memory Curation and Web Fetch without environment opt-in", { timeout: 15_000 }, async () => {
+test("WebUI stops and restores default-on Memory Curation and activates default-off Web Fetch", { timeout: 15_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "wish-user-activation-webui-"));
   let booted;
   try {
@@ -186,28 +186,32 @@ test("WebUI activates and stops default-off Memory Curation and Web Fetch withou
       return control.snapshot();
     };
     const initial = control.snapshot();
-    for (const id of ["memory-curation", "memory-runtime-evidence", "memory-workflow-evidence", "web-fetch-http", "tool-web-fetch"]) {
+    for (const id of ["memory-curation", "memory-runtime-evidence", "memory-workflow-evidence"]) {
+      assert.deepEqual(initial.controls[`include:${id}`], {
+        managementClass: "managed", canEnable: false, canDisable: true, canReplace: true,
+      }, id);
+      assert.equal(initial.inspection.entries.find(entry => entry.id === `include:${id}`).phase, "active");
+    }
+    for (const id of ["web-fetch-http", "tool-web-fetch"]) {
       assert.deepEqual(initial.controls[`include:${id}`], {
         managementClass: "managed", canEnable: true, canDisable: false, canReplace: false,
       }, id);
       assert.equal(initial.inspection.entries.find(entry => entry.id === `include:${id}`).enabled, false, id);
     }
-    assert.deepEqual(initial.controls["include:web-search-searxng"], {
-      managementClass: "managed", canEnable: false, canDisable: false, canReplace: false, reason: "management_enable_constrained",
+    assert.deepEqual(initial.controls["include:web-search"], {
+      managementClass: "managed", canEnable: true, canDisable: false, canReplace: false,
     });
-    assert.equal(ctx.get("memoryCuration"), undefined);
+    assert.ok(ctx.get("memoryCuration"));
     assert.equal(ctx.get("webFetch"), undefined);
 
-    await change("memory-curation", "enabled");
-    assert.ok(ctx.get("memoryCuration"));
-    await change("memory-runtime-evidence", "enabled");
-    await change("memory-workflow-evidence", "enabled");
-    assert.equal(control.snapshot().inspection.entries.find(entry => entry.id === "include:memory-runtime-evidence").phase, "active");
     await change("memory-curation", "disabled");
     assert.equal(ctx.get("memoryCuration"), undefined);
     assert.equal(control.snapshot().inspection.entries.find(entry => entry.id === "include:memory-runtime-evidence").phase, "pending");
+    assert.equal(control.snapshot().inspection.entries.find(entry => entry.id === "include:memory-workflow-evidence").phase, "pending");
     await change("memory-curation", "enabled");
     assert.ok(ctx.get("memoryCuration"));
+    assert.equal(control.snapshot().inspection.entries.find(entry => entry.id === "include:memory-runtime-evidence").phase, "active");
+    assert.equal(control.snapshot().inspection.entries.find(entry => entry.id === "include:memory-workflow-evidence").phase, "active");
 
     await change("web-fetch-http", "enabled");
     assert.ok(ctx.get("webFetch"));

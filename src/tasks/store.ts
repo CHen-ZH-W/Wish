@@ -15,8 +15,8 @@ export function snapshotCollection(value: unknown): TaskCollection {
       const task = graph.tasks[i]!;
       if (!["pending", "running", "completed", "failed", "blocked", "cancelled"].includes(task.status) ||
           (graph.state === "draft" && task.status !== "pending") ||
-          (task.status !== "pending" && (typeof task.attemptId !== "string" || !task.attemptId))) throw new Error("Invalid task execution state");
-      return Object.freeze({ ...spec, status: task.status, ...(task.attemptId === undefined ? {} : { attemptId: task.attemptId }), ...(task.result === undefined ? {} : { result: task.result }) });
+          (task.status !== "pending" && (typeof task.attemptId !== "string" || !task.attemptId) && (!["blocked", "cancelled"].includes(task.status) || typeof task.controlId !== "string" || !task.controlId))) throw new Error("Invalid task execution state");
+      return Object.freeze({ ...spec, status: task.status, ...(task.attemptId === undefined ? {} : { attemptId: task.attemptId }), ...(task.controlId === undefined ? {} : { controlId: task.controlId }), ...(task.result === undefined ? {} : { result: task.result }) });
     });
     return Object.freeze({ ...graph, tasks: Object.freeze(tasks) });
   });

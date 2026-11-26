@@ -7,6 +7,8 @@ import { RefreshQueue, SnapshotStore } from "./store.js";
 export interface ManagementSnapshot { readonly data: ManagedPluginSnapshot | null; readonly loading: boolean; readonly error: string | null; readonly pending: boolean }
 export class PluginManagementModel extends SnapshotStore<ManagementSnapshot> {
   private readonly queue: RefreshQueue;
+  /** Pending reads are presentation signals, independent of operation authority. */
+  get readiness(): Pick<RefreshQueue, "getSnapshot" | "subscribe"> { return this.queue; }
   private readonly unsubscribe: () => void;
   private closed = false;
   constructor(private readonly connection: ClientConnection) {

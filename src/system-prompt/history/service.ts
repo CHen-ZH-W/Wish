@@ -6,6 +6,8 @@ export abstract class SystemPromptHistoryService extends Service implements Syst
   abstract record(input: SystemPromptSnapshotInput, signal?: AbortSignal): Promise<void>;
   abstract list(sessionId: string, signal?: AbortSignal): Promise<readonly SystemPromptSnapshot[]>;
   abstract close(): Promise<void>;
+  purgeSession?(sessionId: string): Promise<void>;
+  sweepDeletedSessions?(wasDeleted: (sessionId: string) => Promise<boolean>): Promise<void>;
 }
 
 declare module "@deepseek-ai/cordis" {

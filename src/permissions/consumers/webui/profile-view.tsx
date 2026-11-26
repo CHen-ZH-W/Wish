@@ -8,7 +8,7 @@ const labels: Record<PermissionProfile, readonly [string, string]> = {
   "read-only": ["只读", "Read only"],
   "approval-required": ["需要审批", "Ask first"],
   "workspace-write": ["工作区可写", "Workspace write"],
-  "full-access": ["完全访问（无隔离）", "Full access (no isolation)"],
+  "full-access": ["完全访问（保留敏感保护）", "Full access (sensitive paths protected)"],
 };
 
 export function PermissionProfileComposerItem({ model, sessionId, busy }: {
@@ -22,7 +22,7 @@ export function PermissionProfileComposerItem({ model, sessionId, busy }: {
   const view = state.view;
   const unconfined = view?.selected === "full-access";
   const title = unconfined
-    ? t("完全访问不使用工作区隔离，并允许访问宿主文件、网络和环境变量", "Full access disables workspace isolation and permits Host files, network, and environment variables")
+    ? t("完全访问允许工作区外写入，敏感路径仍受保护；命令使用隔离环境", "Full access permits writes outside the workspace while protecting sensitive paths; commands use a clean environment")
     : busy
     ? t("下次新运行生效；当前运行、引导和已排队消息保持原权限", "Applies to the next new run; this run, steering, and queued messages keep their current permission")
     : t("下次新运行生效", "Applies to the next new run");
@@ -30,14 +30,14 @@ export function PermissionProfileComposerItem({ model, sessionId, busy }: {
     <span className="composer-model-name">{t("权限", "Access")}</span>
     <label className="sr-only" htmlFor="wish-permission-profile">{t("下次运行的权限", "Permission for the next run")}</label>
     <select id="wish-permission-profile" aria-label={t("下次运行的权限", "Permission for the next run")}
-      value={view?.selected ?? ""} disabled={!view || state.pending || state.loading}
+      value={view?.selected ?? ""} disabled={!view || !state.writable || state.pending || state.loading}
       onChange={(event) => { void model.select(event.target.value as PermissionProfile).catch(() => {}); }}>
-      {!view ? <option value="" disabled>{t("读取中", "Loading")}</option> : null}
+      {!view ? <option value="" disabled>{state.error ? t("不可用", "Unavailable") : t("读取中", "Loading")}</option> : null}
       {view?.availableProfiles.map((profile) => <option key={profile} value={profile}>{t(...labels[profile])}</option>)}
     </select>
     {state.pending ? <span className="composer-reasoning-status" role="status">{t("设置中", "Applying")}</span>
       : state.error ? <span className="composer-reasoning-error" role="alert" title={permissionError(state.error, t)}>{permissionError(state.error, t)}</span>
-      : unconfined ? <span className="composer-permission-warning" role="status">{t("无隔离", "Unconfined")}</span>
+      : unconfined ? <span className="composer-permission-warning" role="status">{t("允许跨工作区写入", "Writes outside workspace allowed")}</span>
       : state.status ? <span className="sr-only" role="status">{t(state.status, "Applies to the next new run")}</span> : null}
   </div>;
 }
@@ -50,7 +50,7 @@ export function NewSessionPermissionProfileComposerItem({ model, disabled }: {
   const state = useSnapshot(model);
   const unconfined = state.selected === "full-access";
   const title = unconfined
-    ? t("完全访问不使用工作区隔离，并允许访问宿主文件、网络和环境变量", "Full access disables workspace isolation and permits Host files, network, and environment variables")
+    ? t("完全访问允许工作区外写入，敏感路径仍受保护；命令使用隔离环境", "Full access permits writes outside the workspace while protecting sensitive paths; commands use a clean environment")
     : t("从首个运行开始生效", "Applies from the first run");
   return <div className="composer-reasoning composer-permission new-session-permission" title={title}>
     <span className="composer-model-name">{t("权限", "Access")}</span>
@@ -62,7 +62,7 @@ export function NewSessionPermissionProfileComposerItem({ model, disabled }: {
       {state.view?.availableProfiles.map((profile) => <option key={profile} value={profile}>{t(...labels[profile])}</option>)}
     </select>
     {state.error ? <span className="composer-reasoning-error" role="alert" title={permissionError(state.error, t)}>{permissionError(state.error, t)}</span>
-      : unconfined ? <span className="composer-permission-warning" role="status">{t("无隔离", "Unconfined")}</span> : null}
+      : unconfined ? <span className="composer-permission-warning" role="status">{t("允许跨工作区写入", "Writes outside workspace allowed")}</span> : null}
   </div>;
 }
 

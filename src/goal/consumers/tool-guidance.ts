@@ -13,6 +13,7 @@ export default {
       content: [
         "Use create_goal when a direct human request calls for pursuing one objective across multiple Agent rounds. It arms continuation for that Session.",
         "Do not create a Goal merely to display a checklist or complete one bounded response. Goal completion requires the objective to be achieved.",
+        "Goals have no default round limit. Do not invent token budgets or iteration caps; set an optional bound only when the human explicitly requests one.",
       ].join("\n"),
     });
   },

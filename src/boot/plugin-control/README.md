@@ -44,6 +44,20 @@ Loader 的有效 gate 推导，成功操作必须分别确认运行结果、真�
 操作超时或响应丢失不能直接变成“未修改”的拒绝；发生变更后失败时保留未知／部分结果，
 供执行层核对，不宣称自动回滚了副作用。
 
+系统启停以同一管理目录的 `plugins.json` 为准。未显式停用表示允许各进程按自己的部署
+条件装配，不能由当前 Host 的 `absent` 推断系统已停用。管理页分别显示系统开关与当前
+进程的加载状态；当前进程未加载的普通受管条目也可以保存系统停用决定。
+
+普通 CLI 和子 Agent 只读共享策略及部署 overlay，不争用管理写锁。子 Agent 继承父 Host
+的策略目录和部署文件，私有数据目录不改变策略归属；工具白名单、权限和子进程功能约束
+仍单独生效。嵌入式 `bootstrap` 通过 `pluginPolicyDirectory` 显式加入同一管理范围。
+
+停用先持久化意图，阻止新的受管进程入场，再等待使用目标插件的已有进程清理整个执行图。
+这些进程以带 PID、进程启动标识和命名空间的租约登记已装配的条目，清理完成后释放租约。
+管理端确认租约释放或所属进程已消失后，才提交停用成功。无法确认清理、策略损坏或恢复
+未完成时不放行；清理超时保留 pending 和 recovery-required，重启后的恢复仍检查进程租约。
+启用恢复后，新进程按最新策略装配；已运行的只读策略进程不会自行增加工具或重放任务。
+
 管理类型由 `ManagedPluginStore` 和 `ManagedPluginControl` 在显式 managed 装配中实现；
 普通 bootstrap 仍不请求持久化。Root 检查结果不从有效 gate 推导“已保存”。
 
@@ -277,7 +291,7 @@ Group carrier、缺席或未覆盖的 active 分支继续拒绝。批量操作�
 - 请求包含 Root instanceId、revision、显式 Entry IDs 和幂等 requestId。Host 先把 operation 持久化
   为 queued，再执行副作用；同 requestId/指纹返回已有 operation，冲突请求拒绝。顶层变更按 FIFO
   串行，轮到执行时重新检查 revision。业务修改仍先持久化 pending 意图，才封准入和执行资源收尾；
-  成功或清理前拒绝再提交回执。最后 100 个回执与 256 个 operation 有界保留。
+  成功或清理前拒绝再提交回执。最后 100 个回执与至多 256 个 operation 有界保留；持久状态维持在 1 MiB 内，较早结束的 operation 可提前淘汰，未完成操作和 pending 对应的恢复记录始终保留。
 - 部分清理、apply 或持久化结果不确定时保留 pending 与已加的限制，状态为
   recovery-required。不能通过自动重试或反向启用恢复未知副作用。
 - 重启时 pending 的目标 gate 被隔离关闭；Root 管理入口可核对并显式确认保持停用。
@@ -402,6 +416,11 @@ pending/failed Fiber，可以直接更新或删除；有预激活资源的 pendi
 保留的前版配置和偏好重建旧代；只有结构、Fiber/Owner、偏好和持久回执均核验成功，才清除
 pending 并记录 `management_configuration_rolled_back`。清理结果未知、保存结果不确定、恢复失败
 或受影响依赖无法证明恢复时，继续保留 pending 与隔离状态。
+停止旧代失败时，配置事务保留 `recovery-required`，并在 `pending.failure` 保存
+`stage: stop`、停止操作 ID、稳定错误码、运行态与清理结果；不保存异常正文或用户内容。
+失败诊断写入失败也保持隔离，原停止结果仍可在本进程查询。重启恢复配置诊断，不重放清理；
+旧格式中 rejected 操作若仍拥有 pending，则重新分类为 recovery-required。
+诊断字段不参与原请求指纹，保持原有幂等身份。
 重启优先接受记录中的前版或后版部署。若部署后来又变化，则逐项核对每个不确定目标仍是记录中的
 前版或后版插件身份／类型；核对通过后，仍存在的普通目标同样在激活前隔离停用，按任一记录版本
 应不存在的目标允许缺席。新增的无关条目不绕过这些隔离；目标被第三次替换或改型仍拒绝启动。
@@ -549,6 +568,10 @@ npm run test:module-boundaries
 普通 Tool/Provider 用 `PluginWorkOwner`；显式调用句柄由其调用者释放，不能把 Session、
 Step 或 Archive 的调用方租约错误改成 Provider 强制关闭。Consumer 完整收尾后才封住 Provider。
 
+拥有后台调度器的模块可通过 `PluginWorkOwner.suspendAdmissions` 同步暂停领域接纳。
+准备停用或换代时先暂停，再封住公开入口；变更回滚时幂等恢复，正式关闭后不再恢复。
+这一暂停不替代领域自身的取消和排空，避免准备阶段仍调度新任务消耗失败或重试预算。
+
 当前第一方 Run/Session/进程业务 Owner 均支持同进程停启与代码换代。Runtime 创建并拥有
 Run generation；CLI/WebUI 退役各自通过 Application 打开的 generation；Agents/Application
 只封住 factory/facade 准入与旧引用，不重复退役同一代。Approval 取消待决请求，Journal
@@ -558,6 +581,14 @@ Run generation；CLI/WebUI 退役各自通过 Application 打开的 generation�
 在线更新不支持任意领域 schema 迁移、任意自定义 carrier，以及未经声明的外部引用；
 这些范围不能仅靠 `codeReload: true` 获得安全保证。
 
+`npm run test:plugin-hot-update` 检查停止排空、状态持久化以及完整 managed WebUI 升级。
+验收使用独立构建副本、临时数据和确定性模型，覆盖标题功能局部新增、旧布局迁移、配置／代码
+替换、候选失败回滚，以及旧代清理失败后的重启隔离和显式业务恢复。成功条件包含业务接口
+可用、会话保留和实际 Run 执行；不以清除 pending 代替业务恢复，也不代表真实 Provider 或浏览器验收。
+
 ## 插件私有状态
 
 版本化业务状态通过独立的[插件私有状态协议](../../plugin-state/README.md)接入。Root 变更队列、Step 边界和原生 HMR 在旧 Owner 排空后等待状态 flush；后继迁移先暂存，成功 receipt 持久化后才发布，失败补偿使用保留检查点。`ManagedPluginStore` 继续只持有管理状态和回执；Session / Runtime 的任务状态也不迁入私有状态域。
+配置拒绝或回滚后的私有状态收尾保存失败，也会让当前进程保持 `recovery-required`，
+即使管理 pending 已经清除，仍不放行 Step 或后续更新。重启由状态 Registry 根据持久回执
+核对检查点，不重放插件更新或业务调用。

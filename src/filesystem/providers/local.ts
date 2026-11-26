@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { constants, lstatSync } from "node:fs";
+import { constants, lstatSync, realpathSync } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import {
   dirname,
   isAbsolute,
+  parse,
   relative,
   resolve,
   sep,
@@ -27,6 +28,7 @@ import {
   FilesystemTooLargeError,
 } from "../errors.js";
 import { FilesystemService } from "../service.js";
+import { isProtectedFilesystemPath } from "../path-policy.js";
 import type {
   Filesystem,
   FilesystemAccess,
@@ -46,17 +48,20 @@ export const DEFAULT_FILESYSTEM_MAX_FILE_BYTES = 64_000_000;
 export const DEFAULT_PROTECTED_DIRECTORY_NAMES = Object.freeze([
   ".git",
   ".wish",
+  ".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker", ".codex",
 ]);
 export const DEFAULT_PROTECTED_FILE_NAMES = Object.freeze([
   ".env",
   ".gitconfig",
   ".netrc",
   ".npmrc",
+  ".pypirc", ".git-credentials",
 ]);
 export const DEFAULT_PROTECTED_FILE_PREFIXES = Object.freeze([".env."]);
 export const DEFAULT_PROTECTED_NAME_EXCEPTIONS = Object.freeze([
   ".env.example",
 ]);
+export const DEFAULT_PROTECTED_PATHS = Object.freeze(["/proc", "/sys", "/etc/shadow", "/etc/gshadow"]);
 
 export interface LocalFilesystemOptions {
   readonly maxFileBytes?: number;
@@ -64,6 +69,7 @@ export interface LocalFilesystemOptions {
   readonly protectedFileNames?: readonly string[];
   readonly protectedFilePrefixes?: readonly string[];
   readonly protectedNameExceptions?: readonly string[];
+  readonly protectedPaths?: readonly string[];
 }
 
 /** Loader-owned Local Filesystem policy. */
@@ -73,6 +79,7 @@ export interface Config {
   readonly protectedFileNames?: string[];
   readonly protectedFilePrefixes?: string[];
   readonly protectedNameExceptions?: string[];
+  readonly protectedPaths?: string[];
 }
 
 export const Config: s<Config> = s.object({
@@ -89,6 +96,7 @@ export const Config: s<Config> = s.object({
   protectedNameExceptions: s.array(s.string()).default([
     ...DEFAULT_PROTECTED_NAME_EXCEPTIONS,
   ]),
+  protectedPaths: s.array(s.string()).default([...DEFAULT_PROTECTED_PATHS]),
 });
 
 /** Process-local implementation reusable by standalone and Cordis compositions. */
@@ -157,7 +165,7 @@ export class LocalFilesystemBackend implements Filesystem {
     }
     if (!first.exists && request.createParents === true) {
       await ensureParentDirectories(
-        request.context.workspace.root,
+        isInside(request.context.workspace.root, first.path) ? request.context.workspace.root : parse(first.path).root,
         first.path,
         request.signal,
       );
@@ -239,11 +247,15 @@ export class LocalFilesystemBackend implements Filesystem {
       : resolve(root, requestedPath);
     assertContext(request.context, root, target, this.policy);
     const relativePath = relative(root, target);
-    if (!isInside(root, target)) throw new FilesystemOutsideWorkspaceError(target);
+    const workspaceBound = request.access === "write" && request.context.permissions.profile !== "full-access";
+    if (workspaceBound && !isInside(root, target)) throw new FilesystemOutsideWorkspaceError(target);
+    if (request.access === "write" && request.context.permissions.profile === "read-only") {
+      throw new FilesystemAuthorityMismatchError(target, "Read-only profile forbids filesystem writes");
+    }
     if (relativePath.length === 0 && request.allowWorkspaceRoot !== true) {
       throw new FilesystemInvalidPathError(target);
     }
-    if (isProtectedPath(relativePath, this.policy)) {
+    if (isProtectedFilesystemPath(target, this.policy)) {
       throw new FilesystemProtectedPathError(target);
     }
     if (requireAuthority) {
@@ -256,8 +268,8 @@ export class LocalFilesystemBackend implements Filesystem {
     }
 
     const canonicalRootPath = await canonicalWorkspaceRoot(root, request.signal);
-    let current = root;
-    const segments = relativePath.length === 0 ? [] : relativePath.split(sep);
+    let current = parse(target).root;
+    const segments = relative(current, target).split(sep).filter(Boolean);
     for (const segment of segments) {
       current = resolve(current, segment);
       let information;
@@ -291,7 +303,7 @@ export class LocalFilesystemBackend implements Filesystem {
       throw mapIoError(error, target);
     }
     throwIfAborted(request.signal);
-    if (!isInside(canonicalRootPath, canonicalTarget)) {
+    if (workspaceBound && !isInside(canonicalRootPath, canonicalTarget)) {
       throw new FilesystemOutsideWorkspaceError(target);
     }
     if (canonicalTarget !== target) {
@@ -369,17 +381,33 @@ function createPolicy(options: LocalFilesystemOptions): FilesystemPolicy {
       options.protectedNameExceptions ?? DEFAULT_PROTECTED_NAME_EXCEPTIONS,
       "protectedNameExceptions",
     ),
+    protectedPaths: [...new Set((options.protectedPaths ?? DEFAULT_PROTECTED_PATHS).flatMap(path => {
+      if (!path || !isAbsolute(path) || path.includes("\0")) throw new TypeError("protectedPaths must contain absolute paths");
+      const normalized = resolve(path);
+      // Lock canonical aliases too, including a missing leaf below a symlinked parent.
+      let ancestor = normalized;
+      for (;;) {
+        try { return [normalized, resolve(realpathSync(ancestor), relative(ancestor, normalized))]; }
+        catch (error) {
+          if (!isNodeError(error, "ENOENT")) throw error;
+          const parent = dirname(ancestor);
+          if (parent === ancestor) throw error;
+          ancestor = parent;
+        }
+      }
+    }))].sort(),
   };
   return Object.freeze({
     schemaVersion: 1 as const,
     version: identity({ schemaVersion: 1, ...values }),
-    scope: "workspace" as const,
+    scope: "host-read-profile-write" as const,
     symbolicLinks: "deny" as const,
     maxFileBytes: values.maxFileBytes,
     protectedDirectoryNames: Object.freeze(values.protectedDirectoryNames),
     protectedFileNames: Object.freeze(values.protectedFileNames),
     protectedFilePrefixes: Object.freeze(values.protectedFilePrefixes),
     protectedNameExceptions: Object.freeze(values.protectedNameExceptions),
+    protectedPaths: Object.freeze(values.protectedPaths),
   });
 }
 
@@ -468,7 +496,7 @@ function assertAuthority(
 function scopeAllowsPath(scope: string, target: string, root: string): boolean {
   const resolvedScope = isAbsolute(scope) ? resolve(scope) : resolve(root, scope);
   if (resolvedScope === target) return true;
-  if (!isInside(root, resolvedScope) || !isInside(resolvedScope, target)) return false;
+  if (!isInside(resolvedScope, target)) return false;
   try {
     const information = lstatSync(resolvedScope);
     return information.isDirectory() && !information.isSymbolicLink();
@@ -528,16 +556,6 @@ async function ensureParentDirectories(
       if (!created.isDirectory()) throw new FilesystemNotFileError(current);
     }
   }
-}
-
-function isProtectedPath(relativePath: string, policy: FilesystemPolicy): boolean {
-  const segments = relativePath.split(/[\\/]+/u).filter(Boolean);
-  return segments.some((name) => {
-    if (policy.protectedNameExceptions.includes(name)) return false;
-    return policy.protectedDirectoryNames.includes(name) ||
-      policy.protectedFileNames.includes(name) ||
-      policy.protectedFilePrefixes.some((prefix) => name.startsWith(prefix));
-  });
 }
 
 function isInside(root: string, target: string): boolean {

@@ -12,7 +12,7 @@ export const FilesystemToolGuidance = {
       order: 100,
       requiredTools: ["grep", "read"],
       content:
-        "Use grep to locate relevant text and read to inspect the surrounding file content before drawing conclusions.",
+        "Use grep to locate relevant text and read to inspect the surrounding file content before drawing conclusions. Ordinary files outside the selected workspace may be read by explicit path; sensitive paths remain locked. Reading another directory does not change the task workspace or authorize writes there.",
     });
     ctx.systemPrompt.register({
       id: "filesystem.edit",

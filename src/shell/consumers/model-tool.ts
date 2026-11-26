@@ -96,7 +96,7 @@ const BASH_INPUT_SCHEMA = JSON.stringify({
     permissions: {
       type: "object",
       description:
-        "Least authority required. Omitted defaults to workspace write with no network or external side effect.",
+        "Least authority required. Omitted defaults to workspace read/write with no network or external side effect. Use filesystem.read/write path arrays for precise scopes. Read paths may be absolute and outside the workspace; outside write paths require full-access. Sensitive paths remain locked in every profile.",
       properties: {
         filesystem: {
           oneOf: [

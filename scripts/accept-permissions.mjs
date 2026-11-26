@@ -8,12 +8,10 @@ import MemoryApprovalRules from
   "../dist/permissions/rules/providers/memory.js";
 import LocalFilesystem from "../dist/filesystem/providers/local.js";
 import LinuxNativeShell from "../dist/shell/providers/linux-native.js";
-import HostShell from "../dist/shell/providers/host.js";
 import DefaultSandboxPolicy from "../dist/sandbox/providers/default.js";
 import { ToolExecutor, ToolRegistry } from "../dist/core/tools/scheduler.js";
 import {
   DefaultPermissions,
-  PermissionProfileUnavailableError,
 } from "../dist/permissions/index.js";
 
 const workspace = Object.freeze({
@@ -648,44 +646,6 @@ test("once, run, session, and workspace approval scopes retain exact authority",
     )).ok, true);
     assert.equal(approvalRequests.length, 4);
     assert.equal((await root.approvalRules.list()).length, 3);
-  } finally {
-    await root.fiber.dispose();
-  }
-});
-
-test("the explicit Host Shell accepts only full-access", async () => {
-  const root = new Context();
-  await root.plugin(ApprovalHub);
-  await root.plugin(MemoryApprovalRules);
-  await root.plugin(LocalFilesystem);
-  await root.plugin(HostShell, { enabled: true });
-  await root.plugin(DefaultSandboxPolicy);
-  await root.plugin(DefaultPermissions);
-  try {
-    const snapshot = root.permissions.resolve({
-      agent: { profile: "full-access" },
-      subject,
-      workspace,
-      registeredTools: ["exec"],
-    });
-    const allowed = await execute(
-      root.permissions,
-      snapshot,
-      "exec",
-      "process.exec",
-    );
-    assert.equal(allowed.ok, true);
-    assert.equal(allowed.output.grant.metadata.authorizationSource, "profile");
-
-    assert.throws(
-      () => root.permissions.resolve({
-        agent: { profile: "workspace-write" },
-        subject,
-        workspace,
-        registeredTools: [],
-      }),
-      PermissionProfileUnavailableError,
-    );
   } finally {
     await root.fiber.dispose();
   }

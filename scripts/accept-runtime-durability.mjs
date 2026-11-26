@@ -48,6 +48,48 @@ async function fixture() {
   };
 }
 
+test("deleted Run reclamation handles mixed recovery batches and preserves unresolved side effects", async () => {
+  const state = await fixture();
+  let current = state.open();
+  try {
+    const owned = (id, scope) => {
+      const value = snapshots(id);
+      return { ...value, run: { ...value.run, scope }, step: { ...value.step, run: { ...value.step.run, scope } } };
+    };
+    const pending = owned("pending", "deleted-pending"), removable = owned("removable", "deleted-safe");
+    for (const { run, turn, step } of [pending, removable]) {
+      await current.authority.openRun(run);
+      await current.authority.openUserTurn({ run, userTurn: turn });
+      await current.authority.openStep(step);
+    }
+    const call = readyCall("effect", "danger", {}), descriptor = toolDescriptor("danger", "needs-reconciliation");
+    const input = { call, descriptor, context: {}, scope: toolScope(pending.step), snapshot: toolSnapshot() };
+    await current.authority.prepare(input);
+    await current.authority.markDispatched({ ...input, grant: { grantId: "granted" } });
+    await current.authority.close(); await current.backend.close();
+    current = state.open();
+    const recovery = await current.authority.recoverInterrupted();
+    const before = await current.authority.readEvents("pending");
+    await current.authority.sweepDeletedSessions(async scope => scope.startsWith("deleted-"));
+    assert.deepEqual(await current.authority.readEvents("removable"), []);
+    assert.deepEqual(await current.authority.readEvents("pending"), before);
+    assert.equal(buildRuntimeLifecycleStartupSnapshot(recovery, await current.authority.readEvents()).pendingReconciliations.length, 1);
+    await current.authority.close(); await current.backend.close();
+    current = state.open();
+    await current.authority.recoverInterrupted();
+    await current.authority.resolveReconciliation({ resolutionId: "resolved", runId: "pending",
+      userTurnId: pending.turn.id, stepId: pending.step.step.stepId, callId: call.id,
+      outcome: "confirmed-completed", actor: "test", reason: "checked side effects" });
+    const live = owned("live", "retained-session");
+    await current.authority.openRun(live.run);
+    await current.authority.purgeSession("deleted-pending");
+    await current.authority.purgeSession("retained-session");
+    assert.deepEqual((await current.authority.readEvents()).map(event => event.runId), ["live"], "unfinished Runs survive even an explicit purge request");
+    await current.authority.finishRun({ snapshot: live.run, status: "completed" });
+    assert.equal((await current.authority.readEvents("live")).length, 2);
+  } finally { await current.authority.close(); await current.backend.close(); await state.dispose(); }
+});
+
 test("Runtime lifecycle records boundaries without retaining Tool payloads", async () => {
   const state = await fixture();
   let current = state.open();

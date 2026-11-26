@@ -152,7 +152,7 @@ test("main conversation keeps detailed Tool evidence in a Tool-only session subv
   const conversation = await readFile(new URL("../src/apps/webui/client/ui/conversation.tsx", import.meta.url), "utf8");
   const toolCalls = await readFile(new URL("../src/apps/webui/client/ui/tool-calls.tsx", import.meta.url), "utf8");
   const shell = await readFile(new URL("../src/apps/webui/client/ui/shell.tsx", import.meta.url), "utf8");
-  assert.match(conversation, /source\.getSnapshot\(\)\.at\(-1\)/u, "the main conversation places the latest contributed context at its top");
+  assert.match(conversation, /useSnapshot\(item\.source\)\.at\(-1\)/u, "the main conversation places the latest contributed context at its top");
   assert.match(conversation, /conversation-request" key=\{block\.id\}><div className="message-text">\{block\.text\}/u, "the main conversation keeps the user's request text without a redundant speaker label");
   assert.doesNotMatch(conversation, /"You" : "你"/u, "the main conversation does not label user messages as You");
   assert.doesNotMatch(conversation, /查看调用与输出|View call and output|GenericToolDetails/u, "Tool inputs and results are not mounted in the main conversation");
@@ -166,7 +166,7 @@ test("main conversation keeps detailed Tool evidence in a Tool-only session subv
   assert.doesNotMatch(toolCalls, /所有记录|All records|推理输出|Reasoning|MarkdownContent/u, "the aggregate execution timeline is not restored");
   assert.match(shell, /panel\?\.navigationGroup === undefined \? item\.navigationGroup === undefined : item\.navigationGroup === panel\.navigationGroup/u, "session views do not leak into new-session or unrelated panel navigation");
   assert.match(shell, /localPanels\.length > 1/u, "a single main conversation panel does not create a redundant sidebar entry");
-  assert.match(conversation, /onClick=\{\(\) => slots\.openPanel\("tool-calls"\)\}/u, "the paired header navigation opens Tool calls from the main conversation");
+  assert.match(conversation, /onClick=\{\(\) => slots\.openPanel\(archived \? "archive-tool-calls" : "tool-calls"\)\}/u, "the paired header navigation opens Tool calls from the main conversation");
   assert.doesNotMatch(conversation, /localStorage|session-dock\.v2/u, "session Dock presentation starts clean after the page is reopened");
   assert.match(main, /const flow = new NewSessionClientModel[^]*flow\.start\(\)[^]*openPanelIfIdle\("new-session"\)/u, "every Browser visit starts from a fresh new-session intent");
   assert.match(conversation, /\[sidebarOpen, setSidebarOpen\] = useState\(false\)/u, "the right sidebar starts collapsed at every viewport width");
@@ -279,7 +279,7 @@ test("Todo owns a conditional conversation card instead of a workspace panel", a
   const run = new MutableStore({ runId: null, events: [] });
   const sessions = Object.assign(new MutableStore({ selectedId: "session-one", runs: [] }), { run });
   let refreshes = 0;
-  const features = Object.assign(new MutableStore({ sessionId: "session-one", available: true, pending: false, views: [{ key: "todo", title: "当前轮 Todo · 1/3", text: "", token: {}, actions: [], data: { schemaVersion: 1, sessionId: "session-one", runId: "run-one", userTurnId: "turn-one", revision: 1, openedAt: "2026-10-14T00:00:00.000Z", updatedAt: "2026-10-14T00:00:01.000Z", items: [{ id: "done", content: "完成项", status: "completed" }, { id: "doing", content: "进行项", status: "in_progress" }, { id: "later", content: "待办项", status: "pending" }] } }] }), { refresh: async () => { refreshes++; } });
+  const features = Object.assign(new MutableStore({ sessionId: "session-one", available: true, pending: false, views: [{ key: "todo", title: "当前轮 Todo · 1/3", text: "", token: {}, actions: [], data: { schemaVersion: 1, sessionId: "session-one", runId: "run-one", userTurnId: "turn-one", revision: 1, openedAt: "2026-10-14T00:00:00.000Z", updatedAt: "2026-10-14T00:00:01.000Z", items: [{ id: "done", content: "完成项", status: "completed" }, { id: "doing", content: "进行项", status: "in_progress" }, { id: "later", content: "待办项", status: "pending" }] } }] }), { refresh: async () => { refreshes++; }, poll: async () => {} });
   root.provide("wishUiSlots", slots);
   root.provide("wishSession", sessions);
   root.provide("wishFeatures", features);
@@ -354,7 +354,7 @@ test("tmux owns a session-sidebar feature instead of a workspace page", async ()
   root.provide("wishUiSlots", slots);
   const target = (sessionId, active) => ({ target: { sessionId, session: `wish-${sessionId}`, window: "main", pane: "%0", target: `wish-${sessionId}:main.0`, attachCommand: `tmux attach-session -t wish-${sessionId}`, captureCommand: `tmux capture-pane -p -t wish-${sessionId}:main.0` }, metadata: { workspaceRoot: "/workspace", label: sessionId }, createdAt: "2026-10-11T00:00:00.000Z", active, ...(active ? { currentCommand: "node", panePid: 42 } : { exitCode: 0 }) });
   const feature = { key: "tmux", title: "tmux", text: "", token: {}, actions: [{ name: "capture", label: "同步", feedback: true }, { name: "delete", label: "删除", feedback: true }], data: { kind: "tmux-observation", observedAt: "2026-10-11T00:00:00.000Z", sessions: [target("live", true), target("finished", false)], captures: [{ sessionId: "live", observedAt: "2026-10-11T00:00:00.000Z", output: "running", active: true }, { sessionId: "finished", observedAt: "2026-10-11T00:00:00.000Z", output: "done", active: false }] } };
-  root.provide("wishFeatures", new SnapshotStore({ sessionId: "session-one", views: [feature], error: null, available: true, pending: false }));
+  root.provide("wishFeatures", Object.assign(new SnapshotStore({ sessionId: "session-one", views: [feature], error: null, available: true, pending: false }), { readiness: new SnapshotStore(false) }));
   const tmux = await root.plugin(TmuxClientUi);
   try {
     assert.equal(slots.getSnapshot().panels.some(panel => panel.id === "tmux"), false);
@@ -513,6 +513,8 @@ test("Skills and Models own their global-rail and settings-area seats", async ()
   root.provide("wishNewSession", new NewSessionClientModel({ startCreate() {}, async create() { return "new"; }, async send() {} }, new ComposerDrafts()));
   const connection = new Probe({ online: true, instanceId: "root", businessAvailable: true, error: null });
   connection.onInvalidation = () => () => {};
+  connection.request = async () => ({ value: { schemaVersion: 1, workspace: { root: "/workspace", fingerprint: "workspace", revision: "one" },
+    catalogDigest: "empty", skills: [], issues: [] } });
   root.provide("wishConnection", connection);
   const skills = await root.plugin(SkillsClientUi), models = await root.plugin(ModelsClientUi);
   try {
@@ -530,25 +532,26 @@ test("Skills and Models own their global-rail and settings-area seats", async ()
     assert.equal(slots.getSnapshot().panels.some(panel => panel.id === "models"), true);
   } finally { await models.dispose(); assert.deepEqual(slots.getSnapshot().composerItems, []); assert.deepEqual(slots.getSnapshot().newSessionComposerItems, []); await root.fiber.dispose(); }
 });
-test("Skills client projects a module-owned catalog and selects through the generic feature port", async () => {
+test("Skills client reads a global catalog and selects without a Session feature port", async () => {
   const entry = { packageId: "package", name: "inspect", description: "Inspect first", source: "workspace", digest: "digest", modelInvocable: true };
-  const data = { schemaVersion: 1, workspace: { fingerprint: "workspace", revision: "one" }, skills: [entry], issues: [], selectionChanged: false };
-  class FeaturesProbe extends SnapshotStore {
+  const data = { schemaVersion: 1, workspace: { root: "/workspace", fingerprint: "workspace", revision: "one" }, catalogDigest: "catalog", skills: [entry], issues: [] };
+  class ConnectionProbe extends SnapshotStore {
     calls = [];
-    async refresh() {}
-    async act(sessionId, view, action, feedback) {
-      this.calls.push({ sessionId, action, feedback });
-      this.publish({ ...this.getSnapshot(), views: [{ ...view, data: { ...data, selected: { entry, content: "Complete instructions" } } }] });
+    onInvalidation() { return () => {}; }
+    async request(path, body) {
+      this.calls.push({ path, body });
+      return { value: body ? { schemaVersion: 1, entry, content: "Complete instructions" } : data };
     }
   }
-  const feature = { key: "skills", title: "Skills", text: "", data, token: { reviewId: "one" }, actions: [{ name: "inspect", label: "查看", feedback: true }] };
-  const features = new FeaturesProbe({ sessionId: "session", views: [feature], error: null, available: true, pending: false });
-  const model = new SkillsClientModel(features);
+  const connection = new ConnectionProbe({ online: true, businessAvailable: true, instanceId: "root", error: null });
+  const model = new SkillsClientModel(connection);
   try {
+    await model.refresh();
     assert.equal(model.getSnapshot().skills[0].name, "inspect");
-    assert.equal(parseSkillFeatureData({ ...data, skills: [{ ...entry, source: "remote" }] }), undefined);
+    assert.equal(parseSkillFeatureData({ ...data, selectionChanged: false, skills: [{ ...entry, source: "remote" }] }), undefined);
     await model.select("inspect");
-    assert.deepEqual(features.calls, [{ sessionId: "session", action: "inspect", feedback: "inspect" }]);
+    assert.deepEqual(connection.calls.at(-1), { path: "/api/queries/skills/default",
+      body: { name: "inspect", expectedDigest: "digest", expectedPackageId: "package" } });
     assert.equal(model.getSnapshot().selected.content, "Complete instructions");
   } finally { model.close(); }
 });
@@ -629,6 +632,31 @@ test("invalidation during read is folded, stale result is discarded, close preve
   release.resolve(); await Promise.all([first, second, third]);
   assert.equal(reads, 2); assert.deepEqual(results, [2]);
   queue.close(); await queue.request(); assert.equal(reads, 2);
+});
+test("polls share a pending read without invalidating its result; explicit invalidation still wins", async () => {
+  const releases = [], results = [], successorStarted = deferred();
+  const queue = new RefreshQueue(async current => {
+    const read = releases.length + 1, release = deferred(); releases.push(release);
+    if (read === 3) successorStarted.resolve();
+    await release.promise;
+    if (current()) results.push(read);
+  });
+  try {
+    const first = queue.poll();
+    assert.equal(queue.poll(), first);
+    assert.equal(queue.poll(), first);
+    releases[0].resolve(); await first;
+    assert.deepEqual(results, [1]);
+    const second = queue.poll();
+    queue.request(); queue.poll();
+    releases[1].resolve(); await successorStarted.promise;
+    releases[2].resolve(); await second;
+    assert.deepEqual(results, [1, 3]);
+    const last = queue.poll(); queue.close(); releases[3].resolve(); await last;
+    await queue.poll();
+    assert.deepEqual(results, [1, 3]);
+    assert.equal(releases.length, 4);
+  } finally { queue.close(); for (const release of releases) release.resolve(); }
 });
 test("connection owns CSRF token, rejects API errors, closes SSE and inflight requests", async () => {
   const sent = [], events = { addEventListener() {}, close() { this.closed = true; } };

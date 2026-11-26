@@ -11,6 +11,8 @@ export class ManagedPluginStoreError extends Error {
 
 type ManagedPluginCommit = Omit<ManagedPluginState, "schemaVersion" | "revision" | "operations">;
 interface ParsedState { readonly state: ManagedPluginState; readonly changed: boolean }
+const maximumStateBytes = 1_048_576;
+const maximumOperations = 256;
 
 const terminalPhases = new Set<PluginChangePhase>(["succeeded", "rejected", "recovery-required"]);
 const cancellablePhases = new Set<PluginChangePhase>(["queued", "preflight", "waiting-safe-point"]);
@@ -69,9 +71,9 @@ export class ManagedPluginStore {
   async commit(expectedRevision: string, update: ManagedPluginCommit): Promise<ManagedPluginState> {
     return this.enqueue(async () => {
       if (expectedRevision !== this.state.revision) throw new ManagedPluginStoreError("management_revision_conflict");
-      const next = parseState(JSON.stringify({ ...update, schemaVersion: 2, revision: randomUUID(), operations: this.state.operations }), false).state;
+      const next = parseState(stateText({ ...update, schemaVersion: 2, revision: randomUUID(), operations: this.state.operations }), false).state;
       await this.write(expectedRevision, next);
-      return next;
+      return this.state;
     });
   }
 
@@ -89,7 +91,7 @@ export class ManagedPluginStore {
         }
         operations[existing] = captured;
       } else operations.push(captured);
-      const next = freeze({ ...this.state, operations: retainOperations(operations) });
+      const next = freeze({ ...this.state, operations });
       await this.write(this.state.revision, next);
     });
   }
@@ -119,7 +121,7 @@ export class ManagedPluginStore {
       try { disk = parseState(await readFile(this.filename, "utf8"), false).state; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       if ((disk?.revision ?? "initial") !== expectedRevision) throw new ManagedPluginStoreError("management_revision_conflict");
-      const checked = parseState(JSON.stringify(next), false).state;
+      const checked = parseState(stateText(next), false).state;
       const handle = await open(temporary, "wx", 0o600);
       try { await handle.writeFile(JSON.stringify(checked)); await handle.sync(); }
       finally { await handle.close(); }
@@ -168,14 +170,23 @@ export function managementFingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+/** Followers read the atomic snapshot without acquiring the manager's writer lock. */
+export async function readManagedPluginState(filename: string): Promise<ManagedPluginState | undefined> {
+  try { return parseState(await readFile(filename, "utf8"), false).state; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 function parseState(text: string, recover = true): ParsedState {
   try {
-    if (Buffer.byteLength(text) > 1_048_576) throw new Error();
+    if (Buffer.byteLength(text) > maximumStateBytes) throw new Error();
     const raw = JSON.parse(text);
     if (!raw || ![1, 2].includes(raw.schemaVersion) || !id(raw.revision) || !raw.preferences || typeof raw.preferences !== "object" ||
       Array.isArray(raw.preferences) || Object.keys(raw.preferences).length > 512 || !Array.isArray(raw.receipts) || raw.receipts.length > 100 ||
       Object.keys(raw).some(key => !["schemaVersion", "revision", "preferences", "pending", "receipts", ...(raw.schemaVersion === 2 ? ["operations"] : [])].includes(key)) ||
-      raw.schemaVersion === 2 && (!Array.isArray(raw.operations) || raw.operations.length > 256)) throw new Error();
+      raw.schemaVersion === 2 && (!Array.isArray(raw.operations) || raw.operations.length > maximumOperations)) throw new Error();
     for (const [key, preference] of Object.entries(raw.preferences) as [string, { name: unknown; preference: unknown }][]) {
       if (!id(key) || !preference || !id(preference.name) || !["enabled", "disabled"].includes(String(preference.preference)) ||
         Object.keys(preference).some(key => !["name", "preference"].includes(key))) throw new Error();
@@ -193,10 +204,10 @@ function parseState(text: string, recover = true): ParsedState {
       let operation = parseOperation(value);
       if (seen.has(operation.id)) throw new Error();
       seen.add(operation.id);
-      if (recover && !terminalPhases.has(operation.phase)) {
-        const pending = raw.pending?.requestId === operation.requestId;
+      const pending = raw.pending?.requestId === operation.requestId;
+      if (recover && (!terminalPhases.has(operation.phase) || pending && operation.phase === "rejected")) {
         operation = freeze({ ...operation, phase: pending ? "recovery-required" as const : "rejected" as const,
-          code: pending ? "management_recovery_required" : "plugin_change_interrupted", cancellable: false });
+          code: pending ? raw.pending.failure?.code ?? "management_recovery_required" : "plugin_change_interrupted", cancellable: false });
         changed = true;
       }
       return operation;
@@ -212,8 +223,13 @@ function validatePending(pending: any): void {
     !id(pending.selection?.instanceId) || !Array.isArray(pending.selection?.entryIds) || !pending.selection.entryIds.length ||
     pending.selection.entryIds.length > 512 || pending.selection.entryIds.some((entry: unknown) => !id(entry)) ||
     new Set(pending.selection.entryIds).size !== pending.selection.entryIds.length ||
-    Object.keys(pending).some(key => !["requestId", "revision", "preference", "selection", "configuration"].includes(key)) ||
+    Object.keys(pending).some(key => !["requestId", "revision", "preference", "selection", "configuration", "failure"].includes(key)) ||
     Object.keys(pending.selection).some(key => !["instanceId", "entryIds"].includes(key))) throw new Error();
+  const failure = pending.failure;
+  if (failure !== undefined && (!failure || failure.stage !== "stop" || !id(failure.operationId) ||
+    !/^[a-z][a-z0-9_]{0,79}$/u.test(failure.code) || !["unchanged", "changed", "unknown"].includes(failure.runtime) ||
+    !["confirmed", "pending", "failed", "unknown"].includes(failure.cleanup) ||
+    Object.keys(failure).some(key => !["stage", "operationId", "code", "runtime", "cleanup"].includes(key)))) throw new Error();
   if (pending.configuration === undefined) return;
   const configuration = pending.configuration;
   if (!pending.requestId.startsWith("configuration:") || pending.preference !== "inherit" || !configuration ||
@@ -249,11 +265,17 @@ function parseOperation(value: any): PluginChangeOperationView {
   return freeze({ ...value, entryIds: [...value.entryIds] }) as PluginChangeOperationView;
 }
 
-function retainOperations(operations: readonly PluginChangeOperationView[]): readonly PluginChangeOperationView[] {
-  if (operations.length <= 256) return Object.freeze([...operations]);
-  const live = operations.filter(operation => !terminalPhases.has(operation.phase));
-  const terminal = operations.filter(operation => terminalPhases.has(operation.phase));
-  return Object.freeze([...terminal.slice(-(256 - live.length)), ...live]);
+/** A wide deployment can exhaust the byte budget before the history count.
+ * Trim oldest completed history, never an active operation or pending recovery. */
+function stateText(state: ManagedPluginState): string {
+  const operations = [...state.operations];
+  for (;;) {
+    const text = JSON.stringify({ ...state, operations });
+    if (operations.length <= maximumOperations && Buffer.byteLength(text) <= maximumStateBytes) return text;
+    const index = operations.findIndex(operation => terminalPhases.has(operation.phase) && operation.requestId !== state.pending?.requestId);
+    if (index < 0) throw new ManagedPluginStoreError("management_store_capacity_exceeded");
+    operations.splice(index, 1);
+  }
 }
 
 function sameOperationIdentity(left: PluginChangeOperationView, right: PluginChangeOperationView): boolean {

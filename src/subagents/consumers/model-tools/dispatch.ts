@@ -103,7 +103,7 @@ export class SubagentToolDispatchService extends Service {
       toolContracts: new Map([...this.tools.getCompositionContracts(), ...localTools.map(tool => [tool.name, tool] as const)]),
       allowedCapabilities,
       permissionProfile: profile,
-      runtimeFeatures: preset?.memory === "none" ? features.filter(feature => feature !== "memory.snapshot") : features,
+      runtimeFeatures: preset?.memory === "none" ? features.filter(feature => feature !== "memory.read") : features,
     });
     return Object.freeze({
       ...request,

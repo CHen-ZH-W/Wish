@@ -338,6 +338,7 @@ function tokenCost(tokens: number, pricePerMillion: number): number {
 function snapshotRequest(request: ModelRequest): ModelRequest {
   return Object.freeze({
     model: freezeModelRef(request.model),
+    ...(request.responseSchema === undefined ? {} : { responseSchema: Object.freeze({ name: request.responseSchema.name, schema: snapshotPlainRecord(request.responseSchema.schema) }) }),
     instructions: Object.freeze(request.instructions.map((instruction) =>
       Object.freeze({ role: instruction.role, content: instruction.content })
     )),

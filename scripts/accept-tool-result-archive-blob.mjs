@@ -68,6 +68,24 @@ function input(content = "complete") {
   };
 }
 
+test("historical cleanup discovers a Tool Result Blob left behind before index publication", async () => {
+  const value = await fixture();
+  try {
+    await value.archive.archive(input());
+    const keep = await value.archive.archive({ ...input(), sessionId: "keep", runId: "keep-run" });
+    const entries = await value.backend.kv.list({ namespace: "tool-results/index" });
+    for (const entry of entries) {
+      const stored = await value.backend.kv.get({ namespace: "tool-results/index", key: entry.key });
+      if (JSON.parse(new TextDecoder().decode(stored.value)).identity.sessionId !== "session-1") continue;
+      await value.backend.kv.delete({ namespace: "tool-results/index", key: entry.key, precondition: { kind: "revision", revision: stored.revision } });
+    }
+    assert.deepEqual(new Set(await value.archive.sessionIds()), new Set(["session-1", "keep"]));
+    await value.archive.purgeSession("session-1");
+    assert.equal((await value.backend.blob.list("tool-results/records")).length, 1);
+    assert.equal((await value.archive.read(keep)).sessionId, "keep");
+  } finally { await value.close(); }
+});
+
 test("Blob Tool Result Archive is versioned, readable and idempotent", async () => {
   const value = await fixture();
   try {
@@ -225,6 +243,8 @@ test("Blob Tool Output Artifacts return opaque readable references", async () =>
     await root.toolOutputArtifacts.purgeSession("session-1");
     assert.equal(await root.toolOutputArtifacts.get({ artifact }), undefined);
     assert.deepEqual(await root.toolOutputArtifacts.get({ artifact: other }), source);
+    await root.toolOutputArtifacts.sweepDeletedSessions(async id => id === "session-2");
+    assert.equal(await root.toolOutputArtifacts.get({ artifact: other }), undefined, "payload ownership survives without an archive index");
 
     await provider.dispose();
     assert.equal(root.get("toolOutputArtifacts"), undefined);

@@ -6,7 +6,7 @@ export function createGoalSessionFeature(goal: Goal): SessionFeature { return {
   purgeOrder: 70,
   async purgeSession(sessionId) { const state = await goal.get({ sessionId }); if (state) await goal.clear({ sessionId, ref: { id: state.id, revision: state.revision } }); },
   async inspect(sessionId) { const state = await goal.get({ sessionId }); if (!state) return undefined; return { key: "goal", title: `目标 · ${state.phase}`, titleEn: `Goal · ${state.phase}`,
-    text: `${state.objective}\n\n轮次：${state.roundsStarted}/${state.maxGoalRounds}\n激活：${state.activation}${state.blockedReason ? `\n阻塞：${state.blockedReason.message}` : ""}`, data: state,
+    text: `${state.objective}\n\n已执行轮次：${state.roundsStarted}${state.maxGoalRounds === undefined ? "" : `/${state.maxGoalRounds}`}\n激活：${state.activation}${state.blockedReason ? `\n阻塞：${state.blockedReason.message}` : ""}`, data: state,
     token: { goalId: state.id, revision: state.revision }, actions: state.phase === "active" ? [{ name: "pause", label: "暂停", labelEn: "Pause" }, { name: "complete", label: "标记完成", labelEn: "Mark complete" }, { name: "clear", label: "清除", labelEn: "Clear" }]
       : state.phase === "complete" ? [{ name: "clear", label: "清除", labelEn: "Clear" }]
       : [{ name: "resume", label: "恢复", labelEn: "Resume" }, { name: "complete", label: "标记完成", labelEn: "Mark complete" }, { name: "clear", label: "清除", labelEn: "Clear" }] };

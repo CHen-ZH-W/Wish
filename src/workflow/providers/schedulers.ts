@@ -41,7 +41,7 @@ export default class WorkflowSchedulers extends WorkflowSchedulerService {
           toolContracts: new Map([...ctx.tools.getCompositionContracts(), ...localTools.map(tool => [tool.name, tool] as const)]),
           allowedCapabilities: request.allowedCapabilities ?? [],
           ...(request.permissionProfile === undefined ? {} : { permissionProfile: request.permissionProfile }),
-          runtimeFeatures: preset?.memory === "none" ? features.filter(feature => feature !== "memory.snapshot") : features,
+          runtimeFeatures: preset?.memory === "none" ? features.filter(feature => feature !== "memory.read") : features,
         });
         return Object.freeze({ ...request, availableTools: scope.availableTools });
       },

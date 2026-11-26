@@ -35,6 +35,7 @@ import {
 } from "./types.js";
 import type { AgentScope } from "../composition/agent-scope.js";
 import type { RegisteredSystemPromptSection } from "../system-prompt/types.js";
+import { snapshotRepositoryStatus } from "../workspace/snapshot.js";
 
 export const DEFAULT_CONTEXT_PROVIDER_ORDER = Object.freeze([
   "instructions",
@@ -286,6 +287,7 @@ function snapshotWorkspace(workspace: ContextWorkspaceFacts): ContextWorkspaceFa
   if (!Array.isArray(workspace.instructions)) {
     throw new Error("Context workspace instructions must be an array");
   }
+  const repositoryStatus = snapshotRepositoryStatus(workspace.repositoryStatus, workspace.repository);
   const ids = new Set<string>();
   const instructions = workspace.instructions.map((instruction) => {
     if (instruction === null || typeof instruction !== "object") {
@@ -325,6 +327,7 @@ function snapshotWorkspace(workspace: ContextWorkspaceFacts): ContextWorkspaceFa
       "Context workspace revision",
     ),
     instructions: Object.freeze(instructions),
+    ...(repositoryStatus === undefined ? {} : { repositoryStatus }),
     ...(workspace.repository === undefined
       ? {}
       : { repository: snapshotWorkspaceRepository(workspace.repository) }),

@@ -76,6 +76,7 @@ export function mapOpenAIResponsesRequest(
     model: request.model.model,
     input: Object.freeze(messages),
     stream: true,
+    ...(request.responseSchema === undefined ? {} : { text: { format: { type: "json_schema", name: request.responseSchema.name, strict: true, schema: request.responseSchema.schema } } }),
     ...(tools.length === 0 ? {} : { tools: Object.freeze(tools) }),
     ...(request.temperature === undefined || !compatibility.supportsTemperature
       ? {}
